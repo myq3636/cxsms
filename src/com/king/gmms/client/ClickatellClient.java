@@ -1,0 +1,84 @@
+package com.king.gmms.client;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import com.king.framework.SystemLogger;
+import com.king.gmms.customerconnectionfactory.ClickatellClientFactory;
+import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
+import com.king.gmms.domain.A2PCustomerInfo;
+import com.king.gmms.domain.ModuleManager;
+import com.king.message.gmms.GmmsMessage;
+
+public class ClickatellClient extends AbstractClient {
+	private static SystemLogger log = SystemLogger.getSystemLogger(ClickatellClient.class);
+	private final String PROTOCOL_NAME = "CLICKATELL";
+    private InternalAgentConnectionFactory agentFactory = null;
+    private ClickatellClientFactory customerFactory = null;
+    
+	public ClickatellClient(){
+		 try {
+			 customerFactory = ClickatellClientFactory.getInstance();
+	            ArrayList<Integer> alSsid = gmmsUtility.getCustomerManager().
+	                getSsidByProtocol(PROTOCOL_NAME);
+	            if (alSsid != null && alSsid.size() > 0) {
+	                A2PCustomerInfo ci;
+	                for (int i = 0; i < alSsid.size(); i++) {
+	                    int ssid = alSsid.get(i);
+	                    
+	                    	log.trace( "{} get ssid:{}",PROTOCOL_NAME, ssid);
+	                    
+	                    ci = gmmsUtility.getCustomerManager().getCustomerBySSID(
+	                        ssid);
+                        if (ctm.inCurrentA2P(ctm.getConnectedRelay(ssid,
+                            GmmsMessage.AIC_MSG_TYPE_TEXT))) {
+                        	customerFactory.constructOperatorMessageQueue(ssid);
+                        }
+	                }
+	            } //end of size > 0
+	            else {
+	            		log.info("No client is started directly.");
+	            }
+	        }
+	        catch (Exception ex) {
+	            log.error(ex, ex);
+
+	        }
+	}
+	 /**
+     * start agent message queue and listener
+     */
+    private void startAgentConnection(){
+    	 //start MessageQueue of InternalAgent
+        agentFactory = InternalAgentConnectionFactory.getInstance();
+        agentFactory.setCustomerFactory(customerFactory);
+        ModuleManager moduleManager = ModuleManager.getInstance();
+        List<String> moduleNameList = moduleManager.getRouterModules();
+        if(moduleNameList != null){
+        	for(String routerModuleName:moduleNameList){
+        		agentFactory.initInternalConnectionFactory(routerModuleName);
+        	}
+        }
+    }
+
+	public boolean startService() {
+		if(!initSystemManagement()){
+   		  log.warn("module register failed!");
+		}
+		startAgentConnection();
+        agentListener.start();
+		return true;
+	}
+    
+	public boolean stopService() {
+		if(canHandover || isEnableSysMgt){
+			systemSession.moduleStop();
+	        systemListener.stop();
+	        if(systemSession!=null){
+	        	systemSession.shutdown();
+	        }
+        }
+		agentListener.stop();
+		return false;
+	}
+}

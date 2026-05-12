@@ -1,0 +1,51 @@
+package com.king.mgt.cmd.system;
+
+import com.king.framework.SystemLogger;
+import com.king.mgt.cmd.user.UserCommandRoutingInfo;
+
+public class SystemCommandRoutingInfo extends SystemCommand {
+
+	
+    private static SystemLogger log=SystemLogger.getSystemLogger(SystemCommandRoutingInfo.class);
+    public static short ID=0x0003;
+    public static byte ARG_LIST=00;
+    public static byte ARG_ADD=01;
+    public static byte ARG_DEL=02;
+    public static byte ARG_RELOAD=03;
+    public static byte ARG_GENERATE=04;
+    public static byte ARG_ACTIVE=05;
+    
+    
+    public SystemCommandRoutingInfo(UserCommandRoutingInfo cmd) {
+		super(cmd, ID);
+	}
+
+	@Override
+	public boolean genBody() {
+		int type = cmd.getType();
+		switch (type) {
+			case UserCommandRoutingInfo.TYPE_RELOAD: {
+				body.appendInt(1);
+				body.appendByte(ARG_RELOAD);
+				break;
+			}
+			case UserCommandRoutingInfo.TYPE_GENERATE: {
+				body.appendInt(1);
+				body.appendByte(ARG_GENERATE);
+				break;
+			}
+			case UserCommandRoutingInfo.TYPE_ACTIVE: {
+				body.appendInt(1);
+				body.appendByte(ARG_ACTIVE);
+				break;
+			}
+			default: {
+				log.error("Command type {} is not supported.",cmd.getType());
+				return false;
+			}
+
+		}
+		return true;
+	}
+
+}
