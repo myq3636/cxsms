@@ -36,6 +36,7 @@ public abstract class Event {
     public static final int TYPE_RECIPIENT_BLACKLIST_RELOAD=18;
     public static final int TYPE_VENDOR_CONTENT_REPLACE__RELOAD=19;
     public static final int TYPE_SYSTEM_VENDOR_REPLACE_RELOAD=20;
+    public static final int TYPE_GMMS_CONFIG_RELOAD=21;
     
     // event sub type
     public static final int SUBTYPE_STOP_FILE=1;

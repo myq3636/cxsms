@@ -34,11 +34,6 @@ public class GmmsLauncher extends AbstractLauncher {
         gmmsUtility.startControlSubscriber();
         
         // V4.1 响应式外发流控消费者启动 (仅限 Client 模块)
-        String moduleName = System.getProperty("module");
-        if (com.king.gmms.domain.ModuleManager.getInstance().getClientModules().contains(moduleName)) {
-            System.out.println("Starting OutboundStreamConsumer for Client module: " + moduleName);
-            com.king.gmms.messagequeue.OutboundStreamConsumer.getInstance().start();
-        }
     }
 
     protected void beforeStop() {

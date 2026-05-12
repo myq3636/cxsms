@@ -15,14 +15,11 @@ import java.util.concurrent.ExecutorService;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
-import javax.xml.bind.JAXBContext;
-import javax.xml.bind.Unmarshaller;
 
 import org.jdom.Document;
 import org.jdom.Element;
 import org.jdom.JDOMException;
 import org.jdom.input.SAXBuilder;
-import org.xml.sax.InputSource;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
@@ -48,7 +45,6 @@ import com.king.gmms.protocol.commonhttp.JxToken;
 import com.king.gmms.protocol.smpp.util.TimeFormatter;
 import com.king.gmms.threadpool.ExecutorServiceManager;
 import com.king.gmms.throttle.ThrottlingControl;
-import com.king.gmms.messagequeue.StreamQueueManager;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
 import com.king.message.gmms.MessageBase;
@@ -104,14 +100,7 @@ public class CommonHttpServlet extends AbstractHttpServer {
 					log.info("No client is started directly.");
 				}
 				//receiverThreadPool = executorServiceManager.newFixedThreadPool(this, "IntReceiver_commonHttpServer", 10);
-				startAgentConnection(factory);
-				
-				// V4.0 Async Routing: Register all HTTP SSIDs for DR polling
-				if (alSsid != null) {
-					for (int ssid : alSsid) {
-						com.king.gmms.messagequeue.DRStreamConsumer.getInstance().registerSSID(ssid);
-					}
-				}
+				//startAgentConnection(factory);
 			}
 			super.startService();
 		} catch (Exception ex) {
@@ -182,10 +171,6 @@ public class CommonHttpServlet extends AbstractHttpServer {
 					for (JxSubMessage jxSubMsg : jxMessage.getMSG()) {
 						GmmsMessage gmmsMessage  = new GmmsMessage();
 						gmmsMessage.setOSsID(sInfo.getSSID());
-						
-						// V4.0 Sticky Routing Context
-						gmmsMessage.setInnerTransaction(new com.king.gmms.ha.TransactionURI());
-						
 						String commonMsgID = MessageIdGenerator.generateCommonMsgID(sInfo.getSSID());
 						gmmsMessage.setMsgID(commonMsgID);
 						String content = jxSubMsg.getBODY();						
@@ -299,17 +284,18 @@ public class CommonHttpServlet extends AbstractHttpServer {
 							}       					     
                        	  }    
 						
-						// V4.0 异步化逻辑：将消息提交到 Redis Stream (Submit-MQ)
-						boolean produceSuccess = StreamQueueManager.getInstance().produceSubmitMessage(gmmsMessage);
-						if (!produceSuccess) {
-							log.error(gmmsMessage, "Failed to produce message to Redis Stream!");
-							// 如果入队失败（Redis故障），记录 CDR 并尝试返回错误
+						if (!putGmmsMessage2RouterQueue(gmmsMessage)) {
 							gmmsUtility.getCdrManager().logInSubmit(gmmsMessage);
-							msg.setStatus(GmmsStatus.SERVER_ERROR);
-							this.response(msg, request, response);
-							return;
+							if (gmmsMessage.getDeliveryReport()) {
+								gmmsMessage.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
+								gmmsMessage.setRSsID(sInfo.getSSID());
+								gmmsMessage.setOutMsgID(gmmsMessage.getInMsgID());
+								gmmsMessage.setStatus(GmmsStatus.REJECTED);
+								if (!putGmmsMessage2RouterQueue(gmmsMessage)) {
+									gmmsUtility.getCdrManager().logInDeliveryReportRes(gmmsMessage);									
+								}
+							}							
 						}
-						// 入队成功即视为处理成功
 					}
 				}
 		} catch (Exception e) {
@@ -521,10 +507,11 @@ public class CommonHttpServlet extends AbstractHttpServer {
 		StringReader reader = null;
 		JxMessage jxMessage= new JxMessage();		 
 		try {
-			reader = new StringReader(xml);
-			InputSource source = new InputSource(reader);
+			/*
+			 * reader = new StringReader(xml); InputSource source = new InputSource(reader);
+			 */
 			SAXBuilder sb = new SAXBuilder();
-			Document doc = sb.build(source);
+			Document doc = sb.build(xml);
 			Element root = doc.getRootElement();
 			List node = root.getChildren();
 			if (node == null) {

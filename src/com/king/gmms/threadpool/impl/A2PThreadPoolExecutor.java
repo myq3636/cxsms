@@ -12,6 +12,8 @@ import java.util.concurrent.TimeUnit;
 
 import com.king.framework.SystemLogger;
 
+import redis.clients.jedis.StreamEntryID;
+
 /**
  * Thread pool executor
  *
@@ -89,7 +91,7 @@ public class A2PThreadPoolExecutor extends ThreadPoolExecutor {
 	}
 
 	public interface BatchProcessor {
-		void process(java.util.List<redis.clients.jedis.StreamEntry> batch);
+		void process(java.util.List<StreamEntryID> batch);
 	}
 
 	/**
@@ -97,7 +99,7 @@ public class A2PThreadPoolExecutor extends ThreadPoolExecutor {
 	 * 将“阻塞等待单条消费”改写为“批量拉取多条”。
 	 * 能够有效减少线程上下文切换开销。
 	 */
-	public void executeBatch(final java.util.List<redis.clients.jedis.StreamEntry> batch, final BatchProcessor processor) {
+	public void executeBatch(final java.util.List<StreamEntryID> batch, final BatchProcessor processor) {
 		if (batch == null || batch.isEmpty() || processor == null) {
 			return;
 		}

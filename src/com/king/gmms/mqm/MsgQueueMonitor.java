@@ -7,6 +7,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import com.king.db.DatabaseStatus;
 import com.king.framework.*;
 import com.king.gmms.GmmsUtility;
+import com.king.gmms.ha.ModuleStatusReporter;
 import com.king.gmms.mqm.task.TaskTimer;
 import com.king.gmms.threadpool.ExecutorServiceManager;
 import com.king.gmms.threadpool.ThreadPoolProfile;
@@ -24,11 +25,12 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 	private Map<String, TaskExecutor> taskExecutors = new HashMap<String, TaskExecutor>();
 	private List<MQMMessageSender> drSenders = null;
 	private List<MQMMessageSender> retrySenders = null;
-	private SystemSession systemSession = null; // system client
-	private SystemSessionFactory sysFactory = null;
+	private ModuleStatusReporter statusReporter = null;
+	//private SystemSession systemSession = null; // system client
+	//private SystemSessionFactory sysFactory = null;
 	private boolean isEnableSysMgt = false;
     protected boolean canHandover = false;
-	private SystemListener systemListener = null;
+	//private SystemListener systemListener = null;
 	private ExecutorService exthreadPool = null;
 
 	/**
@@ -36,17 +38,6 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 	 */
 	public MsgQueueMonitor() {
 		gmmsUtility = GmmsUtility.getInstance();
-		isEnableSysMgt = gmmsUtility.isSystemManageEnable();
-		canHandover = gmmsUtility.isDBHandover();
-		if (isEnableSysMgt||canHandover) {
-			systemListener = SystemListener.getInstance();
-			try {
-				sysFactory = SystemSessionFactory.getInstance();
-				systemSession = sysFactory.getSystemSessionForFunction();
-			} catch (Exception e) {
-				e.printStackTrace();
-			}
-		}
 		drSenders = new ArrayList<>();
 		retrySenders = new ArrayList<>();
 	}
@@ -54,20 +45,9 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 	public boolean startService() {
 		DatabaseStatus dbstatus = DatabaseStatus.MASTER_USED;
 		String redisStatus = "M";
-		if (isEnableSysMgt||canHandover) {
-			systemListener.start();
-			if (systemSession != null) {
-				ModuleRegisterAck ack = sysFactory.moduleRegisterInDetail();
-	        	if(ack!=null){
-	        		String dbstatusStr = ack.getDbStatus();
-	        		dbstatus = DatabaseStatus.get(dbstatusStr);
-	        		redisStatus = ack.getRedisStatus();
-	        	}else{
-	        		log.warn("startService failed due to module register!");
-	        	}
-			}
-		}
 		gmmsUtility.initRedisClient(redisStatus);
+		statusReporter = ModuleStatusReporter.start(gmmsUtility, "mqm", System.getProperty("module", "MsgQueueMonitor"),
+				gmmsUtility.getNodeId());
 		gmmsUtility.initDBManager(dbstatus);		
 		gmmsUtility.initCDRManager();
 		
@@ -88,10 +68,10 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 	public boolean stopService() {
 		if (isEnableSysMgt||canHandover) {
 			beforeStop();
-			systemListener.stop();
-			if (systemSession != null) {
-				systemSession.shutdown();
-			}
+		}
+		if (statusReporter != null) {
+			statusReporter.stop();
+			statusReporter = null;
 		}
 		return true;
 	}
@@ -126,17 +106,6 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 
 	private void startTaskTimers() {
 		TaskHolder.init();
-		if (this.isEnableSysMgt) {
-			boolean applyOk = false;
-			do {
-				try {
-					applyOk = this.systemSession.applyDBSession();
-					Thread.sleep(5 * 1000);
-				} catch (Exception e) {
-					log.warn(e, e);
-				}
-			} while (!applyOk);
-		}
 		ArrayList<String> tables = TaskHolder.getTables();
 		for (String table : tables) {
 			TaskExecutor taskExecutor = new TaskExecutor(table);
@@ -203,8 +172,5 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 	 * send stop request
 	 */
 	public void beforeStop() {
-		if (this.isEnableSysMgt||canHandover) {
-			systemSession.moduleStop();
-		}
 	}
 }

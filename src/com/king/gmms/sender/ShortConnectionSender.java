@@ -67,6 +67,7 @@ public class ShortConnectionSender extends Sender {
 			log.trace(msg, msg.toString());
 		}
 
+		boolean completed = false;
 		try {
 			while (cInfo.getOutgoingThrottlingNum() > 0
 					&& !ThrottlingControl.getInstance().isAllowedToSend(ssid)) {
@@ -82,22 +83,53 @@ public class ShortConnectionSender extends Sender {
 				if(log.isInfoEnabled()){
 					log.info(msg, "Can't get available session.");
 				}
-				processor.logFail(msg);
+				completed = produceFailureResult(msg);
 			} else {
-				if (!sendMessage(session, msg)) {
-					processor.logFail(msg);
+				completed = sendMessage(session, msg);
+				if (!completed) {
+					completed = produceFailureResult(msg);
 				}
 			} // end of else
 		} catch (Exception ex) {
 			log.error(ex, ex);
+			completed = produceFailureResult(msg);
 		} finally {
-			// V4.1 Late ACK: Confirm completion to Redis after sending and reporting result
-			com.king.gmms.messagequeue.StreamQueueManager.getInstance().ack(
-					com.king.gmms.messagequeue.StreamQueueManager.STR_OUTBOUND_HTTP, 
-					"cg_http_clients", 
-					msg, 
-					true);
+			if (completed) {
+				// V4.1 Late ACK: Confirm completion to Redis after sending and reporting result
+				com.king.gmms.messagequeue.StreamQueueManager.getInstance().ack(
+						com.king.gmms.messagequeue.StreamQueueManager.STR_OUTBOUND_HTTP, 
+						"cg_http_clients", 
+						msg, 
+						true);
+			} else {
+				log.warn(msg, "HTTP task was not completed, keep pending for auto-claim.");
+			}
 		}
+	}
+
+	private boolean produceFailureResult(GmmsMessage msg) {
+		if (msg == null) {
+			return true;
+		}
+		String messageType = msg.getMessageType();
+		if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(messageType)
+				|| GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(messageType)) {
+			msg.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT_RESP);
+			msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
+		} else if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(messageType)) {
+			msg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP);
+			msg.setStatusCode(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT.getCode());
+		} else if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT_QUERY.equalsIgnoreCase(messageType)) {
+			msg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT_QUERY_RESP);
+			msg.setStatus(GmmsStatus.FAIL_QUERY_DELIVERREPORT);
+		} else if (GmmsMessage.MSG_TYPE_SUBMIT_RESP.equalsIgnoreCase(messageType)
+				|| GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP.equalsIgnoreCase(messageType)
+				|| GmmsMessage.MSG_TYPE_DELIVERY_REPORT_QUERY_RESP.equalsIgnoreCase(messageType)) {
+			// keep the response type/status produced by the HTTP session
+		} else {
+			msg.setStatus(GmmsStatus.UNKNOWN_ERROR);
+		}
+		return com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceResult(msg);
 	}
 
 	/**

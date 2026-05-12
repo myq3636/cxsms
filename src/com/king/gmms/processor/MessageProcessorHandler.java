@@ -7,17 +7,11 @@ import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.ModuleManager;
-import com.king.gmms.sender.CorePrioritrySender;
-import com.king.gmms.sender.CustomerMessageSender;
-import com.king.gmms.sender.PrioritrySender;
 import com.king.gmms.threadpool.ProcessorHandler;
 import com.king.gmms.threadpool.ThreadPoolProfile;
 import com.king.gmms.threadpool.ThreadPoolProfileBuilder;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
-import com.king.redis.SerializableHandler;
-import com.king.gmms.metrics.MetricsCollector;
-import com.king.gmms.messagequeue.ResultStreamConsumer;
 
 public class MessageProcessorHandler extends ProcessorHandler{
 	
@@ -26,9 +20,7 @@ public class MessageProcessorHandler extends ProcessorHandler{
     private static SystemLogger log = SystemLogger.getSystemLogger(MessageProcessorHandler.class);
     private GmmsUtility gmmsUtility = null;
     private volatile boolean initialization = false;
-    private ExecutorService priorityThreadPool;
 	private String moduleName; 
-	private ResultStreamConsumer resultConsumer = null;
 
 	private MessageProcessorHandler(){
         try {
@@ -43,18 +35,7 @@ public class MessageProcessorHandler extends ProcessorHandler{
 	                                         .poolSize(minProcessorNum).maxPoolSize(maxProcessorNum)
 	                                         .maxQueueSize(workQueueSize).needSafeExit(true).build();
 	        handlerThreadPool = gmmsUtility.getExecutorServiceManager().newExpiredThreadPool(this, "MessageProcessorThread", profile, this, queueTimeout);
-	        int coreProcessorNum = Integer.parseInt(gmmsUtility.getFullModuleTypeProperty("CorePriorityMessageProcessorNumber", "1").trim());
-	        priorityThreadPool = gmmsUtility.getExecutorServiceManager().newFixedThreadPool(this, "CorePriority_processer", coreProcessorNum);
 	        moduleName = System.getProperty("module");
-	        if (ModuleManager.getInstance().getRouterModules().contains(moduleName)) {
-	        	for (int i = 0; i < coreProcessorNum; i++) {
-	        		priorityThreadPool.execute(new CorePrioritrySender(handlerThreadPool, moduleName));
-				}	
-	        	
-	        	// V4.1 Initialize and start the Redis results consumer for Core
-	        	resultConsumer = new ResultStreamConsumer();
-	        	resultConsumer.start();
-			}	        
 	        
 		} catch (Exception e) {
 			log.error(e, e);
@@ -90,7 +71,6 @@ public class MessageProcessorHandler extends ProcessorHandler{
 		if(message == null){
 			return ret;
 		}
-		MetricsCollector.getInstance().incrementCounter("processor.putMsg.total");
 		try {
 			A2PCustomerInfo cst = gmmsUtility.getCustomerManager().getCustomerBySSID(message.getRSsID());
 			A2PCustomerInfo oInfo = gmmsUtility.getCustomerManager().getCustomerBySSID(message.getOSsID());
@@ -139,14 +119,8 @@ public class MessageProcessorHandler extends ProcessorHandler{
 							message.setFakeDR(false);
 						}
 					}					
-					String msgSeri = SerializableHandler.convertGmmsMessage2RedisMessageForCorePriority(message);
-					String key = "CorePriority_processer_"+moduleName+"_"+cst.getSSID()+"_"+priority;
-					gmmsUtility.getRedisClient().asyncLpush(key, msgSeri);
-					MetricsCollector.getInstance().incrementCounter("processor.putMsg.corePriority");
-					log.debug(message, "put message to redis queue");
-					/*if (((ThreadPoolExecutor)priorityThreadPool).getActiveCount()==0) {
-						priorityThreadPool.execute(new PrioritrySender(senderThreadPool, cst, connectionManager, moduleName));
-					}*/
+					handlerThreadPool.execute(new MessageProcessorThread(message));
+					log.debug(message, "core priority list bypassed, put message to MessageProcessorThread");
 				}else {
 					if(GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(message.getMessageType()) 
 							&& (oInfo.isSmsOptionSendDRByInSubmitInCU()||oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress()))
@@ -174,7 +148,6 @@ public class MessageProcessorHandler extends ProcessorHandler{
 			if (log.isInfoEnabled()) {
 				log.info("putMsg exception: ", e);
 			}
-			MetricsCollector.getInstance().incrementCounter("processor.putMsg.error");
 			ret = false;
 		}
 		return ret;

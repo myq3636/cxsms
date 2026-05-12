@@ -55,8 +55,7 @@ public class CommonRESTHttpDRServlet extends AbstractHttpServer {
 					for (int i = 0; i < alSsid.size(); i++) {
 						int ssid = alSsid.get(i);
 						
-						// V4.0 Async Routing: Register SSID for DR support
-						com.king.gmms.messagequeue.DRStreamConsumer.getInstance().registerSSID(ssid);
+						// V5.0: DRStreamConsumer uses Doorbell pattern, no registerSSID needed
 						
 						if (ctm.inCurrentA2P(ctm.getConnectedRelay(ssid,
 								GmmsMessage.AIC_MSG_TYPE_TEXT))) {
@@ -203,6 +202,62 @@ public class CommonRESTHttpDRServlet extends AbstractHttpServer {
 				o.write(respContent.getBytes());
 			}
 			o.flush();
+		} catch (Exception e) {
+			log.error(e, e);
+		} finally {
+			if (o != null) {
+				o.close();
+			}
+		}
+
+	}
+	
+	public void response(String interfaceName, HttpStatus hs, GmmsMessage msg,
+			HttpServletResponse response,
+			RESTServletResponseParameter servletParameter)
+			throws ServletException, IOException {
+		int ssid = msg.getRSsID();
+
+		A2PCustomerInfo cst = ctm.getCustomerBySSID(ssid);
+
+		HttpInterface hi = him.getHttpInterfaceMap().get(interfaceName);
+		HttpPdu drResp = hi.getMtDRResponse();
+		String respContent = null;
+		if (drResp.hasHandlerClass()) {
+			String className = drResp.getHandlerClass();
+			Object[] args = { hs, msg, cst };
+			respContent = (String) hi.invokeHandler(className,
+					HttpConstants.HANDLER_METHOD_MAKERESPONSE, args);
+			if (log.isDebugEnabled()) {
+				log.debug(msg, "Invoke handlerclass {}'s method:{}", className,
+						HttpConstants.HANDLER_METHOD_MAKERESPONSE);
+			}
+		} else {
+			CommonDeliveryReportRESTXmlHttpHandler commonDRHandler = hi
+					.getCommonDeliveryReportRESTXmlHandler();
+			respContent = commonDRHandler.makeResponse(hs, msg, cst);
+		}
+
+		if (log.isInfoEnabled()) {
+			log.info(msg, "send dr response {}", respContent);
+		}
+
+		if (respContent == null) {
+			response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+		}
+
+		OutputStream o = null;
+		try {
+			o = response.getOutputStream();
+			o.write(respContent.getBytes());
+			o.flush();
+
+			msg.setMessageType(GmmsMessage.MSG_TYPE_INNER_ACK);
+			putGmmsMessage2RouterQueue(msg);
+
+			synchronized (servletParameter) {
+				servletParameter.notifyAll();
+			}
 		} catch (Exception e) {
 			log.error(e, e);
 		} finally {

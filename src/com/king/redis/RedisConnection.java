@@ -1,14 +1,15 @@
 package com.king.redis;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.LinkedHashSet;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
-import redis.clients.jedis.JedisPoolConfig;
 import redis.clients.jedis.Pipeline;
 import redis.clients.jedis.Protocol;
 import redis.clients.jedis.Response;
@@ -20,6 +21,8 @@ import redis.clients.jedis.params.XReadGroupParams;
 import redis.clients.jedis.params.ZRangeParams;
 import redis.clients.jedis.resps.StreamEntry;
 import redis.clients.jedis.resps.StreamPendingSummary;
+
+import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 
 import com.king.framework.SystemLogger;
 import com.king.redis.RedisConnection.RedisTask;
@@ -70,14 +73,75 @@ public class RedisConnection {
 		STOCK_LUA = sb.toString();
 	}
 
-	public RedisConnection(JedisPoolConfig config, String host, int port,
+	public RedisConnection(GenericObjectPoolConfig<Jedis> config, String host, int port,
 			boolean isAuth, String pwd) {
-		if (isAuth) {
-			pool = new JedisPool(config, host, port, Protocol.DEFAULT_TIMEOUT,
-					pwd);
-		} else {
+		this(config, host, port, isAuth, pwd, Protocol.DEFAULT_TIMEOUT);
+	}
 
-			pool = new JedisPool(config, host, port);
+	public RedisConnection(GenericObjectPoolConfig<Jedis> config, String host, int port,
+			boolean isAuth, String pwd, int timeoutMs) {
+		long start = System.currentTimeMillis();
+		AtomicBoolean poolCreated = new AtomicBoolean(false);
+		startPoolCreateWatchdog(Thread.currentThread(), poolCreated, host, port);
+		logger.info("JedisPool create start. host={}, port={}, auth={}, timeoutMs={}, jedisJar={}, commonsPoolJar={}",
+				host, port, isAuth, timeoutMs, getCodeLocation(JedisPool.class),
+				getCodeLocation(org.apache.commons.pool2.impl.GenericObjectPool.class));
+		try {
+			if (isAuth) {
+				pool = new JedisPool(config, host, port, timeoutMs, pwd);
+			} else {
+				pool = new JedisPool(config, host, port, timeoutMs);
+			}
+		} catch (Throwable t) {
+			poolCreated.set(true);
+			logger.error("JedisPool create failed. host={}, port={}, auth={}, timeoutMs={}, costMs={}, jedisJar={}, commonsPoolJar={}",
+					host, port, isAuth, timeoutMs, System.currentTimeMillis() - start,
+					getCodeLocation(JedisPool.class),
+					getCodeLocation(org.apache.commons.pool2.impl.GenericObjectPool.class), t);
+			if (t instanceof Error) {
+				throw (Error) t;
+			}
+			if (t instanceof RuntimeException) {
+				throw (RuntimeException) t;
+			}
+			throw new RuntimeException(t);
+		}
+		poolCreated.set(true);
+		logger.info("JedisPool create finished. host={}, port={}, costMs={}",
+				host, port, System.currentTimeMillis() - start);
+	}
+
+	private static void startPoolCreateWatchdog(final Thread targetThread, final AtomicBoolean poolCreated,
+			final String host, final int port) {
+		Thread watchdog = new Thread(() -> {
+			try {
+				Thread.sleep(10000L);
+				if (poolCreated.get()) {
+					return;
+				}
+				StringBuilder stack = new StringBuilder();
+				StackTraceElement[] trace = targetThread.getStackTrace();
+				for (int i = 0; i < trace.length; i++) {
+					stack.append("\n\tat ").append(trace[i]);
+				}
+				logger.error("JedisPool create still running after 10s. host={}, port={}, targetThread={}, state={}, stack={}",
+						host, port, targetThread.getName(), targetThread.getState(), stack.toString());
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			} catch (Exception e) {
+				logger.error("JedisPool create watchdog failed. host={}, port={}", host, port, e);
+			}
+		}, "JedisPoolCreateWatchdog-" + host + "-" + port);
+		watchdog.setDaemon(true);
+		watchdog.start();
+	}
+
+	private static String getCodeLocation(Class<?> clazz) {
+		try {
+			java.security.CodeSource codeSource = clazz.getProtectionDomain().getCodeSource();
+			return codeSource == null || codeSource.getLocation() == null ? "unknown" : codeSource.getLocation().toString();
+		} catch (Exception e) {
+			return "unknown:" + e.getMessage();
 		}
 	}
 
@@ -161,6 +225,36 @@ public class RedisConnection {
 		}
 	}
 
+	public boolean setPendingMessage(String key, String value, int expireTime,
+			String zsetKey, double score, String registryKey) {
+		try (Jedis jedis = pool.getResource()) {
+			Pipeline p = jedis.pipelined();
+			Response<String> setResp = p.setex(key, (long) expireTime, value);
+			p.zadd(zsetKey, score, key);
+			if (registryKey != null && registryKey.length() > 0) {
+				p.sadd(registryKey, zsetKey);
+			}
+			p.sync();
+			return setResp != null && "OK".equalsIgnoreCase(setResp.get());
+		} catch (Exception e) {
+			logger.error("setPendingMessage failed. key={}, zsetKey={}", key, zsetKey, e);
+			return false;
+		}
+	}
+
+	public String consumePendingMessage(String key, String zsetKey) {
+		String script = "local v=redis.call('GET',KEYS[1]);"
+				+ "if v then redis.call('DEL',KEYS[1]); redis.call('ZREM',KEYS[2],KEYS[1]); end;"
+				+ "return v";
+		try (Jedis jedis = pool.getResource()) {
+			Object value = jedis.eval(script, Arrays.asList(key, zsetKey), new ArrayList<String>());
+			return value == null ? null : value.toString();
+		} catch (Exception e) {
+			logger.error("consumePendingMessage failed. key={}, zsetKey={}", key, zsetKey, e);
+			return null;
+		}
+	}
+
 	/**
 	 * Set key to value only if key does not exist (atomic SETNX + EXPIRE).
 	 * Returns the existing value if key already exists, or null if this call set
@@ -196,6 +290,15 @@ public class RedisConnection {
 			jedis.expire(key, (long) time);
 		} catch (Exception e) {
 			logger.error("setExpired failed. key={}", key, e);
+		}
+	}
+
+	public Set<String> keys(String pattern) {
+		try (Jedis jedis = pool.getResource()) {
+			return jedis.keys(pattern);
+		} catch (Exception e) {
+			logger.error("keys failed. pattern={}", pattern, e);
+			return null;
 		}
 	}
 
@@ -418,7 +521,7 @@ public class RedisConnection {
 		}
 	}
 
-	public Set<String> zrange(String key, double start, double end) {
+	public Set<String> zrange(String key, long start, long end) {
 		try (Jedis jedis = pool.getResource()) {
 			// In Jedis 5, zrangeByScore is removed. Replacing with zrange(key, start, end).
 			// Adjust ZRangeParams as needed if this specific boundary doesn't match byScore accurately,
@@ -530,6 +633,26 @@ public class RedisConnection {
 			return true;
 		} catch (Exception e) {
 			logger.error("sadd failed. key={}", key, e);
+			return false;
+		}
+	}
+
+	public boolean sadd(String key, String value) {
+		try (Jedis jedis = pool.getResource()) {
+			jedis.sadd(key, value);
+			return true;
+		} catch (Exception e) {
+			logger.error("sadd failed. key={}, value={}", key, value, e);
+			return false;
+		}
+	}
+
+	public boolean srem(String key, String value) {
+		try (Jedis jedis = pool.getResource()) {
+			jedis.srem(key, value);
+			return true;
+		} catch (Exception e) {
+			logger.error("srem failed. key={}, value={}", key, value, e);
 			return false;
 		}
 	}
@@ -670,7 +793,7 @@ public class RedisConnection {
 	 */
 	public String xadd(String key, Map<String, String> hash, long maxLen) {
 		try (Jedis jedis = pool.getResource()) {
-			XAddParams params = new XAddParams().id(StreamEntryID.NEW_ENTRY).maxLen(maxLen).approximateTrimming(true);
+			XAddParams params = new XAddParams().id(StreamEntryID.NEW_ENTRY).maxLen(maxLen).approximateTrimming();
 			return jedis.xadd(key, hash, params).toString();
 		} catch (Exception e) {
 			logger.error("xadd failed. key={}", key, e);
@@ -689,8 +812,7 @@ public class RedisConnection {
 	 */
 	public boolean xgroupCreate(String key, String groupName, boolean mkStream) {
 		try (Jedis jedis = pool.getResource()) {
-			// 从头部(0-0)或尾部($)开始消费。这里用 LAST_ENTRY ($)
-			jedis.xgroupCreate(key, groupName, StreamEntryID.LAST_ENTRY, mkStream);
+			jedis.xgroupCreate(key, groupName, new StreamEntryID("0-0"), mkStream);
 			return true;
 		} catch (Exception e) {
 			// 忽略消费组已存在的异常：BUSYGROUP Consumer Group name already exists
@@ -721,6 +843,15 @@ public class RedisConnection {
 		} catch (Exception e) {
 			logger.error("xreadGroup failed. group={}, consumer={}", groupName, consumerName, e);
 			return null;
+		}
+	}
+
+	public Long xdel(String key, StreamEntryID... ids) {
+		try (Jedis jedis = pool.getResource()) {
+			return jedis.xdel(key, ids);
+		} catch (Exception e) {
+			logger.error("xdel failed. key={}", key, e);
+			return 0L;
 		}
 	}
 
@@ -785,10 +916,101 @@ public class RedisConnection {
 	public java.util.List<StreamEntry> transferOwnership(String key, String group, String consumer, long minIdleMs, StreamEntryID... ids) {
 		try (Jedis jedis = pool.getResource()) {
 			XClaimParams params = new XClaimParams().idle(minIdleMs);
-			return jedis.xclaim(key, group, consumer, params, ids);
+			return jedis.xclaim(key, group, consumer, minIdleMs, params, ids);
 		} catch (Exception e) {
 			logger.error("transferOwnership failed. key={}, group={}", key, group, e);
 			return null;
+		}
+	}
+
+	// =========================================================================
+	// V5.0 新增: Doorbell 模式支持方法 (ZSet 门铃 + Stream 长度查询)
+	// =========================================================================
+
+	/**
+	 * 从 Sorted Set 弹出 Score 最小的元素 (ZPOPMIN)
+	 * 用于 Doorbell 模式：Dispatcher 从门铃 ZSet 弹出最早有数据的 Stream Key
+	 *
+	 * @param key ZSet 门铃键名
+	 * @return 弹出的元素及其 Score，若 ZSet 为空则返回 null
+	 */
+	public java.util.List<redis.clients.jedis.resps.Tuple> zpopmin(String key) {
+		try (Jedis jedis = pool.getResource()) {
+			return jedis.zpopmin(key, 1);
+		} catch (Exception e) {
+			logger.error("zpopmin failed. key={}", key, e);
+			return null;
+		}
+	}
+
+	/**
+	 * 向 Sorted Set 添加元素 (ZADD)
+	 * 用于 Doorbell 模式：
+	 * - 生产者写完消息后注册活跃 Stream
+	 * - Dispatcher 将非本节点的条目放回
+	 *
+	 * @param key    ZSet 键名
+	 * @param score  分数 (通常为时间戳)
+	 * @param member 成员 (Stream Key 名)
+	 * @return 新增的元素个数
+	 */
+	public Long zadd(String key, double score, String member) {
+		try (Jedis jedis = pool.getResource()) {
+			return jedis.zadd(key, score, member);
+		} catch (Exception e) {
+			logger.error("zadd failed. key={}, member={}", key, member, e);
+			return 0L;
+		}
+	}
+
+	public java.util.Set<String> zrangeDoorbell(String key, long start, long end) {
+		try (Jedis jedis = pool.getResource()) {
+			return new java.util.LinkedHashSet<String>(jedis.zrange(key, start, end));
+		} catch (Exception e) {
+			logger.error("zrangeDoorbell failed. key={}", key, e);
+			return null;
+		}
+	}
+
+	public Long zremDoorbell(String key, String member) {
+		try (Jedis jedis = pool.getResource()) {
+			return jedis.zrem(key, member);
+		} catch (Exception e) {
+			logger.error("zremDoorbell failed. key={}, member={}", key, member, e);
+			return 0L;
+		}
+	}
+
+	/**
+	 * 获取 Stream 队列长度 (XLEN)
+	 * 用于 Worker 退出后检查是否还有剩余数据需要重新按门铃
+	 *
+	 * @param key Stream 队列名称
+	 * @return Stream 中的消息数量
+	 */
+	public long xlen(String key) {
+		try (Jedis jedis = pool.getResource()) {
+			return jedis.xlen(key);
+		} catch (Exception e) {
+			logger.error("xlen failed. key={}", key, e);
+			return 0L;
+		}
+	}
+
+	public void subscribe(redis.clients.jedis.JedisPubSub pubSub, String... channels) {
+		try (Jedis jedis = pool.getResource()) {
+			jedis.subscribe(pubSub, channels);
+		} catch (Exception e) {
+			logger.error("subscribe failed. channels={}", (Object) channels, e);
+		}
+	}
+
+	public Long publish(String channel, String message) {
+		try (Jedis jedis = pool.getResource()) {
+			return jedis.publish(channel, message);
+		} catch (Exception e) {
+			logger.error("publish failed. channel={}, message={}", channel, message, e);
+			return 0L;
 		}
 	}
 

@@ -22,6 +22,7 @@ import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.customerconnectionfactory.MultiSmppServerFactory;
 import com.king.gmms.messagequeue.StreamQueueManager;
 import com.king.gmms.routing.ADSServerMonitor;
+import com.king.gmms.domain.A2PCustomerManager;
 import com.king.gmms.domain.A2PMultiConnectionInfo;
 import com.king.gmms.domain.ConnectionInfo;
 import com.king.gmms.domain.ModuleManager;
@@ -29,11 +30,6 @@ import com.king.gmms.domain.MultiNodeCustomerInfo;
 import com.king.gmms.domain.SingleNodeCustomerInfo;
 import com.king.gmms.ha.ModuleURI;
 import com.king.gmms.ha.TransactionURI;
-import com.king.gmms.ha.systemmanagement.SystemSession;
-import com.king.gmms.ha.systemmanagement.SystemSessionFactory;
-import com.king.gmms.ha.systemmanagement.pdu.InBindAck;
-import com.king.gmms.ha.systemmanagement.pdu.OutBindAck;
-import com.king.gmms.ha.systemmanagement.pdu.SystemPdu;
 import com.king.gmms.messagequeue.OperatorMessageQueue;
 import com.king.gmms.protocol.smpp.MultiSmppPduProcessor;
 import com.king.gmms.protocol.smpp.Smpp;
@@ -60,6 +56,9 @@ import com.king.gmms.protocol.smpp.version.SMPPVersion;
 import com.king.gmms.strategy.StrategyType;
 import com.king.gmms.throttle.ThrottlingControl;
 import com.king.gmms.util.SystemConstants;
+import com.king.gmms.smpp.pending.PendingSubmitEntry;
+import com.king.gmms.smpp.pending.SmppPendingSubmitManager;
+import com.king.gmms.smpp.pending.PendingSubmitTimeoutHandler;
 import com.king.message.gmms.ExceptionMessageManager;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
@@ -81,7 +80,7 @@ import com.king.gmms.metrics.SmppPduLogger;
  * @author not attributable
  * @version 1.0
  */
-public class MultiSmppSession extends AbstractCommonSession {
+public class MultiSmppSession extends AbstractCommonSession implements PendingSubmitTimeoutHandler {
     private static SystemLogger log = SystemLogger.getSystemLogger(MultiSmppSession.class);
     private static final SmppPduLogger pduLogger = SmppPduLogger.getInstance();
     protected String gmmsSystemID = "AicGMMSServer";
@@ -93,13 +92,10 @@ public class MultiSmppSession extends AbstractCommonSession {
     protected Integer activeTestCount = 0;
     protected MultiSmppPduProcessor processor;
     protected Unprocessed unprocessed = new Unprocessed();
-    protected SystemSession sysSession = null;
-    protected SystemSessionFactory sysSessionFactory =null;
-    protected SystemPdu msgResponse = null;
-    protected boolean isEnableSysMgt = false;
     protected InternalAgentConnectionFactory agentFactory = null;
     protected MessageIdGenerator messageIdGenerator = MessageIdGenerator.getInstance();
     protected ExceptionMessageManager exMsgManager = ExceptionMessageManager.getInstance();
+    protected SmppPendingSubmitManager pendingSubmitManager = null;
     
     //construct for server
     public MultiSmppSession(Socket socket) {
@@ -112,14 +108,9 @@ public class MultiSmppSession extends AbstractCommonSession {
         smpp = new Smpp();
         processor = new MultiSmppPduProcessor();
         transaction = new TransactionURI();
-        isEnableSysMgt = gmmsUtility.isSystemManageEnable();
         try {
             if (socket != null) {
                 createConnection(socket);
-            }
-            if(isEnableSysMgt){
-            	sysSessionFactory = SystemSessionFactory.getInstance();
-            	sysSession = sysSessionFactory.getSystemSessionForFunction();
             }
             ip = socket.getInetAddress().getHostAddress();
         }
@@ -147,7 +138,6 @@ public class MultiSmppSession extends AbstractCommonSession {
         smpp = new Smpp();
         try {
             isServer = false;
-            isEnableSysMgt = gmmsUtility.isSystemManageEnable();
             int buffersize = Integer.parseInt(gmmsUtility.getCommonProperty("ReadBuffersize", "10240"));
             this.setBuffersize(buffersize);
             bindOption = info.getBindMode();
@@ -164,15 +154,13 @@ public class MultiSmppSession extends AbstractCommonSession {
             intialize(info, customerInfo);
             super.initReceivers();
             transaction = new TransactionURI(connectionInfo.getConnectionName());
+            pendingSubmitManager = new SmppPendingSubmitManager(buildPendingSubmitSessionKey(),
+                    customerInfo.getWindowSize(), customerInfo.getBufferTimeout(), this);
             initialVersion();
             processor = new MultiSmppPduProcessor(this);
             startBufferMonitor(customerInfo);
             if(customerInfo.isEnableGuavaBuffer()) {
             	startGuavaCache(customerInfo);
-            }            
-            if(isEnableSysMgt){
-            	sysSessionFactory = SystemSessionFactory.getInstance();
-            	sysSession = sysSessionFactory.getSystemSessionForFunction();
             }
             
             agentFactory = InternalAgentConnectionFactory.getInstance();
@@ -200,6 +188,13 @@ public class MultiSmppSession extends AbstractCommonSession {
         return this.smppVersion;
     }
 
+    private String buildPendingSubmitSessionKey() {
+        String module = System.getProperty("module", "");
+        String ssid = customerInfo == null ? "0" : Integer.toString(customerInfo.getSSID());
+        String connectionName = connectionInfo == null ? sessionName : connectionInfo.getConnectionName();
+        return module + ":" + ssid + ":" + connectionName + ":" + sessionNum;
+    }
+
     public void setSessionThread(SessionThread thread) {
         this.sessionThread = thread;
     }
@@ -219,26 +214,6 @@ public class MultiSmppSession extends AbstractCommonSession {
         	log.warn("MultiSmppSession is already binded. And the current session number is {}",getSessionNum());
             return true;
         }
-        int ssid = customerInfo.getSSID();
-        int applySuccess = 0;// applyNewSession();
-        if(applySuccess!=0){
-        	if(applySuccess==3){
-        		log.warn("ssid: {} applyNewSession failed!", ssid);
-        	}
-        	else if(applySuccess == 2){
-        		if(log.isDebugEnabled()){
-        			log.debug("ssid: {} The session number reach to max limitation, no need to setup the new session", ssid);
-        		}
-        	}else{
-        		log.warn("ssid: {} System management refuses the connection and now there are {} sessions in connection pool!", ssid,
-                        connectionManager.getSessionNum());
-        	}
-            if(isEnableSysMgt && applySuccess==1){
-            	this.sysSession.outBindConfirm(false, msgResponse, ssid);
-            }
-            return false;
-        }
-        
 		Socket socket = new Socket();
 		try {
 			socket.connect(new InetSocketAddress(connectionInfo.getURL(),
@@ -251,9 +226,6 @@ public class MultiSmppSession extends AbstractCommonSession {
 			if (socket != null) {
 				socket.close();
 			}
-            if(isEnableSysMgt){
-            	this.sysSession.outBindConfirm(false, msgResponse, ssid);
-            }
 			throw e;
 		}
 		synchronized (mutex) {
@@ -271,14 +243,8 @@ public class MultiSmppSession extends AbstractCommonSession {
 			}
 			connection.open();
 		}catch(IOException ex){
-            if(isEnableSysMgt){
-            	this.sysSession.outBindConfirm(false, msgResponse, ssid);
-            }
 			throw ex;
 		}catch(Exception e){
-            if(isEnableSysMgt){
-            	this.sysSession.outBindConfirm(false, msgResponse, ssid);
-            }
             return false;
 		}
 		return true;
@@ -343,9 +309,6 @@ public class MultiSmppSession extends AbstractCommonSession {
             }
             if (response == null) {
                 log.warn("{} session bind request receive a null bindresponse ",this.bindOption);
-                if(isEnableSysMgt){
-                	this.sysSession.outBindConfirm(false, msgResponse, ssid);
-                }
                 return false;
             }
             else {
@@ -358,24 +321,15 @@ public class MultiSmppSession extends AbstractCommonSession {
                 sourceSysID = response.getSystemId();
                 log.warn("Bind to {} successfully.",connectionInfo.getUserName());
                 clearActiveTestCount();
-                if(isEnableSysMgt){
-                    this.sysSession.outBindConfirm(true, msgResponse, ssid);
-                }
                 return true;
             }
             else { //bind fail
                 log.warn("SMPP bind request REJECTED. Status code: {}", statusCode);
-                if(isEnableSysMgt){
-                    this.sysSession.outBindConfirm(false, msgResponse, ssid);
-                }
                 return false; // counter server rejects bind request, don't try it again.
             }
         }
         catch (Exception e) {
             log.error("SMPP session bind fail.",e);
-            if(isEnableSysMgt){
-            	this.sysSession.outBindConfirm(false, msgResponse, ssid);
-            }
             return false;
         }
     }
@@ -396,44 +350,6 @@ public class MultiSmppSession extends AbstractCommonSession {
         }
     }
     
-    /**
-     * apply new session</br>
-     * @return
-     * 0: success </br>
-     * 1: apply got response, but statusCode indicate failed or cm.cfg inconsistent </br>
-     * 2: session number reach to max limitation </br>
-     * 3: apply no response
-     */
-    protected int applyNewSession(){
-/*
-        if(isEnableSysMgt){
-        	if(connectionInfo.getSessionNum() > 0 && connectionManager != null){
-        		Connection connection = connectionManager.getConnection(connectionInfo.getConnectionName());
-        		if(connection != null){
-    				int sessionNum = connection.getSessionNum();
-    				if(sessionNum >= connectionInfo.getSessionNum()){
-    					return 2;
-    				}
-        		}
-        	}
-        	msgResponse = sysSession.applyNewSession(isServer, connectionInfo, this.transaction);
-        	if(msgResponse!=null){
-        		int responseCode = -1;
-        		if(isServer){
-        			responseCode = ((InBindAck)msgResponse).getResponseCode();
-        		}else{
-        			responseCode = ((OutBindAck)msgResponse).getResponseCode();
-        		}
-            	return responseCode;
-        	}else{
-        		return 3;
-        	}
-        }else{
-        	return 0;
-        }
-*/
-        return 0;
-    }
     /**
      * connectionUnavailable
      *
@@ -1133,14 +1049,9 @@ public class MultiSmppSession extends AbstractCommonSession {
                             }
                             else {
                                 bindResponse.setCommandStatus(Data.ESME_ROK);
-                                respond4Bind(bindResponse);
                                 setStatus(ConnectionStatus.CONNECT);
                                 
-                                // V4.0 Async Routing: Start listening for DRs for this SSID on this node
-                                com.king.gmms.messagequeue.DRStreamConsumer.getInstance().registerSSID(this.connectionInfo.getSsid());
-                                
-                                i = infos.size();
-                                break;
+                                // V5.0: DRStreamConsumer uses Doorbell pattern, no registerSSID needed
                             }
                             smpp.initSmppPara(cusInfo,this.connectionInfo);
                             startBufferMonitor(customerInfo);
@@ -1171,9 +1082,6 @@ public class MultiSmppSession extends AbstractCommonSession {
             log.warn("King System ID Length is invalid.", e);
         }
         this.respond4Bind(bindResponse);
-        if(this.isEnableSysMgt && (Data.ESME_ROK == bindResponse.getCommandStatus())){
-           this.sysSession.inBindConfirm(transaction,connInfo.getSsid(), 0);
-        }
         return result;
     }
 
@@ -1254,25 +1162,38 @@ public class MultiSmppSession extends AbstractCommonSession {
         		log.trace("processClientRequest request:{};transaction={}",request.debugString(),transaction);
         	}
         	GmmsMessage msg = processor.handleDeliver_SM4Client(request);
-            if(!putGmmsMessage2RouterQueue(msg)){
-                Response response = request.getResponse();
-                try{
-                    response.setCommandStatus(com.king.gmms.protocol.smpp.util.Data.ESME_RX_T_APPN);
-                    connection.send(response.getData().getBuffer());
-                }catch(Exception e){
-                	log.warn(msg,"Fail to send response");
+        	if (msg != null && GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(msg.getMessageType())) {
+                if (StreamQueueManager.getInstance().produceInboundDeliveryReport(msg)) {
+                	GmmsMessage respMsg = new GmmsMessage(msg);
+                	respMsg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP);
+                	sendDeliverSMRespWithoutInnerack(respMsg);
+                } else {
+                    sendDeliverSMErrorResp(request, msg);
                 }
-                if(log.isInfoEnabled()){
-					log.info(msg,"send response ok.");
+        	} else if (msg != null) {
+                msg.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT);
+                if (StreamQueueManager.getInstance().produceSubmitMessage(msg)) {
+                    sendDeliverSMRespWithoutInnerack(new GmmsMessage(msg));
+                } else {
+                    log.error(msg, "Failed to produce client DELIVER_SM to Redis Stream!");
+                    sendDeliverSMErrorResp(request, msg);
                 }
-            }else{
-            	//send response with out wait to dr response from core
-            	GmmsMessage respMsg = new GmmsMessage(msg);
-            	if(GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(msg.getMessageType())){
-            		respMsg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP);
-            	}            	
-            	sendDeliverSMRespWithoutInnerack(respMsg);
+            } else {
+                sendDeliverSMErrorResp(request, msg);
             }
+        }
+    }
+
+    private void sendDeliverSMErrorResp(Request request, GmmsMessage msg) {
+        Response response = request.getResponse();
+        try{
+            response.setCommandStatus(com.king.gmms.protocol.smpp.util.Data.ESME_RX_T_APPN);
+            connection.send(response.getData().getBuffer());
+        }catch(Exception e){
+        	log.warn(msg,"Fail to send response");
+        }
+        if(log.isInfoEnabled()){
+			log.info(msg,"send response ok.");
         }
     }
 
@@ -1321,6 +1242,10 @@ public class MultiSmppSession extends AbstractCommonSession {
             handleSubmit_SM_Resp(response);
         }
         else if (commandId == Data.DELIVER_SM_RESP) {
+            if (log.isInfoEnabled()) {
+                log.info("SMPP {} session receives DELIVER_SM_RESP, sequence={}",
+                        isServer ? "server" : "client", response.getSequenceNumber());
+            }
             handleDeliver_SM_Resp(response);
         }
         else {
@@ -1336,9 +1261,13 @@ public class MultiSmppSession extends AbstractCommonSession {
         if (bufferedMsg != null) {
             processor.handleDeliver_SM_Resp( (DeliverSMResp) response,
                                             bufferedMsg);
-            if(!putGmmsMessage2RouterQueue(bufferedMsg)){
-            	log.warn("Can't put the message into message queue of agent, sequence={}" ,
+            // V5.0: DR Response 通过 Redis Stream 回传 Core，完成解耦闭环
+            if (!com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceResult(bufferedMsg)) {
+            	log.error(bufferedMsg, "Failed to produce DR_RESP to stream:core:results, sequence={}",
                         Integer.toString(sequence));
+            } else if (log.isInfoEnabled()) {
+                log.info(bufferedMsg, "Produced DR_RESP to stream:core:results from {} session, sequence={}",
+                        isServer ? "server" : "client", Integer.toString(sequence));
             }
         }
         else {
@@ -1365,26 +1294,40 @@ public class MultiSmppSession extends AbstractCommonSession {
 
     private void handleSubmit_SM_Resp(Response response) {
         Integer sequence = response.getSequenceNumber();
+        String sequenceKey = Integer.toString(sequence);
         GmmsMessage bufferedMsg = null;
-        if(customerInfo.isEnableGuavaBuffer()) {
-        	bufferedMsg = guavaCache.get(Integer.toString(sequence));
-        }else {
-        	bufferedMsg = bufferMonitor.remove(Integer.toString(sequence));
+        PendingSubmitEntry pendingEntry = pendingSubmitManager == null ? null : pendingSubmitManager.get(sequenceKey);
+        if (pendingEntry != null) {
+            bufferedMsg = pendingEntry.getMessage();
+        }
+        if (bufferedMsg == null) {
+	        if(customerInfo.isEnableGuavaBuffer() && guavaCache != null) {
+	        	bufferedMsg = guavaCache.get(sequenceKey);
+	        }else if (bufferMonitor != null) {
+	        	bufferedMsg = bufferMonitor.remove(sequenceKey);
+	        }
         }
         if (bufferedMsg != null) {
             processor.handleSubmit_SM_Resp( (SubmitSMResp) response,
                                            bufferedMsg);
-            if(!putGmmsMessage2RouterQueue(bufferedMsg)){
-            	log.warn("Can't put the message into message queue of agent, sequence={}" ,
-                        Integer.toString(sequence));
+            if(StreamQueueManager.getInstance().produceResult(bufferedMsg)){
+                if (pendingSubmitManager != null && pendingEntry != null) {
+                    pendingSubmitManager.remove(sequenceKey);
+                }
+            } else {
+            	log.error(bufferedMsg, "Failed to produce SUBMIT_RESP to stream:core:results, sequence={}" ,
+                        sequenceKey);
+                if (pendingSubmitManager != null && pendingEntry != null) {
+                    pendingSubmitManager.markResultPending(sequenceKey, bufferedMsg);
+                }
             }
         } else {
             log.warn("Can't find the original message from bufferMonitor, sequence={}",
-                Integer.toString(sequence));
+                sequenceKey);
             
             GmmsMessage msg = new GmmsMessage();
             //no matter in_dr_response or out_submit_response, log sequenceNum into OutTransID, ssid into rssid.
-            msg.setOutTransID(Integer.toString(sequence)); 
+            msg.setOutTransID(sequenceKey); 
             msg.setMessageType("response");
             msg.setRSsID(this.customerInfo.getSSID());            
             String dc_Name = this.customerInfo.getShortName();
@@ -1429,15 +1372,11 @@ public class MultiSmppSession extends AbstractCommonSession {
                 	if(log.isInfoEnabled()){
                 		log.info("SMSCSession stopping and TransactionURI is:{}" , getTransactionURI());
                 	}
-                	if(this.isEnableSysMgt){
-                		if(connectionInfo == null){
-                			if(log.isDebugEnabled()){
-                        		log.debug("connectionInfo==null when stopSession.");
-                			}
-                    	}else{
-                    		this.sysSession.clearSession(this.connectionInfo,this.transaction);
-                    	}
-                	}
+                }
+
+                if (pendingSubmitManager != null) {
+                    pendingSubmitManager.shutdown(true, "session_stop");
+                    pendingSubmitManager = null;
                 }
                 
                 if(isServer){
@@ -1479,22 +1418,14 @@ public class MultiSmppSession extends AbstractCommonSession {
             }
             keepRunning = false;
             try {
-            	if(this.isEnableSysMgt 
-                		&& (ConnectionStatus.CONNECT.equals(status)
-                			||ConnectionStatus.RETRY.equals(status)
-                			||ConnectionStatus.RECOVER.equals(status))){
-            		if(connectionInfo == null){
-            			if(log.isDebugEnabled()){
-                    		log.debug("connectionInfo==null when stopSession.");
-            			}
-                	}else{
-                		this.sysSession.clearSession(this.connectionInfo,this.transaction);
-                	}
-            	}
-            	
             	if (executorServiceManager != null) {
     				executorServiceManager.shutdown(receiverThreadPool);
     			}
+
+            	if (pendingSubmitManager != null) {
+                    pendingSubmitManager.shutdown(true, "session_destroy");
+                    pendingSubmitManager = null;
+                }
             	
             	if (sessionThread != null) {
                     sessionThread.stopThread();
@@ -1624,7 +1555,6 @@ public class MultiSmppSession extends AbstractCommonSession {
 
         boolean result = false;
         String key = null;
-        boolean isEnableGuavaBuffer = customerInfo.isEnableGuavaBuffer();
         try {
             SubmitSM request = null;
             // ***** try to create a SMPP SubmitSM PDU *****
@@ -1644,12 +1574,11 @@ public class MultiSmppSession extends AbstractCommonSession {
             key = Integer.toString(request.getSequenceNumber());            
             boolean isPutBuffer = false;
             while (isKeepRunning() && !isPutBuffer) {
-            	if(isEnableGuavaBuffer) {
-            		isPutBuffer = guavaCache.put(key, msg);
-            	}else {
-            		isPutBuffer = bufferMonitor.put(key, msg);
-            	}
-            	
+                if (pendingSubmitManager == null) {
+                    pendingSubmitManager = new SmppPendingSubmitManager(buildPendingSubmitSessionKey(),
+                            customerInfo.getWindowSize(), customerInfo.getBufferTimeout(), this);
+                }
+                isPutBuffer = pendingSubmitManager.put(key, msg);
             }
 
             if(isKeepRunning()){
@@ -1666,6 +1595,9 @@ public class MultiSmppSession extends AbstractCommonSession {
         }
         catch (IOException e) {
             log.error(msg, e, e);
+            if (pendingSubmitManager != null) {
+                pendingSubmitManager.remove(key);
+            }
             stop();
             result = false;
             throw e;
@@ -1677,11 +1609,9 @@ public class MultiSmppSession extends AbstractCommonSession {
         }finally{
             if(!result){
                 try {
-                	if(isEnableGuavaBuffer) {
-                		guavaCache.remove(key);
-                	}else {
-                		bufferMonitor.remove(key);
-                	}
+                    if (pendingSubmitManager != null) {
+                        pendingSubmitManager.remove(key);
+                    }
                 }
                 catch (Exception ex) {
 
@@ -1987,6 +1917,14 @@ public class MultiSmppSession extends AbstractCommonSession {
      *   method
      */
     public void timeout(Object obj, GmmsMessage msg) {
+        handleResponseTimeout(obj, msg);
+    }
+
+    public boolean timeoutPendingSubmit(Object obj, GmmsMessage msg) {
+        return handleResponseTimeout(obj, msg);
+    }
+
+    private boolean handleResponseTimeout(Object obj, GmmsMessage msg) {
         if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(msg.getMessageType())
 				|| GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(msg.getMessageType())) {
         	
@@ -2014,9 +1952,11 @@ public class MultiSmppSession extends AbstractCommonSession {
         if(log.isInfoEnabled()){
         	log.info(msg,"{} do not receive the response after timeout", msg.getMessageType());
         }
-        if(!putGmmsMessage2RouterQueue(msg)){
-        	log.warn(msg, "Failed to send {} msg.",msg.getMessageType());
+        if(!StreamQueueManager.getInstance().produceResult(msg)){
+        	log.warn(msg, "Failed to produce {} to stream:core:results.",msg.getMessageType());
+            return false;
         }
+        return true;
     }
 
     // DC name /

@@ -6,9 +6,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 
-import sun.util.logging.resources.logging;
-import java_cup.internal_error;
-
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.connectionpool.connection.ConnectionManager;

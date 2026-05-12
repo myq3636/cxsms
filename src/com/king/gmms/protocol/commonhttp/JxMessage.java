@@ -2,11 +2,6 @@ package com.king.gmms.protocol.commonhttp;
 
 import java.util.List;
 
-import javax.xml.bind.annotation.XmlAccessType;
-import javax.xml.bind.annotation.XmlAccessorType;
-import javax.xml.bind.annotation.XmlElement;
-import javax.xml.bind.annotation.XmlRootElement;
-import javax.xml.bind.annotation.XmlType;
 
 import com.alibaba.fastjson.annotation.JSONField;
 
@@ -16,13 +11,13 @@ import com.alibaba.fastjson.annotation.JSONField;
  *
  */
 
-@XmlRootElement(name="MESSAGES")  
-@XmlAccessorType(XmlAccessType.FIELD)  
+//@XmlRootElement(name="MESSAGES")  
+//@XmlAccessorType(XmlAccessType.FIELD)  
 public class JxMessage {
 	@JSONField(name = "AUTHENTICATION")
-	@XmlElement(required = true)
+	//@XmlElement(required = true)
 	private JxToken AUTHENTICATION;
-	@XmlElement(required = true)
+	//@XmlElement(required = true)
 	@JSONField(name = "MSG")
 	private List<JxSubMessage> MSG;
 	public JxToken getAUTHENTICATION() {

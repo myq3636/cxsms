@@ -12,16 +12,16 @@ package com.king.db;
  * @version 2.0
  */
 import java.io.FileInputStream;
+import java.sql.Connection;
+import java.sql.Statement;
 import java.util.Enumeration;
 import java.util.Hashtable;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Properties;
 import java.util.StringTokenizer;
 
-import org.hibernate.SessionFactory;
-import org.hibernate.cfg.Configuration;
-import org.hibernate.tool.hbm2ddl.SchemaExport;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 
 import com.king.framework.SystemLogger;
 
@@ -31,6 +31,7 @@ public class DataControl {
 	private static Hashtable dsConfigs;
 	private static Properties mprop;
 	private static Hashtable dataManagers = new Hashtable();
+	private static Hashtable dataSources = new Hashtable();
 	private static DataControl instance = new DataControl();
 	// private static DBMonitor dbMonitor;
 	private static DatabaseStatus dbStatus4Used = DatabaseStatus.MASTER_USED;
@@ -86,24 +87,31 @@ public class DataControl {
 			}
 			// load db status and set UsedDatabaseStatus to dataControl
 			dbStatus4Used = dbstatus;
-			createSessionFactories(dsConfigs);
+			log.info("DB access mode: {}", prop.getProperty("DB.AccessMode", "hikari").trim());
+			createDataManagers(dsConfigs);
+			String startupCheckValue = prop.getProperty("DB.StartupCheck", "false");
+			String startupCheckSql = prop.getProperty("DB.StartupCheckSql", "SELECT 1").trim();
+			boolean startupCheckEnabled = Boolean.parseBoolean(startupCheckValue.trim());
+			log.info("DB startup check config. enabled={}, rawValue={}, sql={}",
+					startupCheckEnabled, startupCheckValue, startupCheckSql);
+			if (startupCheckEnabled) {
+				startupCheck(startupCheckSql);
+			}
 			initialized = true;
 		}
 	}
 
-	private static void createSessionFactories(Hashtable dsConfigs)
+	private static void createDataManagers(Hashtable dsConfigs)
 			throws DataControlException {
 		String dsName;
 		DbObject dsConfig;
 		DataManager[] dms;
-		SessionFactory[] factories = null;
 		Enumeration dsNames = dsConfigs.keys();
 		while (dsNames.hasMoreElements()) {
 			dsName = (String) dsNames.nextElement();
 			if (dsName.startsWith("backup")) {
 				continue;
 			}
-			factories = new SessionFactory[2];
 			dsConfig = (DbObject) dsConfigs.get(dsName);
 			dms = dsConfig.getDataManagers();
 			if (dms == null) {
@@ -111,21 +119,9 @@ public class DataControl {
 						"No DataManager is configured to be associated with Data Source: "
 								+ dsName);
 			}
-			log.trace("start init master db.dsName={}", dsName);
-			if (DatabaseStatus.MASTER_USED.equals(dbStatus4Used)) {
-				factories[0] = getSessionFactory(dsConfig);
-			}
-			if (canHandover && DatabaseStatus.SLAVE_USED.equals(dbStatus4Used)) {
-				dsConfig = (DbObject) dsConfigs.get("backup" + dsName);
-				if (dsConfig != null) {
-					factories[1] = getSessionFactory(dsConfig);
-				}
-			}
+			log.trace("register db dataManager.dsName={}", dsName);
 			log.trace("dms.length={}", dms.length);
 			for (int i = 0; i < dms.length; i++) {
-				// associate datamanager with the corresponding session factory
-				log.trace("setSessionFactory for dataManager:{}", i);
-				dms[i].setSessionFactory(factories);
 				dms[i].setDsName(dsName);
 				// put data manager in a hashtable for relater retreval
 				dataManagers.put(dms[i].getClass().getName(), dms[i]);
@@ -134,69 +130,137 @@ public class DataControl {
 		}
 	}
 
-	public static SessionFactory getMasterSessionFactory(String dsName)
+	public static Connection getMasterConnection(String dsName)
 			throws DataControlException {
-		Enumeration dsNames = dsConfigs.keys();
-		DbObject dsConfig = (DbObject) dsConfigs.get(dsName);
-		DataManager[] dms = dsConfig.getDataManagers();
-		if (dms == null) {
-			throw new DataControlException(
-					"No DataManager is configured to be associated with Data Source: "
-							+ dsName);
-		}
-		return getSessionFactory(dsConfig);
+		return getConnection(dsName);
 	}
 
-	public static SessionFactory getSlaveSessionFactory(String dsName)
+	public static Connection getSlaveConnection(String dsName)
 			throws DataControlException {
-		DbObject dsConfig = (DbObject) dsConfigs.get("backup" + dsName);
-		return getSessionFactory(dsConfig);
+		return getConnection("backup" + dsName);
 	}
 
-	public static SessionFactory getSessionFactory(DbObject dsConfig) {
-		SessionFactory factory = null;
+	public static Connection getConnection(String dsName) throws DataControlException {
 		try {
-			Configuration config = (new Configuration()).setProperty(
-					"hibernate.connection.driver_class", dsConfig.getDriver())
-					.setProperty("hibernate.connection.url", dsConfig.getUrl())
-					.setProperty("hibernate.connection.username",
-							dsConfig.getUsername()).setProperty(
-							"hibernate.connection.password",
-							dsConfig.getPassword()).setProperty(
-							"hibernate.connection.provider_class", "org.hibernate.connection.C3P0ConnectionProvider"
-							).setProperty(
-							"hibernate.c3p0.min_size",
-							String.valueOf(dsConfig.getMinPoolSize()))
-					.setProperty("hibernate.c3p0.max_size",
-							String.valueOf(dsConfig.getMaxPoolSize()))
-					.setProperty("hibernate.c3p0.timeout",
-							String.valueOf(dsConfig.getTimeout())).setProperty(
-							"hibernate.c3p0.max_statements",
-							String.valueOf(dsConfig.getMaxStatement()))
-					.setProperty("hibernate.c3p0.idle_test_period",
-							String.valueOf(3000)).setProperty(
-							"hibernate.c3p0.unreturnedConnectionTimeout",
-							"180").setProperty(
-							"hibernate.c3p0.debugUnreturnedConnectionStackTraces",
-							"true").setProperty(
-							"hibernate.connection.autocommit", "false")
-					.setProperty("hibernate.dialect",
-							dsConfig.getHibernateDialect());
-			SchemaExport schemaExport = new SchemaExport(config);
-			schemaExport.create(false, true);
-			List l = schemaExport.getExceptions();
-			if (l.size() > 0) {
-				for (Object object : l) {
-					log.info("failed reason:{}", object);
-				}
-				log.info("buildSessionFactory failed!");
-				return null;
+			if (dsConfigs == null) {
+				throw new DataControlException("DataControl is not initialized.");
 			}
-			factory = config.buildSessionFactory();
-		} catch (Throwable t) {
-			log.info(t.getMessage());
+			DbObject dsConfig = (DbObject) dsConfigs.get(dsName);
+			if (dsConfig == null) {
+				throw new DataControlException("No DbObject found for " + dsName);
+			}
+			HikariDataSource dataSource = getDataSource(dsName, dsConfig);
+			return dataSource.getConnection();
+		} catch (DataControlException e) {
+			throw e;
+		} catch (Exception e) {
+			throw new DataControlException("Cannot get JDBC connection for " + dsName + ": " + e.getMessage(), e);
 		}
-		return factory;
+	}
+
+	public static void releaseConnection(String dsName, Connection connection) {
+		try {
+			if (connection != null) {
+				connection.close();
+			}
+		} catch (Exception e) {
+			log.warn("Close unmanaged JDBC connection failed. dsName={}", dsName, e);
+		}
+	}
+
+	private static synchronized HikariDataSource getDataSource(String dsName, DbObject dsConfig)
+			throws DataControlException {
+		HikariDataSource dataSource = (HikariDataSource) dataSources.get(dsName);
+		if (dataSource == null || dataSource.isClosed()) {
+			dataSource = new HikariDataSource(buildHikariConfig(dsName, dsConfig));
+			dataSources.put(dsName, dataSource);
+			log.info("HikariCP pool initialized. dsName={}, driver={}, url={}, maxPoolSize={}, minIdle={}, connectionTimeoutMs={}",
+					dsName, dsConfig.getDriver(), dsConfig.getUrl(), dsConfig.getMaxPoolSize(),
+					dsConfig.getMinPoolSize(), getConnectionTimeoutMs(dsConfig));
+		}
+		return dataSource;
+	}
+
+	private static HikariConfig buildHikariConfig(String dsName, DbObject dsConfig) {
+		HikariConfig config = new HikariConfig();
+		config.setPoolName("A2P-" + dsName);
+		config.setDriverClassName(dsConfig.getDriver());
+		config.setJdbcUrl(dsConfig.getUrl());
+		config.setUsername(dsConfig.getUsername());
+		config.setPassword(dsConfig.getPassword());
+		config.setMaximumPoolSize(dsConfig.getMaxPoolSize());
+		config.setMinimumIdle(Math.min(dsConfig.getMinPoolSize(), dsConfig.getMaxPoolSize()));
+		config.setConnectionTimeout(getConnectionTimeoutMs(dsConfig));
+		config.setIdleTimeout(longProp("DB.Hikari.IdleTimeoutMs", 600000L));
+		config.setMaxLifetime(longProp("DB.Hikari.MaxLifetimeMs", 1800000L));
+		config.setValidationTimeout(longProp("DB.Hikari.ValidationTimeoutMs", 3000L));
+		config.setLeakDetectionThreshold(longProp("DB.Hikari.LeakDetectionThresholdMs", 0L));
+		config.setKeepaliveTime(longProp("DB.Hikari.KeepaliveTimeMs", 0L));
+		config.setAutoCommit(Boolean.parseBoolean(getProperty("DB.Hikari.AutoCommit", "true")));
+		String testQuery = getProperty("DB.Hikari.ConnectionTestQuery", null);
+		if (testQuery != null && testQuery.trim().length() > 0) {
+			config.setConnectionTestQuery(testQuery.trim());
+		}
+		return config;
+	}
+
+	private static long getConnectionTimeoutMs(DbObject dsConfig) {
+		long timeout = longProp("DB.Hikari.ConnectionTimeoutMs", -1L);
+		if (timeout > 0) {
+			return timeout;
+		}
+		timeout = dsConfig.getTimeout();
+		if (timeout <= 0) {
+			return 30000L;
+		}
+		if (timeout < 1000L) {
+			return timeout * 1000L;
+		}
+		return timeout;
+	}
+
+	private static String getProperty(String key, String defaultValue) {
+		if (mprop == null) {
+			return defaultValue;
+		}
+		return mprop.getProperty(key, defaultValue);
+	}
+
+	private static long longProp(String key, long defaultValue) {
+		try {
+			return Long.parseLong(getProperty(key, String.valueOf(defaultValue)).trim());
+		} catch (Exception e) {
+			log.warn("Invalid long property {}, fallback to {}", key, defaultValue);
+			return defaultValue;
+		}
+	}
+
+	private static void startupCheck(String sql) {
+		Enumeration dsNames = dsConfigs.keys();
+		while (dsNames.hasMoreElements()) {
+			String dsName = (String) dsNames.nextElement();
+			Connection connection = null;
+			Statement statement = null;
+			try {
+				connection = getConnection(dsName);
+				statement = connection.createStatement();
+				statement.execute(sql);
+				log.info("DB startup check success. dsName={}, sql={}", dsName, sql);
+			} catch (Exception e) {
+				log.error("DB startup check failed. dsName={}, sql={}", dsName, sql, e);
+			} finally {
+				try {
+					if (statement != null) {
+						statement.close();
+					}
+				} catch (Exception e) {
+				}
+				releaseConnection(dsName, connection);
+			}
+		}
+	}
+
+	public static void logPoolStats() {
 	}
 
 	public static DataManager getDataManager(String dmName)
@@ -261,7 +325,7 @@ public class DataControl {
 		Iterator iter = dataManagers.values().iterator();
 		while (iter.hasNext()) {
 			DataManager dm = (DataManager) (iter.next());
-			log.trace("dataManagers start closeIdelFactory!");
+			log.trace("dataManagers start closeIdleConnection!");
 			dm.closeIdelFactory(dbStatus);
 		}
 	}

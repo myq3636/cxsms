@@ -8,6 +8,7 @@ import com.king.mgt.processor.RecipientListFileTask;
 import com.king.mgt.processor.SenderListFileTask;
 import com.king.mgt.processor.WhiteListFileTask;
 import com.king.mgt.util.UserInterfaceUtility;
+import com.king.gmms.GmmsUtility;
 
 /**
  * <p>Title: </p>
@@ -32,6 +33,7 @@ public class Launcher {
         if(args.length >= 1 && args[0].equalsIgnoreCase("true")) {
             util.setHa();
         }
+        initA2pRedis();
         util.initUtilities();
 
         UserCommandListener cmdListener=new UserCommandListener();
@@ -100,5 +102,16 @@ public class Launcher {
         if(contentTimerIndex>0){
         	downloadRecipeintPolicyFileTimer.schedule(new RecipientListFileTask(), 1000, recipientTimerIndex*60*1000);
         }
+    }
+
+    private static void initA2pRedis() {
+        String a2pHome = System.getProperty("a2p_home", "/usr/local/a2p/");
+        if (!a2pHome.endsWith("/")) {
+            a2pHome = a2pHome + "/";
+            System.setProperty("a2p_home", a2pHome);
+        }
+        GmmsUtility gmmsUtility = GmmsUtility.getInstance();
+        gmmsUtility.initUtility(a2pHome + "Gmms/GmmsConfig.properties");
+        gmmsUtility.initRedisClient("M");
     }
 }

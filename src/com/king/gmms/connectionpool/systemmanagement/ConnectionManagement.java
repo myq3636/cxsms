@@ -77,7 +77,11 @@ public class ConnectionManagement {
 		ssidSessionStrategy = new ConcurrentHashMap<String,SessionStrategyInterface>();
 		custManager = gmmsUtility.getCustomerManager();
 		moduleManager = ModuleManager.getInstance();
-		sysSessionFactory = SystemSessionFactory.getInstance();
+		if (gmmsUtility.isSystemManageEnable()) {
+			sysSessionFactory = SystemSessionFactory.getInstance();
+		} else {
+			log.info("SystemManager disabled, skip SystemSessionFactory in ConnectionManagement for module={}", selfModule);
+		}
 		sessionLock = new ReentrantLock();
 		initConnectionManagement();
 	}

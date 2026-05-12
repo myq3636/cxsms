@@ -6,12 +6,12 @@ import com.king.db.DatabaseStatus;
 import com.king.framework.A2PService;
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import com.king.gmms.domain.ModuleManager;
+import com.king.gmms.ha.ModuleStatusReporter;
 import com.king.gmms.processor.CsmProcessorHandler;
 import com.king.gmms.messagequeue.MTStreamConsumer;
 import com.king.gmms.messagequeue.InboundDRStreamConsumer;
+import com.king.gmms.messagequeue.ResultStreamConsumer;
 import com.king.gmms.routing.IOSMSDispatcher;
 import com.king.gmms.processor.DBBackupHandler;
 import com.king.gmms.processor.MessageProcessorHandler;
@@ -25,7 +25,7 @@ public class DeliveryRouter implements A2PService{
     private GmmsUtility gmmsUtility = null;
     private SystemStatusChecker systemStatusChecker = null;
     protected String module;
-    protected ScheduledExecutorService heartbeatExecutor = null;
+    protected ModuleStatusReporter statusReporter = null;
 
 	public DeliveryRouter(){
 		gmmsUtility = GmmsUtility.getInstance();
@@ -40,16 +40,18 @@ public class DeliveryRouter implements A2PService{
 		String redisStatus = "M";
 		
 		gmmsUtility.initRedisClient(redisStatus);
+		gmmsUtility.initCoreShardAssignment();
+		statusReporter = ModuleStatusReporter.start(gmmsUtility, "core", module, gmmsUtility.getNodeId());
 		gmmsUtility.initDBManager(dbstatus);
 		gmmsUtility.initCDRManager();
 		DeliveryRouterHandler.getInstance();
 		MessageProcessorHandler.getInstance();
 		CsmProcessorHandler.getInstance();
 		DBBackupHandler.getInstance();
-		// V4.0 Start Redis Stream Consumer for MT messages
+		// Core module stream consumers
 		MTStreamConsumer.getInstance().start();
-		// V4.5 Start Redis Stream Consumer for DR messages
 		InboundDRStreamConsumer.getInstance().start();
+		ResultStreamConsumer.getInstance().start();
 		//SenderRentHandler.getInstance();
 		
 		if(gmmsUtility.isStoreDRModeEnable()){
@@ -72,22 +74,6 @@ public class DeliveryRouter implements A2PService{
 			log.error("load routing to redis failed.",e);
 		}
 		
-		// V4.0 Start Redis Heartbeat
-		String nodeId = System.getProperty("NodeID", "0");
-		final String statusKey = "module:status:" + module + ":" + nodeId;
-        heartbeatExecutor = Executors.newSingleThreadScheduledExecutor();
-        heartbeatExecutor.scheduleAtFixedRate(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    gmmsUtility.getRedisClient().setString(statusKey, "ONLINE");
-                    gmmsUtility.getRedisClient().setExpire(statusKey, 30);
-                } catch (Exception e) {
-                    log.warn("Failed to update Redis heartbeat for " + module, e);
-                }
-            }
-        }, 0, 10, TimeUnit.SECONDS);
-		
 		return true;
 	}
 	/**
@@ -98,25 +84,19 @@ public class DeliveryRouter implements A2PService{
 		if(systemStatusChecker != null){
 			systemStatusChecker.stop();
 		}
-		// V4.0 Stop Redis Stream Consumer
+		// Core module stream consumers
 		MTStreamConsumer.getInstance().stop();
-		// V4.5 Stop Redis Stream Consumer
 		InboundDRStreamConsumer.getInstance().stop();
+		ResultStreamConsumer.getInstance().stop();
 		return true;
 	}
 	/**
 	 * send stop request
 	 */
 	public void beforeStop() {
-        if (heartbeatExecutor != null) {
-            heartbeatExecutor.shutdownNow();
-        }
-        try {
-            String nodeId = System.getProperty("NodeID", "0");
-            String statusKey = "module:status:" + module + ":" + nodeId;
-            gmmsUtility.getRedisClient().del(statusKey);
-        } catch (Exception e) {
-            log.warn("Failed to delete module status key on stop", e);
+        if (statusReporter != null) {
+            statusReporter.stop();
+            statusReporter = null;
         }
 	}
 }

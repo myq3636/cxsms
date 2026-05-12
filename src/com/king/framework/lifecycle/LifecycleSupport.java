@@ -64,6 +64,7 @@ public class LifecycleSupport {
         case Event.TYPE_ANTISPAM_RELOAD:
         //case Event.TYPE_PHONEPREFIX_RELOAD:
         case Event.TYPE_CONTENT_TEMPLATE_RELOAD:
+        case Event.TYPE_GMMS_CONFIG_RELOAD:
         {
             return notifyAllSync(event);
 

@@ -39,9 +39,21 @@ public class SystemSessionFactory {
 	public synchronized static SystemSessionFactory getInstance(){
 		if(null == instance){
 			instance = new SystemSessionFactory();
-			instance.initSession();
+			if (instance.shouldInitSystemSession()) {
+				instance.initSession();
+			} else {
+				log.info("SystemManager disabled, skip SystemSessionFactory init for module={}", instance.selfModule);
+			}
 		}
 		return instance;
+	}
+
+	private boolean shouldInitSystemSession() {
+		String selfModuleType = moduleManager.getModuleType(selfModule);
+		if (SystemConstants.MGT_MODULE_TYPE.equalsIgnoreCase(selfModuleType)) {
+			return true;
+		}
+		return gmmsUtility.isSystemManageEnable();
 	}
 	/**
      * init system client for gateway modules

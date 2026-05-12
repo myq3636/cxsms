@@ -136,6 +136,9 @@ public abstract class A2PCustomerInfo {
 	protected boolean isEnquireLink = false;
 	protected boolean isKeepEnquireLink = false;
 	protected boolean isEnableGuavaBuffer = false;
+	protected String smppSubmitPendingMode = "memory";
+	protected int smppSubmitPendingRedisTTLSeconds = 600;
+	protected int smppSubmitPendingRedisTimeoutSeconds = 0;
 	protected Pattern pAllowOriPrefixList = null;
 
 	protected ArrayList<Integer> oriNumberLens = new ArrayList<Integer>();
@@ -1399,6 +1402,14 @@ public abstract class A2PCustomerInfo {
 		//isRecipNumberLenCheck
 		this.isRecipNumberLenCheck = cfg.getBool("SMSOptionIsRecipitLenCheck", false);
 		isEnableGuavaBuffer = cfg.getBool("EnableGuavaBuffer", false);
+		smppSubmitPendingMode = cfg.getString("SMPPSubmitPendingMode", "memory");
+		if (smppSubmitPendingMode == null || smppSubmitPendingMode.trim().length() == 0) {
+			smppSubmitPendingMode = "memory";
+		} else {
+			smppSubmitPendingMode = smppSubmitPendingMode.trim().toLowerCase();
+		}
+		smppSubmitPendingRedisTTLSeconds = cfg.getInt("SMPPSubmitPendingRedisTTLSeconds", 600);
+		smppSubmitPendingRedisTimeoutSeconds = cfg.getInt("SMPPSubmitPendingRedisTimeoutSeconds", 0);
 		//drMapping
 		String drUnknownMappingStatus = cfg.getString("SMSOptionDRStatusMapping");
 		if(drUnknownMappingStatus!=null && !"".equalsIgnoreCase(drUnknownMappingStatus)) {
@@ -3702,6 +3713,18 @@ public abstract class A2PCustomerInfo {
 		this.isEnableGuavaBuffer = isEnableGuavaBuffer;
 	}
 
+	public String getSMPPSubmitPendingMode() {
+		return smppSubmitPendingMode;
+	}
+
+	public int getSMPPSubmitPendingRedisTTLSeconds() {
+		return smppSubmitPendingRedisTTLSeconds;
+	}
+
+	public int getSMPPSubmitPendingRedisTimeoutSeconds() {
+		return smppSubmitPendingRedisTimeoutSeconds;
+	}
+	
 	public void setIsEnableGuavaBuffer(String buffer) {
 		if ("yes".equalsIgnoreCase(buffer))
 			this.isEnableGuavaBuffer = true;

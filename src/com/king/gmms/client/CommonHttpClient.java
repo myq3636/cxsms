@@ -41,20 +41,17 @@ public class CommonHttpClient extends AbstractClient {
 		if(!initSystemManagement()){
 	   		  log.warn("module register failed!");
 	    }
-		startAgentConnection();
-        agentListener.start();
+		//startAgentConnection();
+        //agentListener.start();
 		return true;
 	}
     
 	public boolean stopService() {
-		if(canHandover || isEnableSysMgt){
-			systemSession.moduleStop();
-	        systemListener.stop();
-	        if(systemSession!=null){
-	        	systemSession.shutdown();
-	        }
-        }
-		agentListener.stop();
+		/*
+		 * if(canHandover || isEnableSysMgt){ systemSession.moduleStop();
+		 * systemListener.stop(); if(systemSession!=null){ systemSession.shutdown(); } }
+		 * agentListener.stop();
+		 */
 		return false;
 	}
 }

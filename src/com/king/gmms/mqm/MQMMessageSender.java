@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.messagequeue.StreamQueueManager;
+import com.king.gmms.util.ExpiredMessageQueueWithSafeExit;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
 import com.king.message.gmms.MessageStoreManager;
@@ -95,11 +96,9 @@ public class MQMMessageSender implements Runnable {
 				log.error("Error accessing messages from messagestore", ex);
 			}
 		}
-			} catch (Exception ex) {
-				log.error("Error accessing messages from messagestore", ex);
-			}
-		}
+		
 	}
+		
 
 
 	/**

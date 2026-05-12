@@ -155,14 +155,16 @@ public class CommonRESTHttpSession extends HttpSession {
 				if (log.isDebugEnabled()) {
 					log.debug(msg, "resp = {}" + resp);
 				}
+				resetLastRouterQueuePutResult();
 				dealResp(msg, resp);
-				bret = true;
+				bret = getLastRouterQueuePutResult();
 			} catch (IOException e) {
 				handleHttpStatusCode(msg);
+				resetLastRouterQueuePutResult();
 				dealHttpErrorResp(msg, resp);
 				log.warn(e, e);
 
-				return true;
+				return getLastRouterQueuePutResult();
 
 			} catch (Exception e) {
 
@@ -222,12 +224,14 @@ public class CommonRESTHttpSession extends HttpSession {
 				if (log.isDebugEnabled()) {
 					log.debug(msg, "resp = {}" + resp);
 				}
+				resetLastRouterQueuePutResult();
 				dealResp(msg, resp);
-				bret = true;
+				bret = getLastRouterQueuePutResult();
 			} catch (IOException e) {
 				handleHttpStatusCode(msg);
+				resetLastRouterQueuePutResult();
 				dealHttpErrorResp(msg, resp);
-				return true;
+				return getLastRouterQueuePutResult();
 
 			} catch (Exception e) {
 				return false;
@@ -266,12 +270,14 @@ public class CommonRESTHttpSession extends HttpSession {
 				if (log.isDebugEnabled()) {
 					log.debug(msg, "resp = {}" + resp);
 				}
+				resetLastRouterQueuePutResult();
 				dealResp(msg, resp);
-				bret = true;
+				bret = getLastRouterQueuePutResult();
 			} catch (IOException e) {
 				handleHttpStatusCode(msg);
+				resetLastRouterQueuePutResult();
 				dealHttpErrorResp(msg, resp);
-				return true;
+				return getLastRouterQueuePutResult();
 
 			} catch (Exception e) {
 				return false;

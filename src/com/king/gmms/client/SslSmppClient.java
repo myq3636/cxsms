@@ -13,7 +13,6 @@ import com.king.gmms.domain.A2PSingleConnectionInfo;
 import com.king.gmms.domain.ModuleManager;
 import com.king.gmms.routing.ADSServerMonitor;
 import com.king.gmms.throttle.ReportInMsgCountTimer;
-import com.king.gmms.throttle.ResetDynamicCustInThresholdTimer;
 import com.king.message.gmms.GmmsMessage;
 
 public class SslSmppClient extends AbstractClient {
@@ -23,7 +22,6 @@ public class SslSmppClient extends AbstractClient {
 	private InternalAgentConnectionFactory agentFactory = null;
 	private SslSmppClientFactory customerFactory = null;
 	private ReportInMsgCountTimer reportInMsgCountTimer = null;
-	private ResetDynamicCustInThresholdTimer resetDynamicCustInThresholdTimer = null;
 
 	public SslSmppClient() {
 		customerFactory = SslSmppClientFactory.getInstance();
@@ -95,44 +93,36 @@ public class SslSmppClient extends AbstractClient {
 		}
 		customerFactory.initializeSession();
 		
-		if((canHandover || isEnableSysMgt) && systemSession != null){
-			reportInMsgCountTimer = new ReportInMsgCountTimer(systemSession, 
-					gmmsUtility.getReportModuleIncomingMsgCountInterval());
-			reportInMsgCountTimer.startTimer("reportInMsgCountTimer");
-			resetDynamicCustInThresholdTimer = 
-				new ResetDynamicCustInThresholdTimer(gmmsUtility.getDynamicCustInThresholdExipreTime()/3);
-			resetDynamicCustInThresholdTimer.startTimer("resetDynamicCustInThresholdTimer");
-		}
-		
-		startAgentConnection();
-		agentListener.start();
+		/*
+		 * if((canHandover || isEnableSysMgt) && systemSession != null){
+		 * reportInMsgCountTimer = new ReportInMsgCountTimer(systemSession,
+		 * gmmsUtility.getReportModuleIncomingMsgCountInterval());
+		 * reportInMsgCountTimer.startTimer("reportInMsgCountTimer");
+		 * resetDynamicCustInThresholdTimer = new
+		 * ResetDynamicCustInThresholdTimer(gmmsUtility.
+		 * getDynamicCustInThresholdExipreTime()/3);
+		 * resetDynamicCustInThresholdTimer.startTimer(
+		 * "resetDynamicCustInThresholdTimer"); }
+		 * 
+		 * startAgentConnection(); agentListener.start();
+		 */
 		return true;
 	}
 
 	public boolean stopService() {
-		if (canHandover || isEnableSysMgt) {
-			beforeStop();
-			systemListener.stop();
-			if (systemSession != null) {
-				systemSession.shutdown();
-			}
-		}
-		agentListener.stop();
-		return false;
+		/*
+		 * if (canHandover || isEnableSysMgt) { beforeStop(); systemListener.stop(); if
+		 * (systemSession != null) { systemSession.shutdown(); } } agentListener.stop();
+		 */
+		stopOutboundConsumer();
+		stopRedisHeartbeat();
+		return true;
 	}
 
 	/**
 	 * send stop request
 	 */
 	public void beforeStop() {
-		if (canHandover || isEnableSysMgt) {
-			reportInMsgCountTimer.stopTimer();
-			resetDynamicCustInThresholdTimer.stopTimer();
-			ConnectionManagementForFunction systemManager = customerFactory.getSystemManager();
-			boolean flag = systemManager.moduleStop(module);
-			if (flag) {
-				systemSession.moduleStop();
-			}
-		}
+		
 	}
 }

@@ -8,13 +8,15 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.nio.channels.FileChannel;
+import java.util.Map;
 import java.util.Observable;
 import java.util.Properties;
 
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
-import redis.clients.jedis.JedisPoolConfig;
 import redis.clients.jedis.Protocol;
+
+import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 
 import com.king.db.DBHAConstants;
 import com.king.framework.SystemLogger;
@@ -54,7 +56,7 @@ public class RedisMonitor extends Observable implements Runnable,
 
 	private static final String MASTER = "M";
 	private static final String SLAVE = "S";
-	protected static JedisPoolConfig config = new JedisPoolConfig();	
+	protected static GenericObjectPoolConfig<Jedis> config = new GenericObjectPoolConfig<Jedis>();	
 	private static RedisMonitor instance = new RedisMonitor();
 	private static volatile boolean initialed = false;
 	private RandomAccessFile fi = null;
@@ -309,7 +311,7 @@ public class RedisMonitor extends Observable implements Runnable,
 		try {
 			Jedis tempJedis = master_pool.getResource();
 			try {
-				java.util.List<String> policy = tempJedis.configGet("maxmemory-policy");
+				Map<String,String> policy = tempJedis.configGet("maxmemory-policy");
 				if (policy != null && policy.size() > 1) {
 					if (!"noeviction".equals(policy.get(1))) {
 						log.error("Phase 1 Configuration Alert: Redis maxmemory-policy is currently set to [" + policy.get(1) + "], NOT 'noeviction'. Please alter this setting to prevent unintentional message eviction in stream mode!");

@@ -28,24 +28,11 @@ import java.security.UnrecoverableKeyException;
 import java.security.cert.CertificateException;
 import java.text.SimpleDateFormat;
 
-import javax.xml.bind.JAXBContext;
-import javax.xml.bind.Marshaller;
-import javax.xml.parsers.*;
-
 import org.apache.commons.httpclient.HttpClient;
 import org.apache.commons.httpclient.NameValuePair;
 import org.apache.commons.httpclient.methods.PostMethod;
 import org.apache.commons.httpclient.params.HttpMethodParams;
 import org.apache.xerces.jaxp.DocumentBuilderFactoryImpl;
-import org.hibernate.event.SessionEventListenerConfig;
-import org.w3c.dom.*;
-
-import javax.xml.transform.*;
-import javax.xml.transform.dom.DOMSource; 
-import javax.xml.transform.stream.StreamResult;
-
-
-
 
 
 
@@ -67,7 +54,6 @@ import com.king.message.gmms.GmmsStatus;
 import com.king.message.gmms.MessageBase;
 import com.king.message.gmms.MessageIdGenerator;
 import com.king.rest.util.StringUtility;
-import com.sun.org.apache.bcel.internal.generic.NEW;
 
 public class MKMessageHttpHandler extends HttpHandler {
 	private static SystemLogger log = SystemLogger
@@ -383,9 +369,11 @@ public class MKMessageHttpHandler extends HttpHandler {
 				message.setOutMsgID(commonMsgID);
 			}
         	 yfMessage.setSmsId(message.getOutMsgID());
-             JAXBContext jAXBContext = JAXBContext.newInstance(yfMessage.getClass());
-             Marshaller marshaller = jAXBContext.createMarshaller();
-             marshaller.marshal(yfMessage, sw); 
+				/*
+				 * JAXBContext jAXBContext = JAXBContext.newInstance(yfMessage.getClass());
+				 * Marshaller marshaller = jAXBContext.createMarshaller();
+				 * marshaller.marshal(yfMessage, sw);
+				 */
             return sw.toString();
 
         } catch (Exception ex) {

@@ -11,7 +11,6 @@ import javax.servlet.http.HttpServletRequest;
 import org.jdom.Document;
 import org.jdom.Element;
 import org.jdom.input.SAXBuilder;
-import org.xml.sax.InputSource;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.domain.A2PCustomerInfo;
@@ -79,13 +78,13 @@ public class ThaibulkMessageHttpHandler extends HttpHandler {
 		// TODO Auto-generated method stub	
 		List<HttpParam> parameters = hi.getMtSubmitResponse().getParamList();
 		StringReader reader = null;
-		reader = new StringReader(resp);
-		InputSource source = new InputSource(reader);
+		//reader = new StringReader(resp);
+		//InputSource source = new InputSource(response);
 		SAXBuilder sb = new SAXBuilder();
 		Document doc = null;
 		Element root = null;
 		try {
-				doc = sb.build(source);
+				doc = sb.build(resp);
 				root = doc.getRootElement();
 				List<Element> node = root.getChildren();
 				if(node==null){

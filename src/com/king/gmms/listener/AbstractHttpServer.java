@@ -17,7 +17,6 @@ import com.king.db.DatabaseStatus;
 import com.king.framework.A2PService;
 import com.king.framework.A2PThreadGroup;
 import com.king.framework.SystemLogger;
-import com.king.framework.lifecycle.SingletonSystemCommandListener;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.customerconnectionfactory.CustomerConnectionFactory;
 import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
@@ -31,7 +30,6 @@ import com.king.gmms.ha.systemmanagement.pdu.ModuleRegisterAck;
 import com.king.gmms.messagequeue.OperatorMessageQueue;
 import com.king.gmms.protocol.smpp.pdu.Response;
 import com.king.gmms.throttle.ReportInMsgCountTimer;
-import com.king.gmms.throttle.ResetDynamicCustInThresholdTimer;
 import com.king.gmms.throttle.ThrottlingControl;
 import com.king.message.gmms.GmmsMessage;
 import com.king.rest.util.StringUtility;
@@ -47,7 +45,6 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 			.getSystemLogger(AbstractHttpServer.class);
 	protected static GmmsUtility gmmsUtility;
 	protected int cmdPort;
-	protected static SingletonSystemCommandListener cmdListener;
 	protected static InternalAgentListener agentListener = null;
 	protected static InternalAgentConnectionFactory agentFactory = null;
 	protected static Object mutex = new Object();
@@ -64,7 +61,6 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 	protected static int httpConnectionNumberMaximum = 100;
 	protected static Map<String, Integer> httpCustomConnectionNumMap = null;
 	protected ReportInMsgCountTimer reportInMsgCountTimer = null;
-	protected ResetDynamicCustInThresholdTimer resetDynamicCustInThresholdTimer = null;
 
 	private static String comma = ",";
 	private static String semi = ";";
@@ -100,20 +96,7 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 			log.debug("httpConnectionMaxNumber is: {}",	httpConnectionNumberMaximum);
 			isEnableSysMgt = gmmsUtility.isSystemManageEnable();
 			canHandover = gmmsUtility.isDBHandover();
-			if (canHandover || isEnableSysMgt) {
-				systemListener = SystemListener.getInstance();
-				try {
-					SystemSessionFactory sysFactory = SystemSessionFactory
-							.getInstance();
-					systemSession = sysFactory.getSystemSessionForFunction();
-					reportInMsgCountTimer = new ReportInMsgCountTimer(systemSession, 
-							gmmsUtility.getReportModuleIncomingMsgCountInterval());
-					resetDynamicCustInThresholdTimer = 
-						new ResetDynamicCustInThresholdTimer(gmmsUtility.getDynamicCustInThresholdExipreTime()/3);
-				} catch (Exception e) {
-					log.warn(e, e);
-				}
-			}
+			
 			String customIp = gmmsUtility.getCommonProperty("HttpCustomConnectionNumber");
 			if (customIp != null) {
 				String[] list = customIp.split(semi);
@@ -192,14 +175,7 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 	}
 
 	public void run() {
-		try{
-			if(!SingletonSystemCommandListener.isRunning()){
-				SingletonSystemCommandListener.setPort(cmdPort);
-				cmdListener = SingletonSystemCommandListener.startCommandListener();
-			}
-		}catch(Exception e){
-			log.warn(e.getMessage());
-		}
+		
 	}
 
 	/**
@@ -310,19 +286,8 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 	 */
 	public boolean stopService() {
 		try {
-			if (canHandover ||isEnableSysMgt) {
-				beforeStop();
-				systemListener.stop();
-				if (systemSession != null) {
-					systemSession.shutdown();
-				}
-			}
-			if(cmdListener!=null){
-				cmdListener.stopService();
-			}
-			if(agentListener!=null){
-				agentListener.stop();
-			}
+		
+			
 			
 			if (log.isInfoEnabled())  {
 				log.info("AbstractHttpServer stopService");
@@ -346,13 +311,7 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 	 * send stop request
 	 */
 	public void beforeStop() {
-		if (canHandover || isEnableSysMgt) {
-			reportInMsgCountTimer.stopTimer();
-			resetDynamicCustInThresholdTimer.stopTimer();
-			if(systemSession != null){
-				systemSession.moduleStop();
-			}
-		}
+		
 	}
 
 	public abstract void processRequest(HttpServletRequest request,

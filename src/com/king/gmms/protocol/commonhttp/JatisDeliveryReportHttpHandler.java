@@ -13,7 +13,6 @@ import org.jdom.Element;
 import org.jdom.input.SAXBuilder;
 import org.jdom.output.Format;
 import org.jdom.output.XMLOutputter;
-import org.xml.sax.InputSource;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.domain.A2PCustomerInfo;
@@ -93,12 +92,12 @@ public class JatisDeliveryReportHttpHandler extends HttpHandler {
 		List<HttpParam> parameters = hi.getMtDRResponse().getParamList();
 		StringReader reader = null;
 		reader = new StringReader(resp);
-		InputSource source = new InputSource(reader);
+		//InputSource source = new InputSource(reader);
 		SAXBuilder sb = new SAXBuilder();
 		Document doc = null;
 		Element root = null;
 		try {
-				doc = sb.build(source);
+				doc = sb.build(resp);
 				root = doc.getRootElement();
 				List<Element> node = root.getChildren();
 				if(node==null){

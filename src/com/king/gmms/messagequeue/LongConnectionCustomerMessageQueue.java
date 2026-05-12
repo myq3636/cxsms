@@ -66,8 +66,8 @@ public class LongConnectionCustomerMessageQueue extends CustomerMessageQueue{
 						&& cst.getOutgoingThrottlingNum() > 0
 						&& ModuleManager.getInstance().getClientModules().contains(moduleName) ) {
 					// V4.1 迁移：不再使用 Priority List 轮询，转而投递到针对此节点的输出流
-					boolean produceSuccess = gmmsUtility.getStreamQueueManager().produceOutboundMessage(msg);
-					if (!produceSuccess) {
+					//boolean produceSuccess = gmmsUtility.getStreamQueueManager().produceOutboundMessage(msg);
+					if (!false) {
 						log.error(msg, "Failed to produce message to Outbound Stream in putMsg!");
 					} else {
 						log.trace(msg, "put message to outbound stream");

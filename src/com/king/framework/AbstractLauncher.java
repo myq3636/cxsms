@@ -11,7 +11,6 @@ package com.king.framework;
 import java.io.*;
 import java.net.*;
 
-import com.king.framework.lifecycle.SystemCommandListener;
 import com.king.gmms.domain.ModuleConnectionInfo;
 import com.king.gmms.domain.ModuleManager;
 import com.king.mgt.cmd.system.SystemCommandStop;
@@ -25,7 +24,6 @@ public abstract class AbstractLauncher implements Runnable {
     protected static final String START = "start";
     protected int port;
     protected A2PService service;
-    protected SystemCommandListener cmdListener;
     protected String moduleName = null;
     protected ModuleManager moduleManager = null;
     public AbstractLauncher() {
@@ -37,8 +35,7 @@ public abstract class AbstractLauncher implements Runnable {
     protected abstract void beforeStop() throws Exception;
 
     public void run() {
-        cmdListener=new SystemCommandListener(port);
-        cmdListener.service();
+        
 
     }
 

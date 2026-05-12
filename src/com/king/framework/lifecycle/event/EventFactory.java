@@ -50,6 +50,7 @@ public class EventFactory {
         listenerMap.put(Event.TYPE_SYSTEM_VENDOR_REPLACE_RELOAD,new List[stopLevels]);
         listenerMap.put(Event.TYPE_CONTENT_WHITELIST_RELOAD,new List[stopLevels]);
         listenerMap.put(Event.TYPE_CONTENT_BLACKLIST_RELOAD,new List[stopLevels]);
+        listenerMap.put(Event.TYPE_GMMS_CONFIG_RELOAD,new List[stopLevels]);
     }
     public static EventFactory getInstance()
     {
@@ -165,6 +166,12 @@ public class EventFactory {
         if (eventType==Event.TYPE_RECIPIENT_BLACKLIST_RELOAD)
         {
             Event event=new ReloadRecipientBlacklistEvent();
+            event.setLifecycleListener(listenerMap.get(eventType));
+            return event;
+        };
+        if (eventType==Event.TYPE_GMMS_CONFIG_RELOAD)
+        {
+            Event event=new ReloadGmmsConfigEvent();
             event.setLifecycleListener(listenerMap.get(eventType));
             return event;
         };

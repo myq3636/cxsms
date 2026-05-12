@@ -9,38 +9,36 @@ import java.sql.Statement;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
 
-import org.hibernate.CacheMode;
-import org.hibernate.HibernateException;
-import org.hibernate.Session;
-import org.hibernate.SessionFactory;
-
 import com.king.framework.SystemLogger;
 
 public abstract class DataManager {
-    protected SessionFactory[] factories = null;
-    private ThreadLocal session = new ThreadLocal();
+    private ThreadLocal connectionHolder = new ThreadLocal();
+    private ThreadLocal activeDsNameHolder = new ThreadLocal();
     protected static SystemLogger logger = SystemLogger.getSystemLogger(DataManager.class); 
-    private static ThreadLocal<java.util.List<Session>> allSessionsForThread = new ThreadLocal<java.util.List<Session>>() {
-        protected java.util.List<Session> initialValue() {
-            return new java.util.LinkedList<Session>();
+    private static ThreadLocal<java.util.List<Connection>> allConnectionsForThread = new ThreadLocal<java.util.List<Connection>>() {
+        protected java.util.List<Connection> initialValue() {
+            return new java.util.LinkedList<Connection>();
         }
     };
-    private Object mutex = new Object();
     protected DataControl dataControl = DataControl.getInstance();
     protected Statement stmt;
     private String dsName = null;
 
     public static void closeAllSessions() {
         try {
-            java.util.List<Session> sessions = allSessionsForThread.get();
-            if (sessions != null && !sessions.isEmpty()) {
-                for (Session s : sessions) {
-                    try { if (s != null && s.isOpen()) s.close(); } catch (Exception e) {}
+            java.util.List<Connection> connections = allConnectionsForThread.get();
+            if (connections != null && !connections.isEmpty()) {
+                for (Connection connection : connections) {
+                    try {
+                        if (connection != null && !connection.isClosed()) {
+                            connection.close();
+                        }
+                    } catch (Exception e) {}
                 }
-                sessions.clear();
+                connections.clear();
             }
         } catch (Exception ex) {
-            logger.warn("Error cleaning up thread local sessions", ex);
+            logger.warn("Error cleaning up thread local DB connections", ex);
         }
     }
 
@@ -64,99 +62,82 @@ public abstract class DataManager {
     }
 
     /**************************************************************************
-     *                       Hibernate supporting functions                   *
+     *                       JDBC supporting functions                        *
      **************************************************************************/
 
     /**
      * To be implement for subclasses: to return associated entity class <br>
      * For the consideration of easy migration, a default implementation is
-     * provided. However, for any data manager that is using Hibernate
-     * infrastructure should override this function to return corresponding
-     * class.
+     * provided for legacy data managers.
      */
     public Class getAssociatedClass() {
         return null;
     }
 
-    
-    void setSessionFactory(SessionFactory[] factory) {
-        this.factories = factory;
-    }
     /**
-     * Try to get master session, if failed get slave's
-     * @return
+     * Get an available JDBC connection, create a new one if none is available.
      */
-    protected SessionFactory getMasterSessionFactory(){
-    	if(factories[0]==null){
-    		try{
-				factories[0] = dataControl.getMasterSessionFactory(dsName);
-			}catch(Exception e){
-				logger.warn("Can't create session to Master DB!");
-			}
-    	}
-    	if(factories[0]!=null){
-    		return factories[0];
-    	}else if(factories[0]==null && factories[1]!=null){
-    		dataControl.setUsedDatabaseStatus(DatabaseStatus.SLAVE_USED);
-			DatabaseStatus.updateDBStatus2File(DatabaseStatus.SLAVE_USED);
-    		return factories[1];
-    	}
-		return null;
-    }
-    /**
-     * Try to get slave session, if failed get slave's
-     * @return
-     */
-    protected SessionFactory getSlaveSessionFactory(){
-    	if(factories[1]==null){
-    		try{
-				factories[1] = dataControl.getSlaveSessionFactory(dsName);
-			}catch(Exception e){
-				logger.warn("Can't create session to Slave DB!");
-			}
-    	}
-    	if(factories[1]!=null){
-    		return factories[1];
-    	}else if(factories[1]==null && factories[0]!=null){
-    		dataControl.setUsedDatabaseStatus(DatabaseStatus.MASTER_USED);
-			DatabaseStatus.updateDBStatus2File(DatabaseStatus.MASTER_USED);
-    		return factories[0];
-    	}
-		return null;
-    }
-    /**
-     * Get an available session, create a new one if none is available
-     * @return Session
-     */
-    public Session currentSession(){
-        Session s = (Session) session.get();
-        // Open a new Session, if this Thread has none yet
-        SessionFactory factory = null;
-        if (s == null) {
-        	if(DatabaseStatus.MASTER_USED.equals(dataControl.getUsedDatabaseStatus())){
-        		factory = this.getMasterSessionFactory();
-        		logger.debug("getMasterSessionFactory");
-            }else if(dataControl.getCanHandover() && DatabaseStatus.SLAVE_USED.equals(dataControl.getUsedDatabaseStatus())){
-            	factory = this.getSlaveSessionFactory();
-            	logger.debug("getSlaveSessionFactory");
+    public Connection currentConnection() throws DataControlException{
+        Connection connection = (Connection) connectionHolder.get();
+        try {
+            if (connection != null && !connection.isClosed()) {
+                return connection;
             }
-        	if(factory!=null){
-    			s = factory.openSession();
-    		}
-        	if(s == null){
-        		logger.error("Can't get DB sessions with master and slave!");
-        	}
-            s.setCacheMode(CacheMode.NORMAL);
-            session.set(s);
-            if (s != null) {
-                allSessionsForThread.get().add(s);
-            }
+        } catch (SQLException e) {
+            logger.warn("Check JDBC connection failed. dsName={}", dsName, e);
         }
-        if (s.isDirty()) {
-            s.flush();
+        connection = openConnectionByStatus();
+        if (connection == null) {
+            logger.error("Can't get DB connections with master and slave. dsName={}, usedDbStatus={}, canHandover={}",
+                    dsName, dataControl.getUsedDatabaseStatus(), dataControl.getCanHandover());
+            throw new DataControlException("Can't get DB connection. dsName=" + dsName
+                    + ", usedDbStatus=" + dataControl.getUsedDatabaseStatus()
+                    + ", canHandover=" + dataControl.getCanHandover());
         }
+        connectionHolder.set(connection);
+        allConnectionsForThread.get().add(connection);
+        return connection;
+    }
 
-        return s;
+    private Connection openConnectionByStatus() throws DataControlException {
+        if(DatabaseStatus.MASTER_USED.equals(dataControl.getUsedDatabaseStatus())){
+            try {
+                logger.debug("getMasterConnection");
+                activeDsNameHolder.set(dsName);
+                return dataControl.getMasterConnection(dsName);
+            } catch (Exception e) {
+                logger.warn("Can't create connection to Master DB. dsName={}", dsName, e);
+                if (dataControl.getCanHandover()) {
+                    try {
+                        activeDsNameHolder.set("backup" + dsName);
+                        Connection connection = dataControl.getSlaveConnection(dsName);
+                        dataControl.setUsedDatabaseStatus(DatabaseStatus.SLAVE_USED);
+                        DatabaseStatus.updateDBStatus2File(DatabaseStatus.SLAVE_USED);
+                        return connection;
+                    } catch (Exception slaveException) {
+                        logger.warn("Can't create connection to Slave DB. dsName={}", dsName, slaveException);
+                    }
+                }
+            }
+        } else if(dataControl.getCanHandover() && DatabaseStatus.SLAVE_USED.equals(dataControl.getUsedDatabaseStatus())){
+            try {
+                logger.debug("getSlaveConnection");
+                activeDsNameHolder.set("backup" + dsName);
+                return dataControl.getSlaveConnection(dsName);
+            } catch (Exception e) {
+                logger.warn("Can't create connection to Slave DB. dsName={}", dsName, e);
+                try {
+                    activeDsNameHolder.set(dsName);
+                    Connection connection = dataControl.getMasterConnection(dsName);
+                    dataControl.setUsedDatabaseStatus(DatabaseStatus.MASTER_USED);
+                    DatabaseStatus.updateDBStatus2File(DatabaseStatus.MASTER_USED);
+                    return connection;
+                } catch (Exception masterException) {
+                    logger.warn("Can't create connection to Master DB. dsName={}", dsName, masterException);
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -172,15 +153,17 @@ public abstract class DataManager {
 					e.printStackTrace();
 				}
 			}*/
-            Session s = (Session) session.get();
-            session.set(null);
-            if (s != null) {
-                s.close();
-                allSessionsForThread.get().remove(s);
+            Connection connection = (Connection) connectionHolder.get();
+            String activeDsName = (String) activeDsNameHolder.get();
+            connectionHolder.set(null);
+            activeDsNameHolder.set(null);
+            if (connection != null) {
+                DataControl.releaseConnection(activeDsName == null ? resolveActiveDsName() : activeDsName, connection);
+                allConnectionsForThread.get().remove(connection);
             }
-        } catch (HibernateException ex) {
+        } catch (Exception ex) {
 //            exceptionHandler(ex);
-            ex.printStackTrace();
+            logger.warn("Close JDBC connection exception. dsName={}", dsName, ex);
         }
     }
 
@@ -206,8 +189,7 @@ public abstract class DataManager {
     protected int doUpdate(String strSQL) throws DataControlException {
         Statement stmt = null;
         try {
-            Session sess = currentSession();
-            Connection conn = sess.connection();
+            Connection conn = currentConnection();
             stmt = conn.createStatement();
             int line = stmt.executeUpdate(strSQL);
 //            zeroFailureCount();
@@ -216,7 +198,7 @@ public abstract class DataManager {
             logger.trace("SQL Statement that cause error: {}", strSQL);
 //            exceptionHandler(e);
             throw new DataControlException("Database connection error: " +
-                                           e.getMessage());
+                                           e.getMessage(), e);
         } finally {
             if (stmt != null) {
                 try { stmt.close(); } catch (SQLException ex) {}
@@ -236,14 +218,13 @@ public abstract class DataManager {
 
     protected Statement getStmt() throws DataControlException {
         try {
-            Session sess = currentSession();
-            Connection conn = sess.connection();
+            Connection conn = currentConnection();
             stmt = conn.createStatement();
 //            zeroFailureCount();
         } catch (Exception e) {
 //            exceptionHandler(e);
             throw new DataControlException("Database query error: " +
-                                           e.getMessage());
+                                           e.getMessage(), e);
         } finally {
             return stmt;
         }
@@ -256,8 +237,7 @@ public abstract class DataManager {
     protected boolean isSupportBatchUpdate() throws Exception {
         boolean br = false;
         try {
-            Session sess = currentSession();
-            Connection conn = sess.connection();
+            Connection conn = currentConnection();
             DatabaseMetaData dmd = conn.getMetaData();
             br = dmd.supportsBatchUpdates();
         } catch (Exception e) {
@@ -275,7 +255,7 @@ public abstract class DataManager {
         } catch (SQLException e) {
 //            exceptionHandler(e);
             throw new DataControlException("Database query error: " +
-                                           e.getMessage());
+                                           e.getMessage(), e);
         }
     }
 
@@ -285,7 +265,7 @@ public abstract class DataManager {
         } catch (SQLException e) {
 //            exceptionHandler(e);
             throw new DataControlException("Database query error: " +
-                                           e.getMessage());
+                                           e.getMessage(), e);
         }
     }
 
@@ -300,8 +280,7 @@ public abstract class DataManager {
         ResultSet rs = null;
 
         try {
-            Session sess = currentSession();
-            Connection conn = sess.connection();
+            Connection conn = currentConnection();
             stmt = conn.createStatement();
             rs = stmt.executeQuery(strSQL);
 //            zeroFailureCount();
@@ -309,7 +288,7 @@ public abstract class DataManager {
             logger.trace("SQL Statement that cause error: {}", strSQL);
 //            exceptionHandler(e);
             throw new DataControlException("Database query error: " +
-                                           e.getMessage());
+                                           e.getMessage(), e);
         }
         return rs;
     }
@@ -471,8 +450,7 @@ public abstract class DataManager {
      */
     protected Connection getCon() throws DataManagerException {
         try {
-            Session sess = currentSession();
-            Connection connection = sess.connection();
+            Connection connection = currentConnection();
 //            zeroFailureCount();
             return connection;
         } catch (Exception ex) {
@@ -496,23 +474,15 @@ public abstract class DataManager {
     public abstract void add(Data data) throws DataManagerException;
 
     public void closeIdelFactory(DatabaseStatus dbStatus) {
-        try{
-        	 if(DatabaseStatus.MASTER_USED.equals(dbStatus) && factories[1] != null && !factories[1].isClosed()){
-        		logger.trace("factories[1].isClosed()={}",factories[1].isClosed());
-             	this.closeSession();
-             	factories[1].close();
-             	factories[1]=null;
-             	logger.info("Close Slave DB session factory when dbStatus is {}",dbStatus);
-             }else if(DatabaseStatus.SLAVE_USED.equals(dbStatus) && factories[0] != null && !factories[0].isClosed()){
-            	 logger.trace("factories[0].isClosed()={}",factories[0].isClosed());
-            	 this.closeSession();
-            	 factories[0].close();
-            	 factories[0]=null;
-            	 logger.info("Close Master DB session factory when dbStatus is {}",dbStatus);
-             }
-        } catch (Exception e) {
-            logger.warn("close DB factory error when switch dbstatus to {}",dbStatus,e);
+        closeSession();
+        logger.info("Close idle JDBC connection when dbStatus is {}",dbStatus);
+    }
+
+    private String resolveActiveDsName() {
+        if (dataControl.getCanHandover() && DatabaseStatus.SLAVE_USED.equals(dataControl.getUsedDatabaseStatus())) {
+            return "backup" + dsName;
         }
+        return dsName;
     }
 
 	public String getDsName() {

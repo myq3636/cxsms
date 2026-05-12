@@ -32,10 +32,6 @@ import com.king.gmms.ha.systemmanagement.pdu.ApplyInThrottleQuota;
  */
 public class ThrottlingControl {
 	private static SystemLogger log = SystemLogger.getSystemLogger(ThrottlingControl.class);
-
-	private ConcurrentMap<Integer, ThrottlingAlertMark> incomingThrottlingAlertCache;
-	private ConcurrentMap<Integer, ThrottlingAlertMark> outgoingThrottlingAlertCache;
-	
 	private AtomicInteger moduleIncomingMsgCount = new AtomicInteger();
 	
 	private boolean isEnableSysMgt = false;
@@ -59,8 +55,6 @@ public class ThrottlingControl {
 	 */
 	private ThrottlingControl() {
 
-		incomingThrottlingAlertCache = new ConcurrentHashMap<Integer, ThrottlingAlertMark>();
-		outgoingThrottlingAlertCache = new ConcurrentHashMap<Integer, ThrottlingAlertMark>();
 		
 		expireInThottleQuotaMap = new ConcurrentHashMap<Integer, Long>();
 		
@@ -129,13 +123,6 @@ public class ThrottlingControl {
 					}
 				}
 				
-				// process alert mail
-				ThrottlingAlertMark throttlingAlertMark = incomingThrottlingAlertCache.get(ssid);
-				if (throttlingAlertMark == null) {
-					incomingThrottlingAlertCache.putIfAbsent(ssid, new ThrottlingAlertMark());
-					throttlingAlertMark = incomingThrottlingAlertCache.get(ssid);
-				} 
-				throttlingAlertMark.processAlertMail(ssid, true, System.currentTimeMillis(), throttlingNum);
 				
 				return false;
 			} else {
@@ -248,8 +235,6 @@ public class ThrottlingControl {
 	 * @param ssid
 	 */
 	public void clearThrottlingControlCache(int ssid){
-		incomingThrottlingAlertCache.remove(ssid);
-		outgoingThrottlingAlertCache.remove(ssid);
 		expireInThottleQuotaMap.remove(ssid);
 	}
 }

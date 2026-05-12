@@ -6,20 +6,15 @@ import java.io.ByteArrayOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.Serializable;
-import java.net.URL;
 import java.text.SimpleDateFormat;
 
 import com.king.framework.SystemLogger;
-import com.king.gmms.ha.ModuleURI;
 import com.king.gmms.ha.TransactionURI;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
 import com.king.rest.util.StringUtility;
-import com.sun.org.apache.bcel.internal.generic.NEW;
-import com.sun.tools.internal.xjc.reader.xmlschema.bindinfo.BIConversion.Static;
 
-import sun.misc.BASE64Decoder;
-import sun.misc.BASE64Encoder;
+import java.util.Base64;
 
 public class SerializableHandler {
 	
@@ -57,31 +52,56 @@ public class SerializableHandler {
 	}
 
 	public static Object stringToObject(String s) throws Exception {
-		if(s == null || "".equals(s.trim())) {
+		if(s == null) {
 			return null;
 		}
-		// Refactored in Phase 1: Pure FastJSON deserialization (No backward compatibility)
-		return com.alibaba.fastjson.JSON.parse(s);
+		byte[] objData = parseByteArray(s);
+		ByteArrayInputStream bis = null;
+		ObjectInputStream ois = null;
+		try {
+			bis = new ByteArrayInputStream(objData);
+			ois = new ObjectInputStream(bis);
+		} catch (Exception e) {
+			throw e;
+		} finally {
+			if(bis != null) {
+				bis.close();
+			}
+			if(ois != null) {
+				ois.close();
+			}
+		}
+		return ois.readObject();
 	}
 
 	public static String objectToString(Object obj) throws Exception {
 		if(obj==null){
 			return null;
 		}
-		// Refactored in Phase 1: FastJSON serialization
-		return com.alibaba.fastjson.JSON.toJSONString(obj, com.alibaba.fastjson.serializer.SerializerFeature.WriteClassName);
-	}
-
-	public static java.util.Map<String, String> convertGmmsMessageToStreamHash(GmmsMessage msg) throws Exception {
-		java.util.Map<String, String> hash = new java.util.HashMap<>();
-		if (msg == null) {
-			return hash;
+		if (!(obj instanceof Serializable)) {
+			throw new IllegalArgumentException(
+					"object must implements Serializable.");
 		}
-		hash.put("MsgID", msg.getMsgID() != null ? msg.getMsgID() : "");
-		hash.put("DestAddr", msg.getRecipientAddress() != null ? msg.getRecipientAddress() : "");
-		hash.put("SSID", msg.getRoutingSsIDs() != null ? msg.getRoutingSsIDs() : (msg.getOSsID() != 0 ? String.valueOf(msg.getOSsID()) : ""));
-		hash.put("data", objectToString(msg));
-		return hash;
+		ByteArrayOutputStream bos = new ByteArrayOutputStream();
+		ObjectOutputStream oos = null;
+		byte[] objData = null;
+		try {
+			oos = new ObjectOutputStream(bos);
+			oos.writeObject(obj);
+			oos.flush();
+			objData = bos.toByteArray();
+		} catch (Exception e) {
+			throw e;
+		} finally {
+			if(bos != null) {
+				bos.close();
+			}
+			if(oos != null) {
+				oos.close();
+			}
+		}
+		
+		return formatByteArray(objData);
 	}
 
 	public static byte[] parseByteArray(String s) {
@@ -300,8 +320,8 @@ public class SerializableHandler {
 									break;
 						    	case 40:
 						    		if(GmmsMessage.AIC_MSG_TYPE_BINARY.equalsIgnoreCase(msg.getGmmsMsgType())){
-			                    		BASE64Decoder base4=new BASE64Decoder();
-			                    		msg.setMimeMultiPartData(base4.decodeBuffer(parameters[40]));
+						    			Base64.Decoder decoder = Base64.getDecoder();
+			                    		msg.setMimeMultiPartData(decoder.decode(parameters[40]));
 			                    	}
 									break;
 						    	case 41:
@@ -352,6 +372,11 @@ public class SerializableHandler {
 				    				String mncmcc = parameters[51];
 				    				if (mncmcc!=null) {										
 										msg.setRMncMcc(mncmcc);
+									}
+				    				break;
+						    	case 52:
+					    			if (StringUtility.stringIsNotEmpty(parameters[52])) {
+					    				msg.setUdh(SerializableHandler.hexStringToBytes(parameters[52]));
 									}
 				    				break;
 								default:
@@ -569,8 +594,8 @@ public class SerializableHandler {
 									break;
 						    	case 40:
 						    		if(GmmsMessage.AIC_MSG_TYPE_BINARY.equalsIgnoreCase(msg.getGmmsMsgType())){
-			                    		BASE64Decoder base4=new BASE64Decoder();
-			                    		msg.setMimeMultiPartData(base4.decodeBuffer(parameters[40]));
+						    			Base64.Decoder decoder = Base64.getDecoder();
+			                    		msg.setMimeMultiPartData(decoder.decode(parameters[40]));
 			                    	}
 									break;
 						    	case 41:
@@ -783,8 +808,8 @@ public class SerializableHandler {
 					}
 					if(msg.getMimeMultiPartData() != null && msg.getMimeMultiPartData().length > 0
 						&& GmmsMessage.AIC_MSG_TYPE_BINARY.equalsIgnoreCase(msg.getGmmsMsgType())){
-						BASE64Encoder base64=new BASE64Encoder();
-						String text = base64.encode(msg.getMimeMultiPartData());
+						Base64.Encoder encoder = Base64.getEncoder();
+						String text = encoder.encodeToString(msg.getMimeMultiPartData());
 						sb.append(text).append(separator);
 					}else{
 						sb.append(separator);
@@ -829,6 +854,11 @@ public class SerializableHandler {
 					if (msg.getRMncMcc()!=null) {
 						sb.append(separator).append(msg.getRMncMcc().toString());
 					}else {
+						sb.append(separator);
+					}
+					if (msg.getUdh() != null && msg.getUdh().length > 0) {
+						sb.append(separator).append(bytesToHexString(msg.getUdh()));
+					} else {
 						sb.append(separator);
 					}
 					
@@ -964,8 +994,8 @@ public class SerializableHandler {
 					}
 					if(msg.getMimeMultiPartData() != null && msg.getMimeMultiPartData().length > 0
 						&& GmmsMessage.AIC_MSG_TYPE_BINARY.equalsIgnoreCase(msg.getGmmsMsgType())){
-						BASE64Encoder base64=new BASE64Encoder();
-						String text = base64.encode(msg.getMimeMultiPartData());
+						Base64.Encoder encoder = Base64.getEncoder();
+						String text = encoder.encodeToString(msg.getMimeMultiPartData());
 						sb.append(text).append(separator);
 					}else{
 						sb.append(separator);

@@ -13,6 +13,9 @@ import com.king.gmms.connectionpool.connection.NodeClientConnection;
 import com.king.gmms.connectionpool.connection.NodeConnectionManagerWithBindMode;
 import com.king.gmms.connectionpool.node.Node;
 import com.king.gmms.connectionpool.session.*;
+import com.king.gmms.connectionpool.systemmanagement.strategy.CustomerNodeStrategy;
+import com.king.gmms.connectionpool.systemmanagement.strategy.CustomerStrategy;
+import com.king.gmms.connectionpool.systemmanagement.strategy.SessionStrategyInterface;
 import com.king.gmms.connectionpool.sessionthread.*;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.ConnectionInfo;
@@ -22,6 +25,7 @@ import com.king.gmms.domain.NodeInfo;
 import com.king.gmms.domain.SingleNodeCustomerInfo;
 import com.king.gmms.messagequeue.*;
 import com.king.gmms.strategy.IndexBalanceStrategy;
+import com.king.message.gmms.GmmsMessage;
 
 /**
  * <p>
@@ -50,11 +54,13 @@ public class MultiSmppClientFactory extends AbstractConnectionFactory {
 	private static MultiSmppClientFactory instance = new MultiSmppClientFactory();
 	private ModuleManager moduleManager = null;
 	private List<MultiSmppSession> sessionList = null;
+	private Map<Integer, SessionStrategyInterface> ssid2SessionStrategies = null;
 
 	private MultiSmppClientFactory() {
 		isServer = false;
 		moduleManager = ModuleManager.getInstance();
 		sessionList = new ArrayList<MultiSmppSession>();
+		ssid2SessionStrategies = new java.util.concurrent.ConcurrentHashMap<Integer, SessionStrategyInterface>();
 	}
 
 	public static MultiSmppClientFactory getInstance() {
@@ -131,6 +137,8 @@ public class MultiSmppClientFactory extends AbstractConnectionFactory {
 			}
 		} catch (Exception ex) {
 			log.error("initConnectionFactory exception for ssid:" + ssid, ex);
+		} finally {
+			ssid2SessionStrategies.remove(ssid);
 		}
 	}
 
@@ -203,6 +211,7 @@ public class MultiSmppClientFactory extends AbstractConnectionFactory {
 		CustomerMessageQueue operatorMessageQueue = new LongConnectionCustomerMessageQueue(
 				ci, connManager, minSenderNum, maxSenderNum, isServer);
 		ssid2messageQueues.put(ssid, operatorMessageQueue);
+		ssid2SessionStrategies.put(ssid, new CustomerStrategy(ci, connectionMap, connManager, isServer));
 		
 	}
 
@@ -263,6 +272,7 @@ public class MultiSmppClientFactory extends AbstractConnectionFactory {
 		} // end has node
 
 		ssid2messageQueues.put(ssid, nm);
+		ssid2SessionStrategies.put(ssid, new CustomerNodeStrategy(ci, nm));
 	}
 	
 	public void initializeSession(){
@@ -270,5 +280,18 @@ public class MultiSmppClientFactory extends AbstractConnectionFactory {
 			session.start();
 		}
 		sessionList.clear();
+	}
+	
+	public Session getSession(GmmsMessage msg) {
+		if (msg == null) {
+			return null;
+		}
+		int ssid = msg.getRSsID();
+		SessionStrategyInterface strategy = ssid2SessionStrategies.get(ssid);
+		if (strategy == null) {
+			log.warn(msg, "No SMPP session strategy for rssid {}", ssid);
+			return null;
+		}
+		return strategy.getSession(msg);
 	}
 }

@@ -13,10 +13,8 @@ import com.king.framework.A2PService;
 import com.king.framework.A2PThreadGroup;
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
+import com.king.gmms.ha.ModuleStatusReporter;
 import com.king.gmms.ha.systemmanagement.pdu.ModuleRegisterAck;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 
 public abstract class AbstractServer implements A2PService, Runnable {
 	private static SystemLogger log = SystemLogger
@@ -28,7 +26,7 @@ public abstract class AbstractServer implements A2PService, Runnable {
 	protected ServerSocket serverSocket;// Init in run
 	protected Thread serverThread;
 	protected int port; // smpp server listener port
-	protected ScheduledExecutorService heartbeatExecutor = null;
+	protected ModuleStatusReporter statusReporter = null;
 
 
 	public AbstractServer() {
@@ -91,28 +89,24 @@ public abstract class AbstractServer implements A2PService, Runnable {
 
 	public boolean startService() {
 		try {
-			serverThread = new Thread(A2PThreadGroup.getInstance(), this,
-					module);
-			serverThread.start();
 			String redisStatus = "M"; // V4.0 Default to Master, synchronized via Redis Pub/Sub
 			
+			log.info("{} initializing Redis client. redisStatus={}", module, redisStatus);
 			gmmsUtility.initRedisClient(redisStatus);
-			
-			// V4.0 Redis Heartbeat Mechanism
-			String nodeId = System.getProperty("NodeID", "0");
-			final String statusKey = "module:status:" + module + ":" + nodeId;
-			heartbeatExecutor = Executors.newSingleThreadScheduledExecutor();
-			heartbeatExecutor.scheduleAtFixedRate(new Runnable() {
-				@Override
-				public void run() {
-					try {
-						gmmsUtility.getRedisClient().setString(statusKey, "ONLINE");
-						gmmsUtility.getRedisClient().setExpire(statusKey, 30); // 30s TTL
-					} catch (Exception e) {
-						log.warn("Failed to update Redis heartbeat for " + module, e);
-					}
-				}
-			}, 0, 10, TimeUnit.SECONDS); // Ping every 10 seconds
+			log.info("{} Redis client initialized.", module);
+
+			serverThread = new Thread(A2PThreadGroup.getInstance(), this,
+					module);
+			log.info("{} starting server listen thread.", module);
+			serverThread.start();
+			log.info("{} server listen thread started.", module);
+
+			try {
+				log.info("{} starting ModuleStatusReporter.", module);
+				statusReporter = ModuleStatusReporter.start(gmmsUtility, "server", module, gmmsUtility.getNodeId());
+			} catch (Exception e) {
+				log.warn(module + " failed to start ModuleStatusReporter, server listener keeps running.", e);
+			}
 
 			log.info("{} starting...", module);
 			return true;
@@ -127,8 +121,9 @@ public abstract class AbstractServer implements A2PService, Runnable {
 		running = false;
 		try {
 			beforeStop();
-			if (heartbeatExecutor != null) {
-				heartbeatExecutor.shutdownNow();
+			if (statusReporter != null) {
+				statusReporter.stop();
+				statusReporter = null;
 			}
 			serverThread.join();
 			if (serverSocket != null) {
@@ -153,12 +148,5 @@ public abstract class AbstractServer implements A2PService, Runnable {
 	 * send stop request
 	 */
 	public void beforeStop() {
-		try {
-			String nodeId = System.getProperty("NodeID", "0");
-			String statusKey = "module:status:" + module + ":" + nodeId;
-			gmmsUtility.getRedisClient().del(statusKey);
-		} catch (Exception e) {
-			log.warn("Failed to delete module status key on stop", e);
-		}
 	}
 }

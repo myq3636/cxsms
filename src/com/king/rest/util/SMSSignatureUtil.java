@@ -25,7 +25,6 @@ import org.apache.commons.codec.digest.DigestUtils;
 import com.king.framework.SystemLogger;
 import com.king.gmms.connectionpool.session.CommonHttpSession;
 
-import sun.misc.BASE64Encoder;
 
 
 /**
@@ -125,8 +124,7 @@ public class SMSSignatureUtil {
             Mac mac = Mac.getInstance(ALGORITHM);
             mac.init(new SecretKeySpec(key.getBytes(ENCODING), ALGORITHM));
             byte[] signData = mac.doFinal(stringToSign.toString().getBytes("utf8"));
-            BASE64Encoder base64=new BASE64Encoder();
-            signature = base64.encode(signData);
+            signature = base64Encode(signData);
         } catch (InvalidKeyException e) {
             e.printStackTrace();
         } catch (UnsupportedEncodingException e) {

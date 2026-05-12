@@ -93,15 +93,7 @@ public class PeeringTcp2Server extends AbstractServer {
      */
     public boolean stopService() {
     	super.stopService();
-        try {
-            agentListener.stop();
-        }
-        catch (Exception ioe) {
-            log.error("Error occur while attempt to stop SMPP Server.", ioe);
-        }
-        finally {
-            running = false;
-        }
+        
         return true;
     }
     /**
@@ -118,6 +110,5 @@ public class PeeringTcp2Server extends AbstractServer {
         		agentFactory.initInternalConnectionFactory(routerModuleName);
         	}
         }
-        agentListener.start();
     }
 }

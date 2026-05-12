@@ -10,11 +10,6 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 
-import javax.xml.bind.JAXBContext;
-import javax.xml.bind.JAXBException;
-import javax.xml.bind.Marshaller;
-import javax.xml.bind.Unmarshaller;
-
 import org.dom4j.Document;
 import org.dom4j.Element;
 import org.dom4j.io.SAXReader;
@@ -40,8 +35,8 @@ import com.king.message.gmms.MessageIdGenerator;
 
 public abstract class XmlMessageConverter extends HttpHandler{
 	 private static SystemLogger log = SystemLogger.getSystemLogger(XmlMessageConverter.class);
-	 private static JAXBContext jaxbContext = null;  
-	 private static Marshaller marshaller = null;  
+	 //private static JAXBContext jaxbContext = null;  
+	 //private static Marshaller marshaller = null;  
 	 private static HttpInterfaceManager him = null;
 	 protected static List<String> eleList = null;
 	 private static HashMap<String,String> revMap = new HashMap<String,String>();
@@ -83,13 +78,7 @@ public abstract class XmlMessageConverter extends HttpHandler{
 	  */  
 	 public static String buildXml(Object javaObj) {  
 		  try {  
-			  jaxbContext = JAXBContext.newInstance(javaObj.getClass());  
-			  marshaller = jaxbContext.createMarshaller();  
-			  ByteArrayOutputStream baos = new ByteArrayOutputStream();
-			  marshaller.marshal(javaObj, baos);
-			  return baos.toString(charset);
-		  }catch (JAXBException e) {  
-			  e.printStackTrace();  
+			  return null;
 		  }catch(Exception e){
 			  e.printStackTrace();  
 		  }  
@@ -102,10 +91,12 @@ public abstract class XmlMessageConverter extends HttpHandler{
 	  */   
 	 public static Object buildObject(Class objclass, String xmlContent) {  
 	  try {  
-		    jaxbContext = JAXBContext.newInstance(objclass);  
-			Unmarshaller unmarshaller = jaxbContext.createUnmarshaller();    
-			InputStream is =new ByteArrayInputStream(xmlContent.getBytes());  
-			return unmarshaller.unmarshal(is);    
+			/*
+			 * jaxbContext = JAXBContext.newInstance(objclass); Unmarshaller unmarshaller =
+			 * jaxbContext.createUnmarshaller(); InputStream is =new
+			 * ByteArrayInputStream(xmlContent.getBytes()); return
+			 * unmarshaller.unmarshal(is);
+			 */   
 	  } catch (Exception e) {  
 		  e.printStackTrace();  
 	  }  

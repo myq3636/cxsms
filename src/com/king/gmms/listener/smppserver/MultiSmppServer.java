@@ -89,7 +89,7 @@ public class MultiSmppServer
             if(!isRegister){
             	log.warn("module register failed!");
             }
-            startAgentConnection();    
+            //startAgentConnection();    
             smppAsync = Boolean.parseBoolean(gmmsUtility.getModuleProperty(
                 "Asynchronous", "true").toLowerCase().trim());
             if (smppAsync) {
@@ -101,15 +101,9 @@ public class MultiSmppServer
                 run();
             }
             log.info( "{} starting...",module);
-            // V4.0 Start DR Consumer
+            // V5.0 Start DR Consumer (Doorbell pattern, no registerSSID needed)
             DRStreamConsumer.getInstance().start();
             
-            // V4.0 Register node for failover discovery
-            try {
-                gmmsUtility.getRedisClient().getStateRedis().sadd("system:server:nodes", gmmsUtility.getNodeId());
-            } catch (Exception e) {
-                log.warn("Fail to register node in Redis: {}", e.getMessage());
-            }
             return true;
         }
         catch (Exception ex) {
@@ -122,16 +116,14 @@ public class MultiSmppServer
      */
     private void startAgentConnection(){
     	 //start MessageQueue of InternalAgent
-        agentFactory = InternalAgentConnectionFactory.getInstance();
-        agentFactory.setCustomerFactory(serverFactory);
-        ModuleManager moduleManager = ModuleManager.getInstance();
-        List<String> moduleNameList = moduleManager.getRouterModules();
-        if(moduleNameList != null){
-        	for(String routerModuleName:moduleNameList){
-        		agentFactory.initInternalConnectionFactory(routerModuleName);
-        	}
-        }
-        agentListener.start();
+			/*
+			 * agentFactory = InternalAgentConnectionFactory.getInstance();
+			 * agentFactory.setCustomerFactory(serverFactory); ModuleManager moduleManager =
+			 * ModuleManager.getInstance(); List<String> moduleNameList =
+			 * moduleManager.getRouterModules(); if(moduleNameList != null){ for(String
+			 * routerModuleName:moduleNameList){
+			 * agentFactory.initInternalConnectionFactory(routerModuleName); } }
+			 */
     }
 
     /**
@@ -143,14 +135,14 @@ public class MultiSmppServer
     public boolean stopService() {
     	super.stopService();
         try {
-            agentListener.stop();
+           // agentListener.stop();
         }
         catch (Exception ioe) {
             log.error("Error occur while attempt to stop SMPP Server.", ioe);
         }
         finally {
             running = false;
-            // V4.0 Stop DR Consumer
+            // V5.0 Stop DR Consumer
             DRStreamConsumer.getInstance().stop();
         }
         return true;

@@ -39,6 +39,7 @@ public class MetricsCollector {
     // ---- Timers: cumulative nanos + invocation count ----
     private final ConcurrentHashMap<String, AtomicLong> timerTotalNanos = new ConcurrentHashMap<String, AtomicLong>();
     private final ConcurrentHashMap<String, AtomicLong> timerCounts = new ConcurrentHashMap<String, AtomicLong>();
+    private volatile boolean enabled = false;
 
     private MetricsCollector() {
     }
@@ -47,12 +48,21 @@ public class MetricsCollector {
         return INSTANCE;
     }
 
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+    }
+
+    public boolean isEnabled() {
+        return enabled;
+    }
+
     // ==================== Counter operations ====================
 
     /**
      * Increment a counter by 1.
      */
     public void incrementCounter(String name) {
+        if (!enabled) return;
         getOrCreateCounter(name).incrementAndGet();
     }
 
@@ -60,6 +70,7 @@ public class MetricsCollector {
      * Increment a counter by the specified delta.
      */
     public void incrementCounter(String name, long delta) {
+        if (!enabled) return;
         getOrCreateCounter(name).addAndGet(delta);
     }
 
@@ -86,6 +97,7 @@ public class MetricsCollector {
      * Set a gauge to an absolute value.
      */
     public void setGauge(String name, long value) {
+        if (!enabled) return;
         AtomicLong gauge = gauges.get(name);
         if (gauge == null) {
             gauges.putIfAbsent(name, new AtomicLong(value));
@@ -108,6 +120,7 @@ public class MetricsCollector {
      * Record a timing measurement (in nanoseconds).
      */
     public void recordTime(String name, long nanos) {
+        if (!enabled) return;
         getOrCreateTimerNanos(name).addAndGet(nanos);
         getOrCreateTimerCount(name).incrementAndGet();
     }
@@ -186,6 +199,22 @@ public class MetricsCollector {
             long count = entry.getValue().get();
             double avgMs = getTimerAvgMs(name);
             snapshot.put(name, String.format("count=%d, avgMs=%.2f", count, avgMs));
+        }
+        return snapshot;
+    }
+
+    public Map<String, Long> snapshotTimerCounts() {
+        TreeMap<String, Long> snapshot = new TreeMap<String, Long>();
+        for (Map.Entry<String, AtomicLong> entry : timerCounts.entrySet()) {
+            snapshot.put(entry.getKey(), entry.getValue().get());
+        }
+        return snapshot;
+    }
+
+    public Map<String, Long> snapshotTimerTotalNanos() {
+        TreeMap<String, Long> snapshot = new TreeMap<String, Long>();
+        for (Map.Entry<String, AtomicLong> entry : timerTotalNanos.entrySet()) {
+            snapshot.put(entry.getKey(), entry.getValue().get());
         }
         return snapshot;
     }

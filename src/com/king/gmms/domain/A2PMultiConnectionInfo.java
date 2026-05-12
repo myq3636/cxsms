@@ -9,8 +9,6 @@ import java.util.regex.*;
 import com.king.framework.SystemLogger;
 import com.king.gmms.connectionpool.BindMode;
 
-import sun.util.logging.resources.logging;
-
 public class A2PMultiConnectionInfo extends A2PCustomerInfo{
 
 	private static SystemLogger log = SystemLogger

@@ -15,14 +15,11 @@ import java.util.concurrent.ExecutorService;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
-import javax.xml.bind.JAXBContext;
-import javax.xml.bind.Unmarshaller;
 
 import org.jdom.Document;
 import org.jdom.Element;
 import org.jdom.JDOMException;
 import org.jdom.input.SAXBuilder;
-import org.xml.sax.InputSource;
 
 import com.alibaba.fastjson.JSONObject;
 import com.king.framework.SystemLogger;
@@ -327,10 +324,11 @@ public class CreditSyncHttpServlet extends AbstractHttpServer {
 		StringReader reader = null;
 		JxMessage jxMessage = new JxMessage();
 		try {
-			reader = new StringReader(xml);
-			InputSource source = new InputSource(reader);
+			/*
+			 * reader = new StringReader(xml); InputSource source = new InputSource(reader);
+			 */
 			SAXBuilder sb = new SAXBuilder();
-			Document doc = sb.build(source);
+			Document doc = sb.build(xml);
 			Element root = doc.getRootElement();
 			List node = root.getChildren();
 			if (node == null) {

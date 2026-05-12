@@ -3,9 +3,6 @@ package com.king.db;
 
 import java.sql.ResultSet;
 
-import org.hibernate.CacheMode;
-import org.hibernate.Session;
-
 import com.king.db.DBHAConstants;
 
 public class MasterHeartBeat extends DBHeartBeat {
@@ -14,21 +11,8 @@ public class MasterHeartBeat extends DBHeartBeat {
 			init(DBHAConstants.MASTER_KEY);
 	}
 	protected void getConnection() throws Exception{
-		Session s = (Session)session.get();
-		if(s == null){
-			log.trace("init master db session...");
-			if(factory==null){
-				factory = this.dataControl.getMasterSessionFactory("gmms");
-			}
-			s = factory.openSession();
-			s.setCacheMode(CacheMode.NORMAL);
-			session.set(s);
-		}
-		if(s.isDirty()){
-            s.flush();
-		}
 		if(connection==null){
-			connection=s.connection();
+			connection=this.dataControl.getMasterConnection("gmms");
 			stmt = connection.createStatement(
 					ResultSet.TYPE_SCROLL_SENSITIVE,
 					ResultSet.CONCUR_READ_ONLY);

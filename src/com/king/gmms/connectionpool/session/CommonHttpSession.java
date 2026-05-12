@@ -313,14 +313,16 @@ public class CommonHttpSession extends HttpSession {
 				log.debug(msg, "resp {}",resp);
 			}
 
+			resetLastRouterQueuePutResult();
 			dealResp(msg, resp);
 			
-			bret = true;
+			bret = getLastRouterQueuePutResult();
 		} catch (IOException e) {
 			log.error(msg,"send msg to vendor throw exception:{}", resp, e);
 			handleHttpStatusCode(msg);
+			resetLastRouterQueuePutResult();
 			dealHttpErrorResp(msg, resp);
-			return true;
+			return getLastRouterQueuePutResult();
 		} catch (Exception e) {
 			return false;
 		}

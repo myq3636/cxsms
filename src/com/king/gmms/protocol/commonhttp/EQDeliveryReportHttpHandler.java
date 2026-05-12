@@ -23,7 +23,6 @@ import org.jdom.Document;
 import org.jdom.Element;
 import org.jdom.JDOMException;
 import org.jdom.input.SAXBuilder;
-import org.xml.sax.InputSource;
 
 import com.alibaba.fastjson.JSONObject;
 import com.king.db.DBLockConnection;
@@ -216,10 +215,9 @@ public class EQDeliveryReportHttpHandler extends HttpHandler {
 		List<GmmsMessage> messages = new ArrayList<GmmsMessage>();
 		List<HttpParam> parameters = hi.getMtDRResponse().getParamList();		 
 		try {
-			reader = new StringReader(xml);
-			InputSource source = new InputSource(reader);
+			
 			SAXBuilder sb = new SAXBuilder();
-			Document doc = sb.build(source);
+			Document doc = sb.build(xml);
 			Element root = doc.getRootElement();
 			List node = root.getChildren();
 			CommonHttpClientFactory.getInstance().setQueryMinID(cm.getShortName()+"_MTDR", "1");

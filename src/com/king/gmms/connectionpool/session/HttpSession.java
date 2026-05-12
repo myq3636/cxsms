@@ -97,6 +97,7 @@ public abstract class HttpSession extends Session {
 	protected String httpMethod = "post";
 
 	protected String module ="";
+	protected boolean lastRouterQueuePutResult = true;
 	
 	private SslContextFactory sslContextFactory = null;
 	
@@ -573,6 +574,7 @@ public abstract class HttpSession extends Session {
 	 */
 	protected boolean putGmmsMessage2RouterQueue(GmmsMessage msg) {
 		if (msg == null) {
+			lastRouterQueuePutResult = false;
 			return false;
 		}
 		ModuleManager moduleManager = ModuleManager.getInstance();
@@ -589,18 +591,14 @@ public abstract class HttpSession extends Session {
 						.equalsIgnoreCase(msg.getMessageType())
 				|| GmmsMessage.MSG_TYPE_DELIVERY_REPORT_QUERY_RESP
 						.equalsIgnoreCase(msg.getMessageType())) {
-			if (innerTransaction == null) {
-				if(log.isInfoEnabled()){
-					log.info(msg, "Cannot get the inner transaction");
-				}
-				return false;
-			}
+			
 			
 			// V4.1 Redirect all responses to Redis Results Stream
 			if (log.isInfoEnabled()) {
 				log.info(msg, "Sending {} to Redis results stream", msg.getMessageType());
 			}
-			return com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceResult(msg);
+			lastRouterQueuePutResult = com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceResult(msg);
+			return lastRouterQueuePutResult;
 		} else {
 			routerQueue = moduleManager.selectRouter(msg);
 			msgQueue = factory.getMessageQueue(msg, routerQueue);
@@ -633,11 +631,21 @@ public abstract class HttpSession extends Session {
 		if (msgQueue == null) {
 			log.warn(msg, "Can not find the alive delivery router");
 			msg.setDeliveryChannel(module);
+			lastRouterQueuePutResult = false;
 			return false;
 		} else {
 			msg.setDeliveryChannel(module+":"+deliveryChannelQueue);
-			return msgQueue.putMsg(msg);
+			lastRouterQueuePutResult = msgQueue.putMsg(msg);
+			return lastRouterQueuePutResult;
 		}
+	}
+
+	protected void resetLastRouterQueuePutResult() {
+		lastRouterQueuePutResult = true;
+	}
+
+	protected boolean getLastRouterQueuePutResult() {
+		return lastRouterQueuePutResult;
 	}
 
 	/**

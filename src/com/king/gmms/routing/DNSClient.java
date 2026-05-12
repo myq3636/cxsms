@@ -2,6 +2,7 @@ package com.king.gmms.routing;
 
 
 import org.xbill.DNS.*;
+import org.xbill.DNS.Record;
 
 import java.net.URL;
 import java.net.UnknownHostException;

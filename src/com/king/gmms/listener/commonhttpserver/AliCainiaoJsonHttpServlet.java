@@ -16,14 +16,11 @@ import java.util.concurrent.ExecutorService;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
-import javax.xml.bind.JAXBContext;
-import javax.xml.bind.Unmarshaller;
 
 import org.jdom.Document;
 import org.jdom.Element;
 import org.jdom.JDOMException;
 import org.jdom.input.SAXBuilder;
-import org.xml.sax.InputSource;
 
 import com.alibaba.fastjson.JSONObject;
 import com.king.framework.SystemLogger;
@@ -96,10 +93,6 @@ public class AliCainiaoJsonHttpServlet extends AbstractHttpServer {
 				if (alSsid != null && alSsid.size() > 0) {
 					for (int i = 0; i < alSsid.size(); i++) {
 						int ssid = alSsid.get(i);
-						
-						// V4.0 Async Routing: Register SSID for DR polling
-						com.king.gmms.messagequeue.DRStreamConsumer.getInstance().registerSSID(ssid);
-						
 						if (ctm.inCurrentA2P(ctm.getConnectedRelay(ssid,
 								GmmsMessage.AIC_MSG_TYPE_TEXT))) {
 							OperatorMessageQueue queue = factory
@@ -115,7 +108,7 @@ public class AliCainiaoJsonHttpServlet extends AbstractHttpServer {
 					log.info("No client is started directly.");
 				}
 				//receiverThreadPool = executorServiceManager.newFixedThreadPool(this, "IntReceiver_commonHttpServer", 10);
-				startAgentConnection(factory);
+				//startAgentConnection(factory);
 			}
 			super.startService();
 		} catch (Exception ex) {
@@ -204,10 +197,6 @@ public class AliCainiaoJsonHttpServlet extends AbstractHttpServer {
 				if (content!=null && !content.isEmpty()) {
 					GmmsMessage gmmsMessage  = new GmmsMessage();
 					gmmsMessage.setOSsID(sInfo.getSSID());										
-					
-					// V4.0 Sticky Routing Context
-					gmmsMessage.setInnerTransaction(new com.king.gmms.ha.TransactionURI());
-					
 					gmmsMessage.setMsgID(commonMsgID);											
 					gmmsMessage.setTextContent(content);
 					gmmsMessage.setSenderAddress(senderId);						
@@ -311,16 +300,16 @@ public class AliCainiaoJsonHttpServlet extends AbstractHttpServer {
 					gmmsMessage.setInTransID(Long.toString(System.currentTimeMillis()));				
 					gmmsMessage.setTimeStamp(gmmsUtility.getGMTTime());
 					
-					// V4.0 Async Submit-MQ: Produce to Redis Stream instead of local memory queue
-					if (!com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceSubmitMessage(gmmsMessage)) {
+					if (!putGmmsMessage2RouterQueue(gmmsMessage)) {
 						gmmsUtility.getCdrManager().logInSubmit(gmmsMessage);
 						if (gmmsMessage.getDeliveryReport()) {
 							gmmsMessage.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 							gmmsMessage.setRSsID(sInfo.getSSID());
 							gmmsMessage.setOutMsgID(gmmsMessage.getInMsgID());
 							gmmsMessage.setStatus(GmmsStatus.REJECTED);
-							// Attempt to produce DR directly (or via report pool)
-							com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceDeliveryReport(gmmsMessage);
+							if (!putGmmsMessage2RouterQueue(gmmsMessage)) {
+								gmmsUtility.getCdrManager().logInDeliveryReportRes(gmmsMessage);									
+							}
 						}							
 					}					
 				}

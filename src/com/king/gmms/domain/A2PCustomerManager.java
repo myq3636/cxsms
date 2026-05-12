@@ -26,14 +26,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import java_cup.internal_error;
-
 import org.apache.axis.utils.StringUtils;
-import org.apache.logging.log4j.core.appender.rolling.SizeBasedTriggeringPolicy;
 
-import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.LoadingCache;
 import com.google.common.collect.HashBasedTable;
 import com.google.common.collect.Table;
 import com.king.framework.A2PThreadGroup;
@@ -450,7 +444,11 @@ public class A2PCustomerManager implements LifecycleListener {
 	public int OnEvent(Event event) {
 		log.info("Event Received. Type: {}", event.getEventType());
 		if (event.getEventType() == Event.TYPE_ROUTINFO_RELOAD) {
-			return loadRoutingInfo();
+			String action = getRoutingReloadAction(event);
+			if (action == null) {
+				return 1;
+			}
+			return loadRoutingInfo(action);
 		} else if (event.getEventType() == Event.TYPE_CUSTOMER_RELOAD) {
 			return loadCustomers();
 		}else if (event.getEventType() == Event.TYPE_PHONEPREFIX_RELOAD) {
@@ -474,6 +472,22 @@ public class A2PCustomerManager implements LifecycleListener {
 		}else {
 			return 1;
 		}
+	}
+
+	private String getRoutingReloadAction(Event event) {
+		String action = "-a";
+		Object[] args = event.getArgs();
+		if (args != null && args.length > 0 && args[0] != null) {
+			action = String.valueOf(args[0]).trim();
+		}
+		if (action.length() == 0) {
+			action = "-a";
+		}
+		if (!"-a".equalsIgnoreCase(action) && !"-r".equalsIgnoreCase(action)) {
+			log.warn("Unsupported routingInfo reload action: {}", action);
+			return null;
+		}
+		return action;
 	}
 	
 	private int loadRecipientAddressRule() {
@@ -1637,16 +1651,27 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 
 	private int loadRoutingInfo() {
+		return loadRoutingInfo("-a");
+	}
+
+	private int loadRoutingInfo(String action) {
 		String path = GmmsUtility.getInstance().getRoutingFilePath();
 
 		try {
+			log.info("Start reload routingInfo. action={}, path={}", action, path);
+			if (path == null) {
+				log.warn("Reload routingInfo failed, routing file path is null. action={}", action);
+				return 1;
+			}
 			if (path != null) {
 				File conf = new File(path);
 				routingInfoMap.clear();
 				this.routingInfoMap = A2PCustomerConfig.parseRoutingInfo(conf);
+				log.info("Parsed routingInfo config. action={}, path={}, blockCount={}", action, path,
+						routingInfoMap == null ? 0 : routingInfoMap.size());
 
                 if(routingInfoMap == null || routingInfoMap.isEmpty()){
-                    log.info("Reload routingInfo warning, routingFile is null");
+                    log.info("Reload routingInfo warning, routingFile is null. action={}, path={}", action, path);
                     return 1;
                 }
 				
@@ -2131,15 +2156,19 @@ public class A2PCustomerManager implements LifecycleListener {
 				
 			}
 			String moduleName = System.getProperty("module");
-	        if (ModuleManager.getInstance().getRouterModules().contains(moduleName)) {
+			boolean routerModule = ModuleManager.getInstance().getRouterModules().contains(moduleName);
+			log.info("Reload routingInfo local cache completed. action={}, module={}, routerModule={}", action, moduleName, routerModule);
+	        if (routerModule) {
 	        	loadRoutingInfoToRedis(moduleName);
+	        	log.info("Reload routingInfo redis cache completed. action={}, module={}", action, moduleName);
 	        }
 			
 		} catch (Exception ex) {
-			log.warn("reload routing info error.", ex);
+			log.warn("reload routing info error. action=" + action + ", path=" + path, ex);
 			return 1;
 		}
 
+		log.info("Reload routingInfo completed. action={}, path={}", action, path);
 		return 0;
 	}
 
@@ -2938,7 +2967,7 @@ public class A2PCustomerManager implements LifecycleListener {
 				// reload for sessions
 				this.reloadConnectionManagement(block.getSSID());
 				this.createCustomerSessions(block);
-				DistributedThrottlingManager.getInstance().updateRate(ssid, newBlock.getOutgoingThrottlingNum());
+				//DistributedThrottlingManager.getInstance().updateRate(ssid, newBlock.getOutgoingThrottlingNum());
 //				RetryPolicyManager.getInstance().updateRetryPolicy(block.getSSID());
 				rmShortName.remove(shortName);
 				if ("partition".equalsIgnoreCase(newBlock.getString("A2PPlayerType"))) {

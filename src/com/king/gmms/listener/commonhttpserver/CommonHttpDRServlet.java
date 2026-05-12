@@ -9,8 +9,6 @@ import java.util.Date;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
-import javax.xml.bind.JAXBContext;
-import javax.xml.bind.Unmarshaller;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.customerconnectionfactory.CommonHttpServerFactory;
@@ -58,10 +56,6 @@ public class CommonHttpDRServlet extends AbstractHttpServer {
 				if (alSsid != null && alSsid.size() > 0) {
 					for (int i = 0; i < alSsid.size(); i++) {
 						int ssid = alSsid.get(i);
-						
-						// V4.0 Async Routing: Register SSID for DR support
-						com.king.gmms.messagequeue.DRStreamConsumer.getInstance().registerSSID(ssid);
-						
 						if (ctm.inCurrentA2P(ctm.getConnectedRelay(ssid,
 								GmmsMessage.AIC_MSG_TYPE_TEXT))) {
 							OperatorMessageQueue queue = factory
@@ -116,12 +110,11 @@ public class CommonHttpDRServlet extends AbstractHttpServer {
 		if (hi != null) {
 			if (hi.isSuccessDRRespStatus(hs)) {
 				//factory.putServletParam(msg.getMsgID(), responseParameter);
-				// V4.1 Async Feedback Loop: Produce result (DR) to Redis Stream instead of local memory queue
-				if (!com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceResult(msg)) {
+				if (!putGmmsMessage2RouterQueue(msg)) {
 					msg.setStatus(GmmsStatus.ENROUTE);					
 					gmmsUtility.getCdrManager().logOutDeliveryReportRes(msg);
-				}
- /*else {
+					//factory.removeServlet(msg.getMsgID());
+				} /*else {
 					try {
 						synchronized (responseParameter) {
 							responseParameter.wait(timeout);
@@ -165,6 +158,79 @@ public class CommonHttpDRServlet extends AbstractHttpServer {
 				o.close();
 			}
 		}
+	}
+	public void response(String interfaceName, HttpStatus hs, GmmsMessage msg,
+			HttpServletResponse response,
+			ServletResponseParameter responseParameter)
+			throws ServletException, IOException {
+		int ssid = msg.getRSsID();
+
+		A2PCustomerInfo cst = ctm.getCustomerBySSID(ssid);
+		String charset = ((A2PSingleConnectionInfo) cst).getChlRespCharset();
+		if (charset != null && !"".equalsIgnoreCase(charset.trim())) {
+			String outCharset = "text/html;charset=" + charset;
+			response.setHeader("content-type", outCharset);
+		}else{
+			String outCharset = "text/html;charset=UTF-8";
+			response.setHeader("content-type", outCharset);
+		}
+
+		HttpInterface hi = him.getHttpInterfaceMap().get(interfaceName);
+		HttpPdu drResp = hi.getMtDRResponse();
+		String respContent = null;
+		if (drResp.hasHandlerClass()) {
+			String className = drResp.getHandlerClass();
+			Object[] args = { hs, msg, cst };
+			respContent = (String) hi.invokeHandler(className,
+					HttpConstants.HANDLER_METHOD_MAKERESPONSE, args);
+			if(log.isDebugEnabled()){
+        		log.debug(msg, "Invoke handlerclass {}'s method:{}",
+					className ,HttpConstants.HANDLER_METHOD_MAKERESPONSE);
+			}
+		} else {
+			CommonDeliveryReportHttpHandler commonDRHandler = hi
+					.getCommonDeliveryReportHandler();
+			respContent = commonDRHandler.makeResponse(hs, msg, cst);
+		}
+
+		if(log.isInfoEnabled()){
+			log.info(msg,"send dr response {}", respContent);
+		}
+		if (!StringUtility.stringIsNotEmpty(respContent)
+				&& !"STIV".equalsIgnoreCase(interfaceName)) {
+			respContent = "";
+		}
+		log.info(msg,"after send dr response {}", respContent);
+		OutputStream o = null;
+		try {
+			o = response.getOutputStream();
+			if(charset != null && !"".equalsIgnoreCase(charset.trim())){
+				o.write(respContent.getBytes(charset));
+			}else{
+				o.write(respContent.getBytes("UTF-8"));
+			}
+			
+			//o.flush();
+
+			msg.setMessageType(GmmsMessage.MSG_TYPE_INNER_ACK);
+			putGmmsMessage2RouterQueue(msg);
+
+			synchronized (responseParameter) {
+				responseParameter.notifyAll();
+			}
+		} catch (Exception e) {
+			log.error(e, e);
+		} finally {
+			if (o != null) {
+				try {
+					o.close();
+				} catch (Exception e2) {
+					// TODO: handle exception
+				}
+				
+			}
+		}
+
 	}
 
 	public void response(String interfaceName, HttpStatus hs, GmmsMessage msg,

@@ -36,8 +36,6 @@ import com.king.gmms.metrics.MetricsReporter;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 
-import java_cup.internal_error;
-
 public class GmmsUtility {
 	private static GmmsUtility instance = new GmmsUtility();
 	private static SystemLogger log;
@@ -52,6 +50,7 @@ public class GmmsUtility {
 	private MessageAddressInterpreter messageAddressInterpreter;
 	private boolean initialized;
 	private Properties properties;
+	private String gmmsConfigFile;
 	private String serverIP;
 	private String serviceIP;
 	private HashSet<String> screenedIPs;
@@ -148,6 +147,7 @@ public class GmmsUtility {
 	private int dynamicCustInThresholdExipreTime;
 
 	// V4.0 Redis Stream Sharding
+	private String nodeId = "0";
 	private int totalShards = 1;
 	private Set<Integer> myShards = new HashSet<>();
 
@@ -192,6 +192,7 @@ public class GmmsUtility {
     private int min_ID_expireTime = 0;
     
     private com.king.framework.lifecycle.RedisControlSubscriber controlSubscriber;
+    private Thread controlSubscriberThread;
 
 	private GmmsUtility() {
 		initialized = false;
@@ -207,9 +208,11 @@ public class GmmsUtility {
 	public void close() {
 		initialized = false;
 		try {
+			com.king.gmms.ha.ModuleStatusReporter.stopAll();
 			if (controlSubscriber != null) {
 				controlSubscriber.stop();
 			}
+			controlSubscriberThread = null;
 			if (executorServiceManager != null) {
 				executorServiceManager.shutdownAll();
 			}
@@ -219,13 +222,15 @@ public class GmmsUtility {
 		}
 	}
 
-	public void startControlSubscriber() {
-		if (controlSubscriber == null) {
-			controlSubscriber = new com.king.framework.lifecycle.RedisControlSubscriber();
-			Thread t = new Thread(controlSubscriber, "RedisControlSubscriberThread");
-			t.setDaemon(true);
-			t.start();
+	public synchronized void startControlSubscriber() {
+		if (controlSubscriberThread != null && controlSubscriberThread.isAlive()) {
+			return;
 		}
+		controlSubscriber = new com.king.framework.lifecycle.RedisControlSubscriber();
+		controlSubscriberThread = new Thread(controlSubscriber, "RedisControlSubscriberThread");
+		controlSubscriberThread.setDaemon(true);
+		controlSubscriberThread.start();
+		log.info("RedisControlSubscriber thread started.");
 	}
 
 	public void stopCDRManager() {
@@ -253,15 +258,22 @@ public class GmmsUtility {
     
     public void initRedisClient(String flag){
     	try{
+    		log.info("initRedisClient start. flag={}", flag);
+    		log.info("initRedisClient getting RedisClient instance.");
     		redisClient = RedisClient.getInstance();
+    		log.info("initRedisClient got RedisClient instance.");
     		if("M".equalsIgnoreCase(flag)){
+    			log.info("initRedisClient setting Redis HA flag to master.");
     			redisClient.setRedisHaFlag(true);
     		}else{
+    			log.info("initRedisClient setting Redis HA flag to slave.");
     			redisClient.setRedisHaFlag(false);
     		}
+    		startControlSubscriber();
+    		log.info("initRedisClient finished. flag={}", flag);
     		
     	}catch(Exception e){
-            log.error("GmmsUtility init redisClient error!");
+            log.error("GmmsUtility init redisClient error!", e);
             //System.exit( -1);
     	}
     }
@@ -313,6 +325,7 @@ public class GmmsUtility {
 
 	public void initUtility(String propFile) {
 		try {
+			gmmsConfigFile = propFile;
 			Properties properties = new Properties();
 			FileInputStream fis = new FileInputStream(propFile);
 			properties.load(fis);
@@ -350,6 +363,9 @@ public class GmmsUtility {
 			}
 			properties = props;
 			String a2phome = System.getProperty("a2p_home","/usr/local/a2p/");
+			if (gmmsConfigFile == null || gmmsConfigFile.trim().length() == 0) {
+				gmmsConfigFile = a2phome + "Gmms/GmmsConfig.properties";
+			}
 			this.blackListFile = a2phome + "conf/blacklist.cfg";
 			this.whiteListFile = a2phome + "conf/whitelist.cfg";
 			this.routingFile = a2phome + "conf/routing";
@@ -382,12 +398,15 @@ public class GmmsUtility {
 				log.info("A2P launcher initializes GmmsUtility for Service {} from {}",
 							moduleName, a2phome);
 			}
+			lifecycleSupport.addListener(com.king.framework.lifecycle.event.Event.TYPE_GMMS_CONFIG_RELOAD,
+					new GmmsConfigReloadListener(), 1);
 
 			this.cmTempFile = a2phome+"/temp/"+moduleName+"_tempCm.cfg."+new SimpleDateFormat("yyyy-MM-dd").format(new Date());
 			
 			// V4.0 Node ID initialization for distributed uniqueness
-			int nodeId = Integer.parseInt(props.getProperty("NodeID", "0").trim());
-			com.king.message.gmms.MessageIdGenerator.setNodeId(nodeId);
+			nodeId = props.getProperty("NodeID", "0").trim();
+			System.setProperty("NodeID", nodeId);
+			com.king.message.gmms.MessageIdGenerator.setNodeId(toNumericNodeId(nodeId));
 			
 			routerModule = props.getProperty("RouterModule", "DeliveryRouter")
 					.trim();
@@ -462,27 +481,7 @@ public class GmmsUtility {
 			// V4.0 Sharding Configuration
 			totalShards = Integer.parseInt(props.getProperty("TotalShards", "1").trim());
 			String myShardsStr = props.getProperty("MyShards", "0").trim();
-			try {
-				if (myShardsStr.contains("-")) {
-					String[] parts = myShardsStr.split("-");
-					int start = Integer.parseInt(parts[0].trim());
-					int end = Integer.parseInt(parts[1].trim());
-					for (int i = start; i <= end; i++) {
-						myShards.add(i);
-					}
-				} else {
-					String[] parts = myShardsStr.split(",");
-					for (String p : parts) {
-						if (!p.trim().isEmpty()) {
-							myShards.add(Integer.parseInt(p.trim()));
-						}
-					}
-				}
-			} catch (Exception e) {
-				log.error("Failed to parse MyShards: " + myShardsStr, e);
-				// Default to shard 0 if parsing fails
-				myShards.add(0);
-			}
+			myShards = parseShardSet(myShardsStr, "MyShards");
 			
 			// throttling control conf
 			conSecThrottleWinNumToAlert = Integer.parseInt(props.getProperty(
@@ -588,9 +587,20 @@ public class GmmsUtility {
 			maxMessageExpireTimeFromCust = Integer.parseInt(props.getProperty(
 					"MaxMessageExpireTimeFromCust", "10080").trim());
 			
-			// Start metrics reporter
+			boolean metricsEnable = Boolean.parseBoolean(props.getProperty("Metrics.Enable", "true").trim());
 			int metricsInterval = Integer.parseInt(props.getProperty("Metrics.ReportIntervalSeconds", "30").trim());
-			MetricsReporter.getInstance().start(metricsInterval);
+			String metricsLogLevel = props.getProperty("Metrics.LogLevel", "DEBUG").trim();
+			boolean metricsPrintZero = Boolean.parseBoolean(props.getProperty("Metrics.PrintZero", "false").trim());
+			boolean metricsPrintGauge = Boolean.parseBoolean(props.getProperty("Metrics.PrintGauge", "false").trim());
+			double metricsMinTps = doubleProp(props, "Metrics.MinTPS", 0.01);
+			MetricsReporter.getInstance().configure(metricsLogLevel, metricsPrintZero, metricsPrintGauge, metricsMinTps);
+			if (metricsEnable) {
+				MetricsReporter.getInstance().start(metricsInterval);
+			} else {
+				com.king.gmms.metrics.MetricsCollector.getInstance().setEnabled(false);
+				log.info("MetricsReporter disabled by Metrics.Enable=false");
+			}
+			applyDbPoolStatsConfig(props);
 			
 			initialized = true;
 		} catch (Exception e) {
@@ -599,12 +609,574 @@ public class GmmsUtility {
 		}
 	}
 
+	public synchronized int reloadGmmsConfig(String action) {
+		if (action != null && action.trim().length() > 0 && !"-a".equalsIgnoreCase(action.trim())) {
+			log.warn("Reload GmmsConfig only supports -a now, action={}", action);
+		}
+		Properties newProps = new Properties();
+		String a2phome = System.getProperty("a2p_home", "/usr/local/a2p/");
+		String configFile = (gmmsConfigFile != null && gmmsConfigFile.trim().length() > 0)
+				? gmmsConfigFile
+				: a2phome + "Gmms/GmmsConfig.properties";
+		try {
+			FileInputStream fis = new FileInputStream(configFile);
+			try {
+				newProps.load(fis);
+			} finally {
+				fis.close();
+			}
+			Properties oldProps = properties;
+			Set<String> changedKeys = diffProperties(oldProps, newProps);
+			if (changedKeys.isEmpty()) {
+				log.info("GmmsConfig reload completed. file={}, changed=0, applied=0, restartRequired=0", configFile);
+				return 0;
+			}
+			Properties effectiveProps = copyProperties(oldProps);
+			for (String key : changedKeys) {
+				if (isRuntimeConfigKey(key)) {
+					effectiveProps.setProperty(key, newProps.getProperty(key).trim());
+				}
+			}
+			validateRuntimeConfig(effectiveProps, changedKeys);
+			List<String> applied = new ArrayList<String>();
+			List<String> restartRequired = new ArrayList<String>();
+			List<String> unknown = new ArrayList<String>();
+			for (String key : changedKeys) {
+				if (isRuntimeConfigKey(key)) {
+					applied.add(key);
+				} else if (isRestartRequiredConfigKey(key)) {
+					restartRequired.add(key);
+				} else {
+					unknown.add(key);
+				}
+			}
+			properties = effectiveProps;
+			applyRuntimeConfig(effectiveProps, applied);
+			log.info("GmmsConfig reload completed. file={}, changed={}, applied={}, restartRequired={}, unknown={}",
+					configFile, changedKeys.size(), applied.size(), restartRequired.size(), unknown.size());
+			logConfigChanges("Applied GmmsConfig", oldProps, newProps, applied);
+			logConfigChanges("Restart required GmmsConfig", oldProps, newProps, restartRequired);
+			logConfigChanges("Unknown GmmsConfig", oldProps, newProps, unknown);
+			return 0;
+		} catch (Exception e) {
+			log.error("GmmsConfig reload failed. file=" + configFile, e);
+			return 1;
+		}
+	}
+
+	private Set<String> diffProperties(Properties oldProps, Properties newProps) {
+		TreeSet<String> keys = new TreeSet<String>();
+		if (newProps != null) {
+			for (Object key : newProps.keySet()) {
+				keys.add(String.valueOf(key));
+			}
+		}
+		TreeSet<String> changed = new TreeSet<String>();
+		for (String key : keys) {
+			String oldValue = normalizePropertyValue(oldProps == null ? null : oldProps.getProperty(key));
+			String newValue = normalizePropertyValue(newProps == null ? null : newProps.getProperty(key));
+			if (!stringEquals(oldValue, newValue)) {
+				changed.add(key);
+			}
+		}
+		return changed;
+	}
+
+	private Properties copyProperties(Properties source) {
+		Properties target = new Properties();
+		if (source != null) {
+			for (Object key : source.keySet()) {
+				String stringKey = String.valueOf(key);
+				String value = source.getProperty(stringKey);
+				if (value != null) {
+					target.setProperty(stringKey, value);
+				}
+			}
+		}
+		return target;
+	}
+
+	private String normalizePropertyValue(String value) {
+		return value == null ? null : value.trim();
+	}
+
+	private boolean stringEquals(String left, String right) {
+		if (left == null) {
+			return right == null;
+		}
+		return left.equals(right);
+	}
+
+	private void validateRuntimeConfig(Properties props, Set<String> changedKeys) {
+		for (String key : changedKeys) {
+			if (!isRuntimeConfigKey(key)) {
+				continue;
+			}
+			if (isIntegerRuntimeKey(key)) {
+				Integer.parseInt(props.getProperty(key, getDefaultRuntimeValue(key)).trim());
+			} else if ("Smpp.ServiceTypeIDTag".equals(key)) {
+				Short.parseShort(props.getProperty(key, "1401").trim(), 16);
+			} else if (isBooleanRuntimeKey(key)) {
+				Boolean.parseBoolean(props.getProperty(key, "false").trim());
+			} else if ("TotalShards".equals(key)) {
+				Integer.parseInt(props.getProperty(key, "1").trim());
+			} else if (isShardRuntimeKey(key)) {
+				int oldTotalShards = totalShards;
+				try {
+					totalShards = Integer.parseInt(props.getProperty("TotalShards", String.valueOf(totalShards)).trim());
+					parseShardSet(props.getProperty(key, "0"), key);
+				} finally {
+					totalShards = oldTotalShards;
+				}
+			}
+		}
+	}
+
+	private void applyRuntimeConfig(Properties props, List<String> applied) {
+		if (applied == null || applied.isEmpty()) {
+			return;
+		}
+		boolean shardChanged = false;
+		boolean metricsChanged = false;
+		boolean dbPoolStatsChanged = false;
+		for (String key : applied) {
+			if ("AlertMailFrequence".equals(key)) alertFreq = intProp(props, key, 100);
+			else if ("InitPhoneLen".equals(key)) initPhoneLen = intProp(props, key, 0);
+			else if ("MessageExpireTime".equals(key)) expireTime = intProp(props, key, 1380);
+			else if ("ResendDRThrottle".equals(key)) resendDRThrottle = intProp(props, key, 0);
+			else if ("Redis_MinIDExpireTime".equals(key)) min_ID_expireTime = intProp(props, key, 300);
+			else if ("MessageFinalExpireTime".equals(key)) finalExpireTime = intProp(props, key, 1440);
+			else if ("DRInterval".equals(key)) drInterval = intProp(props, key, 20);
+			else if ("ConnectionSilentTime".equals(key)) connectionSilentTime = intProp(props, key, connectionSilentTime);
+			else if ("MaxSilentTime".equals(key)) maxSilentTime = intProp(props, key, 60);
+			else if ("CacheMessageTimeout".equals(key)) cacheMsgTimeout = intProp(props, key, 180000);
+			else if ("CsmIntegrityCacheTimeout".equals(key)) csmIntegrityCacheTimeout = intProp(props, key, 3600000);
+			else if ("CsmIntegrityCacheCapacity".equals(key)) csmIntegrityCacheCapacity = intProp(props, key, 100000);
+			else if ("WaitingEnquireLinkResponseTime".equals(key)) enquireLinkResponseTime = intProp(props, key, 100);
+			else if ("StoreDRModeEnable".equals(key)) storeDRModeEnable = Boolean.parseBoolean(props.getProperty(key, "False").trim());
+			else if ("BlackholeSsid".equals(key)) blackholeSsid = intProp(props, key, -1);
+			else if ("DNSTimeOut".equals(key)) dnsTimeout = intProp(props, key, 20);
+			else if ("MaxServiceTypeID".equals(key)) maxServiceTypeID = intProp(props, key, 3);
+			else if ("Smpp.ServiceTypeIDTag".equals(key)) smppServiceTypeIDTag = Short.parseShort(props.getProperty(key, "1401").trim(), 16);
+			else if ("MinMessageExpireTimeFromCust".equals(key)) minMessageExpireTimeFromCust = intProp(props, key, 60);
+			else if ("MaxMessageExpireTimeFromCust".equals(key)) maxMessageExpireTimeFromCust = intProp(props, key, 10080);
+			else if ("CDRFileSwitchInterval".equals(key)) cdrMaxTime = intProp(props, key, 300);
+			else if ("CDRFileMaxSize".equals(key)) cdrMaxSize = intProp(props, key, 100);
+			else if ("ScreenedIPs".equals(key)) screenedIPs = parseStringSet(props.getProperty(key), false);
+			else if ("LoopbackAddresses".equals(key)) loopbacks = parseStringSet(props.getProperty(key), true);
+			else if ("TotalShards".equals(key)) {
+				totalShards = intProp(props, key, 1);
+				shardChanged = true;
+			} else if (isShardRuntimeKey(key)) {
+				shardChanged = true;
+			} else if ("ThrottlingControl.ConsecutiveNumToAlert".equals(key)) conSecThrottleWinNumToAlert = intProp(props, key, 3);
+			else if ("ThrottlingControl.MaxAlertMailNum".equals(key)) maxThrottleAlertMailNum = intProp(props, key, 1);
+			else if ("ThrottlingControl.ReportModuleIncomingMsgCountInterval".equals(key)) reportModuleIncomingMsgCountInterval = intProp(props, key, 60);
+			else if ("ThrottlingControl.DynamicCustIncomingThresholdExipreTime".equals(key)) dynamicCustInThresholdExipreTime = intProp(props, key, 90);
+			else if ("ThrottlingControl.SystemIncomingThreshold".equals(key)) systemIncomingThreshold = intProp(props, key, 2000);
+			else if ("ThrottlingControl.DefaultCustIncomingThreshold".equals(key)) defaultCustIncomingThreshold = intProp(props, key, 20);
+			else if ("ThrottlingControl.MaxCustIncomingThresholdMagnification".equals(key)) maxCustIncomingThresholdMagnification = intProp(props, key, 5);
+			else if ("Metrics.Enable".equals(key) || "Metrics.ReportIntervalSeconds".equals(key)
+					|| "Metrics.LogLevel".equals(key) || "Metrics.PrintZero".equals(key)
+					|| "Metrics.PrintGauge".equals(key) || "Metrics.MinTPS".equals(key)) metricsChanged = true;
+			else if ("DB.PoolStats.Enable".equals(key) || "DB.PoolStats.IntervalSeconds".equals(key)) dbPoolStatsChanged = true;
+		}
+		if (shardChanged) {
+			reloadLocalShardAssignment();
+		}
+		if (metricsChanged) {
+			applyMetricsConfig(props);
+		}
+		if (dbPoolStatsChanged) {
+			applyDbPoolStatsConfig(props);
+		}
+	}
+
+	private int intProp(Properties props, String key, int defaultValue) {
+		return Integer.parseInt(props.getProperty(key, String.valueOf(defaultValue)).trim());
+	}
+
+	private double doubleProp(Properties props, String key, double defaultValue) {
+		return Double.parseDouble(props.getProperty(key, String.valueOf(defaultValue)).trim());
+	}
+
+	private void applyMetricsConfig(Properties props) {
+		boolean metricsEnable = Boolean.parseBoolean(props.getProperty("Metrics.Enable", "true").trim());
+		int metricsInterval = intProp(props, "Metrics.ReportIntervalSeconds", 30);
+		String metricsLogLevel = props.getProperty("Metrics.LogLevel", "DEBUG").trim();
+		boolean metricsPrintZero = Boolean.parseBoolean(props.getProperty("Metrics.PrintZero", "false").trim());
+		boolean metricsPrintGauge = Boolean.parseBoolean(props.getProperty("Metrics.PrintGauge", "false").trim());
+		double metricsMinTps = doubleProp(props, "Metrics.MinTPS", 0.01);
+		MetricsReporter.getInstance().configure(metricsLogLevel, metricsPrintZero, metricsPrintGauge, metricsMinTps);
+		if (metricsEnable) {
+			MetricsReporter.getInstance().restart(metricsInterval);
+		} else {
+			MetricsReporter.getInstance().stop();
+			com.king.gmms.metrics.MetricsCollector.getInstance().setEnabled(false);
+			log.info("MetricsReporter disabled by GmmsConfig reload.");
+		}
+	}
+
+	private void applyDbPoolStatsConfig(Properties props) {
+		boolean enable = Boolean.parseBoolean(props.getProperty("DB.PoolStats.Enable", "false").trim());
+		int interval = intProp(props, "DB.PoolStats.IntervalSeconds", 60);
+		if (enable) {
+			JdbcPoolStatsReporter.getInstance().restart(interval);
+		} else {
+			JdbcPoolStatsReporter.getInstance().stop();
+			log.info("JdbcPoolStatsReporter disabled by DB.PoolStats.Enable=false");
+		}
+	}
+
+	private HashSet<String> parseStringSet(String value, boolean stripLeadingPlus) {
+		HashSet<String> result = new HashSet<String>();
+		if (value == null || value.trim().length() == 0) {
+			return result;
+		}
+		StringTokenizer st = new StringTokenizer(value.trim(), ",");
+		while (st.hasMoreTokens()) {
+			String item = st.nextToken().trim();
+			if (stripLeadingPlus) {
+				while (item.startsWith("+")) {
+					item = item.substring(1);
+				}
+			}
+			if (item.length() > 0) {
+				result.add(item);
+			}
+		}
+		return result;
+	}
+
+	private void reloadLocalShardAssignment() {
+		String module = System.getProperty("module", "");
+		if (module.toLowerCase().contains("core")) {
+			initCoreShardAssignment();
+		} else if (module.toLowerCase().contains("client")) {
+			initClientShardAssignment();
+		} else {
+			myShards = parseShardSet(properties.getProperty("MyShards", "0"), "property:MyShards");
+			log.info("Shard assignment reloaded for module {}. totalShards={}, myShards={}",
+					module, totalShards, formatShardSet(myShards));
+		}
+	}
+
+	private boolean isRuntimeConfigKey(String key) {
+		return isDirectRuntimeKey(key) || isCommonRuntimeKey(key) || isModuleRuntimeKey(key) || isShardRuntimeKey(key);
+	}
+
+	private boolean isDirectRuntimeKey(String key) {
+		String[] keys = new String[] {
+			"AlertMailFrequence", "InitPhoneLen", "MessageExpireTime", "ResendDRThrottle",
+			"Redis_MinIDExpireTime", "MessageFinalExpireTime", "DRInterval", "ConnectionSilentTime",
+			"MaxSilentTime", "CacheMessageTimeout", "CsmIntegrityCacheTimeout", "CsmIntegrityCacheCapacity",
+			"WaitingEnquireLinkResponseTime", "StoreDRModeEnable", "BlackholeSsid", "DNSTimeOut",
+			"MaxServiceTypeID", "Smpp.ServiceTypeIDTag", "MinMessageExpireTimeFromCust",
+			"MaxMessageExpireTimeFromCust", "CDRFileSwitchInterval", "CDRFileMaxSize",
+			"ScreenedIPs", "LoopbackAddresses", "Metrics.Enable", "Metrics.ReportIntervalSeconds",
+			"Metrics.LogLevel", "Metrics.PrintZero", "Metrics.PrintGauge", "Metrics.MinTPS",
+			"DB.StartupCheck", "DB.StartupCheckSql", "DB.PoolStats.Enable", "DB.PoolStats.IntervalSeconds",
+			"ThrottlingControl.ConsecutiveNumToAlert", "ThrottlingControl.MaxAlertMailNum",
+			"ThrottlingControl.ReportModuleIncomingMsgCountInterval",
+			"ThrottlingControl.DynamicCustIncomingThresholdExipreTime",
+			"ThrottlingControl.SystemIncomingThreshold",
+			"ThrottlingControl.DefaultCustIncomingThreshold",
+			"ThrottlingControl.MaxCustIncomingThresholdMagnification"
+		};
+		return contains(keys, key);
+	}
+
+	private boolean isCommonRuntimeKey(String key) {
+		String[] keys = new String[] {
+			"RedisStreamGlobalPELMonitorEnable", "RedisStreamDoorbellScanLimit",
+			"RedisStreamAutoClaimIdleMs", "RedisStreamAutoClaimBatchSize",
+			"RedisStreamTraceLogEnable",
+			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress", "DNSPort",
+			"DNSMaxFailedLimit", "DNSTestPeriod", "DNSTestNumber", "DNSBufferCapacity",
+			"DNSBufferTimeout", "NMGAddress", "NMGPort", "DefaultRetryPolicy",
+			"AntiSpam.Characters2Escape", "DescendingTime", "Skytel_Prefix",
+			"Indigo_prefix", "APBW_CPID", "APBW_SID", "DefaultSuffix", "LocalSuffix",
+			"ReadBuffersize", "enquirelinktime", "SMSQueryDRHttpModule", "MaxCPUUsage",
+			"SystemStatusCheckInterval", "RuninOverloadStatusPeriod", "ExpiredMessageQueueSize",
+			"ExceptionMsgFileSwitchInterval", "ExceptionMsgFileMaxSize", "PmqFileSwitchInterval",
+			"PmqFileMaxSize", "SdqFileSwitchInterval", "SdqFileMaxSize"
+		};
+		return contains(keys, key);
+	}
+
+	private boolean isModuleRuntimeKey(String key) {
+		String module = System.getProperty("module");
+		if (module == null || module.length() == 0 || !key.startsWith(module + ".")) {
+			return false;
+		}
+		String suffix = key.substring(module.length() + 1);
+		String[] keys = new String[] {
+			"ConnectTimeout", "ReadTimeout", "ContentLength", "Asynchronous", "ClearTime",
+			"ClearProcessedMsgTime", "DRClearTime", "MaxCDRAsynQueueSize",
+			"MaxSDQAsynQueueSize", "OptionCell"
+		};
+		return contains(keys, suffix);
+	}
+
+	private boolean isShardRuntimeKey(String key) {
+		return "TotalShards".equals(key) || "MyShards".equals(key)
+				|| key.startsWith("CoreShard.")
+				|| key.startsWith("ClientShard.");
+	}
+
+	private boolean isIntegerRuntimeKey(String key) {
+		if ("Smpp.ServiceTypeIDTag".equals(key) || isBooleanRuntimeKey(key) || isShardRuntimeKey(key)) {
+			return false;
+		}
+		return isDirectRuntimeKey(key) && !"ScreenedIPs".equals(key) && !"LoopbackAddresses".equals(key);
+	}
+
+	private boolean isBooleanRuntimeKey(String key) {
+		return "StoreDRModeEnable".equals(key) || "RedisStreamGlobalPELMonitorEnable".equals(key)
+				|| "RedisStreamTraceLogEnable".equals(key)
+				|| "Metrics.Enable".equals(key) || "Metrics.PrintZero".equals(key)
+				|| "Metrics.PrintGauge".equals(key);
+	}
+
+	private String getDefaultRuntimeValue(String key) {
+		if ("ConnectionSilentTime".equals(key)) return String.valueOf(connectionSilentTime);
+		if ("AlertMailFrequence".equals(key)) return "100";
+		if ("InitPhoneLen".equals(key)) return "0";
+		if ("MessageExpireTime".equals(key)) return "1380";
+		if ("ResendDRThrottle".equals(key)) return "0";
+		if ("Redis_MinIDExpireTime".equals(key)) return "300";
+		if ("MessageFinalExpireTime".equals(key)) return "1440";
+		if ("DRInterval".equals(key)) return "20";
+		if ("MaxSilentTime".equals(key)) return "60";
+		if ("CacheMessageTimeout".equals(key)) return "180000";
+		if ("CsmIntegrityCacheTimeout".equals(key)) return "3600000";
+		if ("CsmIntegrityCacheCapacity".equals(key)) return "100000";
+		if ("WaitingEnquireLinkResponseTime".equals(key)) return "100";
+		if ("BlackholeSsid".equals(key)) return "-1";
+		if ("DNSTimeOut".equals(key)) return "20";
+		if ("MaxServiceTypeID".equals(key)) return "3";
+		if ("MinMessageExpireTimeFromCust".equals(key)) return "60";
+		if ("MaxMessageExpireTimeFromCust".equals(key)) return "10080";
+		if ("CDRFileSwitchInterval".equals(key)) return "300";
+		if ("CDRFileMaxSize".equals(key)) return "100";
+		if ("Metrics.ReportIntervalSeconds".equals(key)) return "30";
+		if ("Metrics.LogLevel".equals(key)) return "DEBUG";
+		if ("Metrics.PrintZero".equals(key)) return "false";
+		if ("Metrics.PrintGauge".equals(key)) return "false";
+		if ("Metrics.MinTPS".equals(key)) return "0.01";
+		if ("DB.PoolStats.Enable".equals(key)) return "false";
+		if ("DB.PoolStats.IntervalSeconds".equals(key)) return "60";
+		return "0";
+	}
+
+	private boolean isRestartRequiredConfigKey(String key) {
+		String module = System.getProperty("module");
+		return "NodeID".equals(key) || "RouterModule".equals(key) || "ServerIP".equals(key)
+				|| "ServiceIP".equals(key) || "SystemManager.enable".equals(key)
+				|| "DB.AccessMode".equals(key) || key.startsWith("DB.Hikari.")
+				|| "DataControl_DS_Names".equals(key) || "DataControl_HandOver".equals(key)
+				|| key.startsWith("DS_")
+				|| key.startsWith("Redis_") || key.startsWith("Redis.")
+				|| key.startsWith("RedisMonitor_")
+				|| key.startsWith("Ssl.") || key.startsWith("ThreadPool.")
+				|| (module != null && key.startsWith(module + ".") && isModuleRestartRequiredKey(key.substring(module.length() + 1)))
+				|| key.contains(".MinMessageProcessorNumber") || key.contains(".MaxMessageProcessorNumber")
+				|| key.contains(".ProcessorWorkQueueSize") || key.contains(".RouterProcessorNumber")
+				|| key.contains(".RouterProcessorQueueNumber") || key.contains(".BufferWindowsSize")
+				|| key.contains(".BufferTimeout");
+	}
+
+	private boolean isModuleRestartRequiredKey(String suffix) {
+		String[] keys = new String[] {"Port", "SenderNumber", "SenderQueueNumber"};
+		return contains(keys, suffix);
+	}
+
+	private boolean contains(String[] keys, String key) {
+		for (String value : keys) {
+			if (value.equals(key)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private void logConfigChanges(String title, Properties oldProps, Properties newProps, List<String> keys) {
+		if (keys == null || keys.isEmpty()) {
+			return;
+		}
+		for (String key : keys) {
+			log.info("{}: {} {} -> {}", title, key,
+					maskConfigValue(key, oldProps == null ? null : oldProps.getProperty(key)),
+					maskConfigValue(key, newProps == null ? null : newProps.getProperty(key)));
+		}
+	}
+
+	private String maskConfigValue(String key, String value) {
+		if (value == null) {
+			return null;
+		}
+		String lowerKey = key == null ? "" : key.toLowerCase();
+		if (lowerKey.contains("password") || lowerKey.contains("passwd") || lowerKey.contains("pwd")) {
+			return "******";
+		}
+		return value;
+	}
+
 	public int getTotalShards() {
 		return totalShards;
 	}
 
 	public Set<Integer> getMyShards() {
 		return myShards;
+	}
+
+	public synchronized void initCoreShardAssignment() {
+		String module = System.getProperty("module");
+		String shardConfig = null;
+		String source = null;
+		if (redisClient != null && !isBlank(module)) {
+			try {
+				shardConfig = redisClient.getString("system:core:shards:" + module);
+				source = "redis:system:core:shards:" + module;
+			} catch (Exception e) {
+				log.warn("Failed to load core shard assignment from redis for module=" + module, e);
+			}
+		}
+		if (isBlank(shardConfig) && !isBlank(module)) {
+			shardConfig = properties.getProperty("CoreShard." + module);
+			source = "property:CoreShard." + module;
+		}
+		if (isBlank(shardConfig) && redisClient != null) {
+			try {
+				shardConfig = redisClient.getString("system:core:shards:" + getNodeId());
+				source = "redis:system:core:shards:" + getNodeId();
+			} catch (Exception e) {
+				log.warn("Failed to load core shard assignment from redis for nodeId=" + getNodeId(), e);
+			}
+		}
+		if (isBlank(shardConfig)) {
+			shardConfig = properties.getProperty("CoreShard." + getNodeId());
+			source = "property:CoreShard." + getNodeId();
+		}
+		if (isBlank(shardConfig)) {
+			shardConfig = properties.getProperty("MyShards", "0");
+			source = "property:MyShards";
+		}
+		myShards = parseShardSet(shardConfig, source);
+		if (log.isInfoEnabled()) {
+			log.info("Core shard assignment loaded. nodeId={}, module={}, totalShards={}, myShards={}, source={}, moduleKey=CoreShard.{}, nodeKey=CoreShard.{}",
+					getNodeId(), module, totalShards, formatShardSet(myShards), source, module, getNodeId());
+		}
+	}
+
+	public synchronized void initClientShardAssignment() {
+		String module = System.getProperty("module");
+		String shardConfig = null;
+		String source = null;
+		if (redisClient != null && !isBlank(module)) {
+			try {
+				shardConfig = redisClient.getString("system:client:shards:" + module);
+				source = "redis:system:client:shards:" + module;
+			} catch (Exception e) {
+				log.warn("Failed to load client shard assignment from redis for module=" + module, e);
+			}
+		}
+		if (isBlank(shardConfig) && !isBlank(module)) {
+			shardConfig = properties.getProperty("ClientShard." + module);
+			source = "property:ClientShard." + module;
+		}
+		if (isBlank(shardConfig) && redisClient != null) {
+			try {
+				shardConfig = redisClient.getString("system:client:shards:" + getNodeId());
+				source = "redis:system:client:shards:" + getNodeId();
+			} catch (Exception e) {
+				log.warn("Failed to load client shard assignment from redis for nodeId=" + getNodeId(), e);
+			}
+		}
+		if (isBlank(shardConfig)) {
+			shardConfig = properties.getProperty("ClientShard." + getNodeId());
+			source = "property:ClientShard." + getNodeId();
+		}
+		if (isBlank(shardConfig)) {
+			shardConfig = properties.getProperty("MyShards", "0");
+			source = "property:MyShards";
+		}
+		myShards = parseShardSet(shardConfig, source);
+		if (log.isInfoEnabled()) {
+			log.info("Client shard assignment loaded. nodeId={}, module={}, totalShards={}, myShards={}, source={}, moduleKey=ClientShard.{}, nodeKey=ClientShard.{}",
+					getNodeId(), module, totalShards, formatShardSet(myShards), source, module, getNodeId());
+		}
+	}
+
+	private Set<Integer> parseShardSet(String shardConfig, String source) {
+		Set<Integer> shards = new HashSet<Integer>();
+		try {
+			if (shardConfig != null) {
+				String[] segments = shardConfig.split(",");
+				for (String segment : segments) {
+					String value = segment.trim();
+					if (value.length() == 0) {
+						continue;
+					}
+					if (value.contains("-")) {
+						String[] range = value.split("-", 2);
+						int start = Integer.parseInt(range[0].trim());
+						int end = Integer.parseInt(range[1].trim());
+						if (start > end) {
+							throw new IllegalArgumentException("Invalid shard range: " + value);
+						}
+						for (int i = start; i <= end; i++) {
+							addValidShard(shards, i, source);
+						}
+					} else {
+						addValidShard(shards, Integer.parseInt(value), source);
+					}
+				}
+			}
+		} catch (Exception e) {
+			log.error("Failed to parse shard assignment from " + source + ": " + shardConfig, e);
+			shards.clear();
+		}
+		if (shards.isEmpty()) {
+			log.warn("Shard assignment is empty, fallback to shard 0. source={}, value={}", source, shardConfig);
+			shards.add(0);
+		}
+		return shards;
+	}
+
+	private void addValidShard(Set<Integer> shards, int shardId, String source) {
+		if (shardId < 0 || shardId >= totalShards) {
+			log.warn("Ignore invalid shardId {} from {}, totalShards={}", shardId, source, totalShards);
+			return;
+		}
+		shards.add(shardId);
+	}
+
+	public String formatShardSet(Set<Integer> shards) {
+		if (shards == null || shards.isEmpty()) {
+			return "";
+		}
+		TreeSet<Integer> sorted = new TreeSet<Integer>(shards);
+		StringBuilder builder = new StringBuilder();
+		for (Integer shard : sorted) {
+			if (builder.length() > 0) {
+				builder.append(",");
+			}
+			builder.append(shard);
+		}
+		return builder.toString();
+	}
+
+	private int toNumericNodeId(String value) {
+		try {
+			return Integer.parseInt(value);
+		} catch (Exception e) {
+			return Math.abs(value == null ? 0 : value.hashCode()) % 10000;
+		}
+	}
+
+	private boolean isBlank(String value) {
+		return value == null || value.trim().length() == 0;
 	}
 	
 	public boolean isLoopbackAddress(String address) {
@@ -1581,6 +2153,13 @@ public class GmmsUtility {
 			System.out.println(t);
 		}
 		
+	}
+
+	public String getNodeId() {
+		if (nodeId == null || nodeId.trim().length() == 0) {
+			return System.getProperty("NodeID", "0");
+		}
+		return nodeId;
 	}
 
 }

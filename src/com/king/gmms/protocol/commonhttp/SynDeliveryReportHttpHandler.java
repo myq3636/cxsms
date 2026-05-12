@@ -23,7 +23,6 @@ import javax.servlet.http.HttpServletRequest;
 import org.dom4j.Document;
 import org.dom4j.Element;
 import org.dom4j.io.SAXReader;
-import org.xml.sax.InputSource;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
@@ -258,10 +257,10 @@ public class SynDeliveryReportHttpHandler extends HttpHandler {
 		StringReader reader = null;
 		Map<String, String> result = new HashMap<String, String>();
 		try {
-			reader = new StringReader(xml);
-			InputSource source = new InputSource(reader);
+			//reader = new StringReader(xml);
+			//InputSource source = new InputSource(reader);
 			SAXReader sb = new SAXReader();
-			Document doc = sb.read(source);
+			Document doc = sb.read(xml);
 			Element root = doc.getRootElement();
 			Element statusNode = root.element("statuscode");
 			Element trackingNode = root.element("trackingid");

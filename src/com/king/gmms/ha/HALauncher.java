@@ -5,7 +5,6 @@ import java.util.Date;
 
 import com.king.framework.A2PService;
 import com.king.framework.SystemLogger;
-import com.king.framework.lifecycle.SystemCommandListener;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.domain.ModuleConnectionInfo;
 import com.king.gmms.domain.ModuleManager;
@@ -28,7 +27,6 @@ public class HALauncher {
     protected static final String RESTART = "restart";
     protected static final String START = "start";
     protected A2PService service;
-    protected SystemCommandListener cmdListener;
     protected int port;
     protected String moduleName = null;
     protected ModuleManager moduleManager = null;
@@ -60,7 +58,6 @@ public class HALauncher {
     }
 
     protected void beforeStop() {
-    	cmdListener.stopService();
     	GmmsUtility.getInstance().close();
     }
 
@@ -112,8 +109,6 @@ public class HALauncher {
                                            " is successfully stopped!");
                     }
                 });
-                cmdListener=new SystemCommandListener(port);
-                cmdListener.service();
                 System.out.println("Start service successfully!");
                 return true;
             }

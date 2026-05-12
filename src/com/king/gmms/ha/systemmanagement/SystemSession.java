@@ -46,7 +46,6 @@ import com.king.gmms.threadpool.ExecutorServiceManager;
 import com.king.gmms.threadpool.ThreadPoolProfile;
 import com.king.gmms.threadpool.ThreadPoolProfileBuilder;
 import com.king.gmms.throttle.ThrottlingControl;
-import com.king.gmms.throttle.ThrottlingTimemark;
 import com.king.gmms.util.SystemConstants;
 
 public class SystemSession implements Receiver, SystemMessageBufferListener {
@@ -1013,55 +1012,46 @@ public class SystemSession implements Receiver, SystemMessageBufferListener {
 	private void processApplyInThrottleQuotaAck(SystemPdu response) {
 		try {
 			ApplyInThrottleQuotaAck ack = (ApplyInThrottleQuotaAck)response;
-			int sysLoad = ack.getSysLoadPercent();
-			if (log.isTraceEnabled()) {
-				log.trace("System load is {}%", sysLoad);
-			}
-			int ssid = ack.getSsid();
-			A2PCustomerInfo cust = gmmsUtility.getCustomerManager().getCustomerBySSID(ssid);
-			boolean canReApplyFlag = true;
+			/*
+			 * int sysLoad = ack.getSysLoadPercent(); if (log.isTraceEnabled()) {
+			 * log.trace("System load is {}%", sysLoad); } int ssid = ack.getSsid();
+			 * A2PCustomerInfo cust =
+			 * gmmsUtility.getCustomerManager().getCustomerBySSID(ssid); boolean
+			 * canReApplyFlag = true;
+			 * 
+			 * //ConcurrentMap<Integer, ThrottlingTimemark> incomingThrottleCache =
+			 * throttlingControl.getIncomingThrottlingControlCache(); // in case of reload
+			 * customer info if (incomingThrottleCache.get(ssid) != null) { if
+			 * (cust.isSmsOptionDisableAutoAdjustThrottlingNumFlag()) { log.
+			 * warn("Ssid:{} didn't need auto adjust Throttling Number as the SMSOptionDisableAutoAdjustThrottlingNumFlag value is true"
+			 * , cust.getSSID() ); return; } int currentThrottlingNum =
+			 * incomingThrottleCache.get(ssid).getDateArraySize(); int newThrottlingNum =
+			 * (int) (currentThrottlingNum*(1+(100-sysLoad)/2/100f)); int maxThrottlingNum =
+			 * gmmsUtility.getMaxCustIncomingThresholdMagnification() *
+			 * cust.getConfigedIncomingThrottlingNum(); int sysIncomingThreshold =
+			 * gmmsUtility.getSystemIncomingThreshold(); // check if (newThrottlingNum >
+			 * maxThrottlingNum || newThrottlingNum > sysIncomingThreshold) { log.
+			 * warn("Ssid:{} reach MaxCustIncomingThresholdMagnification or SystemIncomingThreshold."
+			 * , cust.getSSID()); if (maxThrottlingNum > sysIncomingThreshold) {
+			 * newThrottlingNum = sysIncomingThreshold; } else { newThrottlingNum =
+			 * maxThrottlingNum; } canReApplyFlag = false; }
+			 * 
+			 * if (newThrottlingNum == currentThrottlingNum) { canReApplyFlag = false; }
+			 * else { // set the new quota to cust incomingThrottleCache.put(ssid, new
+			 * ThrottlingTimemark(newThrottlingNum)); if (log.isInfoEnabled()) { log.
+			 * info("Ssid: {} incoming throttlingNum changes, currentThrottlingNum={}, new value is {}"
+			 * , ssid, currentThrottlingNum, newThrottlingNum); } }
+			 * 
+			 * // no matter whether quota changes, add the quota to expire map, to make sure
+			 * pplyInThrottleFlag can be reset
+			 * ThrottlingControl.getInstance().getExpireThottleQuotaMap().put(ssid,
+			 * System.currentTimeMillis()); }
+			 */
 			
-			ConcurrentMap<Integer, ThrottlingTimemark> incomingThrottleCache = throttlingControl.getIncomingThrottlingControlCache();
-			// in case of reload customer info
-			if (incomingThrottleCache.get(ssid) != null) {
-				if (cust.isSmsOptionDisableAutoAdjustThrottlingNumFlag()) {
-					log.warn("Ssid:{} didn't need auto adjust Throttling Number as the SMSOptionDisableAutoAdjustThrottlingNumFlag value is true", cust.getSSID() );
-					return;
-				}
-				int currentThrottlingNum = incomingThrottleCache.get(ssid).getDateArraySize();
-				int newThrottlingNum = (int) (currentThrottlingNum*(1+(100-sysLoad)/2/100f));
-				int maxThrottlingNum = gmmsUtility.getMaxCustIncomingThresholdMagnification() * cust.getConfigedIncomingThrottlingNum();
-				int sysIncomingThreshold = gmmsUtility.getSystemIncomingThreshold();
-				// check
-				if (newThrottlingNum > maxThrottlingNum	|| newThrottlingNum > sysIncomingThreshold) {
-					log.warn("Ssid:{} reach MaxCustIncomingThresholdMagnification or SystemIncomingThreshold.", cust.getSSID());
-					if (maxThrottlingNum > sysIncomingThreshold) {
-						newThrottlingNum = sysIncomingThreshold;
-					} else {
-						newThrottlingNum = maxThrottlingNum;
-					}
-					canReApplyFlag = false;
-				}
-				
-				if (newThrottlingNum == currentThrottlingNum) {
-					canReApplyFlag = false;
-				} else {
-					// set the new quota to cust
-					incomingThrottleCache.put(ssid, new ThrottlingTimemark(newThrottlingNum));
-					if (log.isInfoEnabled()) {
-						log.info("Ssid: {} incoming throttlingNum changes, currentThrottlingNum={}, new value is {}",
-								ssid, currentThrottlingNum, newThrottlingNum);
-					}
-				}
-				
-				// no matter whether quota changes, add the quota to expire map, to make sure pplyInThrottleFlag can be reset
-				ThrottlingControl.getInstance().getExpireThottleQuotaMap().put(ssid, System.currentTimeMillis());
-			}
-			
-			// reset flag, enable to re-apply
-			if (canReApplyFlag) {
-				cust.setApplyInThrottleFlag(canReApplyFlag);
-			}
+			/*
+			 * // reset flag, enable to re-apply if (canReApplyFlag) {
+			 * cust.setApplyInThrottleFlag(canReApplyFlag); }
+			 */
 		} catch (Exception e) {
 			log.error(e, e);
 		}

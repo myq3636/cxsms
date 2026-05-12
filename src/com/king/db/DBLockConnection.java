@@ -4,9 +4,6 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
 
-import org.hibernate.Session;
-import org.hibernate.SessionFactory;
-
 import com.king.framework.SystemLogger;
 
 public class DBLockConnection extends DataManager{
@@ -14,7 +11,7 @@ public class DBLockConnection extends DataManager{
 	protected static SystemLogger logger = SystemLogger.getSystemLogger(DBLockConnection.class); 
 	private final String get_lock_SQL = "SELECT GET_LOCK('lock1',1)";
 	private final String rel_lock_SQL = "SELECT RELEASE_LOCK('lock1')";
-	private Session son = null;
+	private Connection lockConnection = null;
 
 	public DBLockConnection(DbObject dbo) {
 		super(dbo);
@@ -29,8 +26,8 @@ public class DBLockConnection extends DataManager{
 	}
 
 	public boolean getLock() throws Exception {
-		son = getSession();
-		ResultSet rs = doSelect(son, get_lock_SQL);
+		lockConnection = currentConnection();
+		ResultSet rs = doSelect(lockConnection, get_lock_SQL);
 		int lock = -1;
 		while (rs.next()) {
 			lock = rs.getInt(1);
@@ -40,49 +37,24 @@ public class DBLockConnection extends DataManager{
 
 	public boolean relLock() {
 		try {
-			doSelect(son, rel_lock_SQL);
+			doSelect(lockConnection, rel_lock_SQL);
 		} catch (Exception e) {
 			logger.info("release mysql lock error!");
-			if(son!=null){
-				son.close();
-			}
 		}finally {			
-			if(son!=null){
-				son.close();
-			}
+			closeSession();
+			lockConnection = null;
 		}	
 		return true;
 	}
 	
-	 private Session getSession() throws DataControlException {	
-		 Session se = null;
-		 SessionFactory factory = null;
-	        try {
-	        	if(DatabaseStatus.MASTER_USED.equals(dataControl.getUsedDatabaseStatus())){
-	        		factory = this.getMasterSessionFactory();	        		
-	            }else if(dataControl.getCanHandover() && DatabaseStatus.SLAVE_USED.equals(dataControl.getUsedDatabaseStatus())){
-	            	factory = this.getSlaveSessionFactory();	            	
-	            }
-	        	if(factory!=null){
-	    			se = factory.openSession();
-	    		}
-	        	if(se == null){
-	        		logger.error("Can't get DB sessions with master and slave!");
-	        	}            
-	        } catch (Exception e) {
-	            logger.trace("get session error!");
-	        }
-	        return se;
-	    }
-	 private ResultSet doSelect(Session se, String strSQL) throws DataControlException {
+	 private ResultSet doSelect(Connection connection, String strSQL) throws DataControlException {
 	        Statement stmt = null;
 	        ResultSet rs = null;
-            if(se ==null){
+            if(connection ==null){
             	return null;
             }
 	        try {	            
-	            Connection conn = se.connection();
-	            stmt = conn.createStatement();
+	            stmt = connection.createStatement();
 	            rs = stmt.executeQuery(strSQL);
 //	            zeroFailureCount();
 	        } catch (Exception e) {

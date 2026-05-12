@@ -7,10 +7,6 @@ import java.sql.Statement;
 import java.util.Observable;
 import java.util.Properties;
 
-import org.hibernate.HibernateException;
-import org.hibernate.Session;
-import org.hibernate.SessionFactory;
-
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
 
@@ -33,10 +29,8 @@ public abstract class DBHeartBeat extends Observable implements Runnable {
 	private static Properties dbprop = new Properties();
 	private static Properties prop = new Properties();
 	protected DataControl dataControl = DataControl.getInstance();
-	protected SessionFactory factory = null;
 	protected Connection connection = null;
 	protected 		Statement stmt = null;
-	protected ThreadLocal session = new ThreadLocal();
 
 	/**
 	 * init properties and create db connection
@@ -99,7 +93,7 @@ public abstract class DBHeartBeat extends Observable implements Runnable {
 					}
 					log.trace("try when dbStatus:{}", this.dbStatus);
 				}else{
-					throw new HibernateException("Cannot open connection");
+					throw new DataControlException("Cannot open connection");
 				}
 			} catch (Exception e) {
 				log.trace("closeSession when dbStatus:{}",this.dbStatus);
@@ -149,13 +143,8 @@ public abstract class DBHeartBeat extends Observable implements Runnable {
 				this.stmt = null;
 			}
 			if (connection != null) {
-				this.connection.close();
+				DataControl.releaseConnection(resolveHeartbeatDsName(), this.connection);
 				this.connection = null;
-			}
-			Session s = (Session) session.get();
-			session.set(null);
-			if (s != null && s.isOpen()) {
-				s.close();
 			}
 		} catch (Exception ex) {
 			log.error("Close session exception:", ex);
@@ -166,15 +155,14 @@ public abstract class DBHeartBeat extends Observable implements Runnable {
 	 * Close current session factory
 	 */
 	public void closeSessionFactory() {
-		log.trace("start closeSessionFactory for {}...", dbName);
-		try {
-			if (factory != null && !factory.isClosed()) {
-				factory.close();
-				factory = null;
-			}
-		} catch (Exception ex) {
-			log.error("Close session exception:", ex);
+		log.trace("skip closeSessionFactory for {}, JDBC pool is managed by DataControl.", dbName);
+	}
+
+	private String resolveHeartbeatDsName() {
+		if (DBHAConstants.SLAVE_KEY.equals(dbName)) {
+			return "backupgmms";
 		}
+		return "gmms";
 	}
 
 	public void notifyDBStatus(DatabaseStatus status) {

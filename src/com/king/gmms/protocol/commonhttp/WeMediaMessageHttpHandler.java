@@ -14,7 +14,6 @@ import org.jdom.Document;
 import org.jdom.Element;
 import org.jdom.JDOMException;
 import org.jdom.input.SAXBuilder;
-import org.xml.sax.InputSource;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
@@ -211,10 +210,10 @@ public class WeMediaMessageHttpHandler extends HttpHandler {
 		StringReader reader = null;
 		String s = null;
 		try {
-			reader = new StringReader(xml);
-			InputSource source = new InputSource(reader);
+			//reader = new StringReader(xml);
+			//InputSource source = new InputSource(reader);
 			SAXBuilder sb = new SAXBuilder();
-			Document doc = sb.build(source);
+			Document doc = sb.build(xml);
 			Element root = doc.getRootElement();
 			// List node = root.getChildren();
 			s = root.getText();

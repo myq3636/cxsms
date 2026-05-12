@@ -326,11 +326,11 @@ public class MessageStoreManager extends DataManager {
 		
 		private void executeBatch(java.util.List<String> batch) {
 			java.sql.Statement stmt = null;
-			org.hibernate.Session sess = null;
+			java.sql.Connection conn = null;
+			boolean originalAutoCommit = true;
 			try {
-				sess = currentSession();
-				java.sql.Connection conn = sess.connection();
-				boolean originalAutoCommit = conn.getAutoCommit();
+				conn = currentConnection();
+				originalAutoCommit = conn.getAutoCommit();
 				
 				conn.setAutoCommit(false);
 				stmt = conn.createStatement();
@@ -339,15 +339,21 @@ public class MessageStoreManager extends DataManager {
 				}
 				stmt.executeBatch();
 				conn.commit();
-				conn.setAutoCommit(originalAutoCommit);
 			} catch (Exception e) {
+				if (conn != null) {
+					try { conn.rollback(); } catch (java.sql.SQLException ex) {}
+				}
 				log.error("Error executing batch update of size " + batch.size(), e);
-				if (!e.getMessage().contains("Data truncated") && !e.getMessage().contains("SQL syntax")) {
+				String errorMessage = e.getMessage() == null ? "" : e.getMessage();
+				if (!errorMessage.contains("Data truncated") && !errorMessage.contains("SQL syntax")) {
 					MailSender.getInstance().sendAlertMail("A2P DB Batch Exception", e);
 				}
 			} finally {
 				if (stmt != null) {
 					try { stmt.close(); } catch (java.sql.SQLException ex) {}
+				}
+				if (conn != null) {
+					try { conn.setAutoCommit(originalAutoCommit); } catch (java.sql.SQLException ex) {}
 				}
 				closeSession();
 			}

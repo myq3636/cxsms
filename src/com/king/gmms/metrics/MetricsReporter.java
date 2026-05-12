@@ -31,9 +31,16 @@ public class MetricsReporter {
     private final MetricsCollector collector = MetricsCollector.getInstance();
     private ScheduledExecutorService scheduler;
     private volatile boolean running = false;
+    private volatile String logLevel = "DEBUG";
+    private volatile boolean printZero = false;
+    private volatile boolean printGauge = false;
+    private volatile double minTps = 0.01;
+    private volatile int intervalSeconds = 30;
 
     /** Previous counter snapshot for TPS calculation */
     private volatile Map<String, Long> previousCounters;
+    private volatile Map<String, Long> previousTimerCounts;
+    private volatile Map<String, Long> previousTimerTotalNanos;
     private volatile long previousTimestamp;
 
     private MetricsReporter() {
@@ -52,8 +59,12 @@ public class MetricsReporter {
         if (running) {
             return;
         }
+        this.intervalSeconds = intervalSeconds;
         running = true;
+        collector.setEnabled(true);
         previousCounters = collector.snapshotCounters();
+        previousTimerCounts = collector.snapshotTimerCounts();
+        previousTimerTotalNanos = collector.snapshotTimerTotalNanos();
         previousTimestamp = System.currentTimeMillis();
 
         scheduler = Executors.newSingleThreadScheduledExecutor(new java.util.concurrent.ThreadFactory() {
@@ -90,7 +101,25 @@ public class MetricsReporter {
         if (scheduler != null) {
             scheduler.shutdown();
         }
+        collector.setEnabled(false);
         log.info("MetricsReporter stopped.");
+    }
+
+    public synchronized void restart(int intervalSeconds) {
+        stop();
+        start(intervalSeconds);
+        log.info("MetricsReporter restarted, interval={}s", intervalSeconds);
+    }
+
+    public synchronized void configure(String logLevel, boolean printZero, boolean printGauge, double minTps) {
+        if (logLevel != null && logLevel.trim().length() > 0) {
+            this.logLevel = logLevel.trim().toUpperCase();
+        }
+        this.printZero = printZero;
+        this.printGauge = printGauge;
+        this.minTps = minTps < 0 ? 0.0 : minTps;
+        log.info("MetricsReporter configured. logLevel={}, printZero={}, printGauge={}, minTps={}",
+                this.logLevel, this.printZero, this.printGauge, this.minTps);
     }
 
     /**
@@ -100,7 +129,8 @@ public class MetricsReporter {
         long now = System.currentTimeMillis();
         Map<String, Long> currentCounters = collector.snapshotCounters();
         Map<String, Long> currentGauges = collector.snapshotGauges();
-        Map<String, String> currentTimers = collector.snapshotTimers();
+        Map<String, Long> currentTimerCounts = collector.snapshotTimerCounts();
+        Map<String, Long> currentTimerTotalNanos = collector.snapshotTimerTotalNanos();
 
         // ---- TPS calculation ----
         double elapsedSeconds = (now - previousTimestamp) / 1000.0;
@@ -111,42 +141,98 @@ public class MetricsReporter {
         Map<String, Long> deltas = MetricsCollector.delta(currentCounters, previousCounters);
 
         StringBuilder tpsLine = new StringBuilder(256);
-        tpsLine.append("[METRICS-TPS]");
+        tpsLine.append("tps=\"");
+        boolean hasTpsData = false;
         for (Map.Entry<String, Long> entry : deltas.entrySet()) {
             double tps = entry.getValue() / elapsedSeconds;
-            if (entry.getValue() > 0) {
-                tpsLine.append(" ").append(entry.getKey())
-                       .append("=").append(String.format("%.1f/s", tps))
-                       .append("(total:").append(currentCounters.get(entry.getKey())).append(")");
+            if ((printZero || entry.getValue() > 0) && (printZero || tps >= minTps)) {
+                if (hasTpsData) {
+                    tpsLine.append(",");
+                }
+                tpsLine.append(entry.getKey()).append("=").append(String.format("%.1f/s", tps));
+                hasTpsData = true;
             }
         }
-        // Always log the TPS line so operators know the reporter is alive
-        log.info(tpsLine.toString());
+        tpsLine.append("\"");
 
         // ---- Gauges ----
-        if (!currentGauges.isEmpty()) {
-            StringBuilder gaugeLine = new StringBuilder(256);
-            gaugeLine.append("[METRICS-GAUGE]");
+        StringBuilder gaugeLine = new StringBuilder(256);
+        boolean hasGaugeData = false;
+        if (printGauge && !currentGauges.isEmpty()) {
+            gaugeLine.append(" gauge=\"");
             for (Map.Entry<String, Long> entry : currentGauges.entrySet()) {
-                gaugeLine.append(" ").append(entry.getKey())
+                if (hasGaugeData) {
+                    gaugeLine.append(",");
+                }
+                gaugeLine.append(entry.getKey())
                          .append("=").append(entry.getValue());
+                hasGaugeData = true;
             }
-            log.info(gaugeLine.toString());
+            gaugeLine.append("\"");
         }
 
         // ---- Timers ----
-        if (!currentTimers.isEmpty()) {
-            StringBuilder timerLine = new StringBuilder(256);
-            timerLine.append("[METRICS-TIMER]");
-            for (Map.Entry<String, String> entry : currentTimers.entrySet()) {
-                timerLine.append(" ").append(entry.getKey())
-                         .append("={").append(entry.getValue()).append("}");
+        StringBuilder timerLine = new StringBuilder(256);
+        boolean hasTimerData = false;
+        if (!currentTimerCounts.isEmpty()) {
+            timerLine.append(" timer=\"");
+            for (Map.Entry<String, Long> entry : currentTimerCounts.entrySet()) {
+                String name = entry.getKey();
+                long currentCount = entry.getValue();
+                long previousCount = previousTimerCounts.containsKey(name) ? previousTimerCounts.get(name) : 0L;
+                long countDelta = currentCount - previousCount;
+                if (countDelta <= 0) {
+                    continue;
+                }
+                long currentNanos = currentTimerTotalNanos.containsKey(name) ? currentTimerTotalNanos.get(name) : 0L;
+                long previousNanos = previousTimerTotalNanos.containsKey(name) ? previousTimerTotalNanos.get(name) : 0L;
+                long nanosDelta = currentNanos - previousNanos;
+                double avgMs = (double) nanosDelta / countDelta / 1_000_000.0;
+                if (hasTimerData) {
+                    timerLine.append(",");
+                }
+                timerLine.append(name)
+                         .append("={count=").append(countDelta)
+                         .append(", avgMs=").append(String.format("%.2f", avgMs)).append("}");
+                hasTimerData = true;
             }
-            log.info(timerLine.toString());
+            timerLine.append("\"");
+        }
+
+        if (hasTpsData || hasGaugeData || hasTimerData || printZero) {
+            String module = System.getProperty("module", "unknown");
+            StringBuilder line = new StringBuilder(512);
+            line.append("[METRICS] module=").append(module.toLowerCase())
+                .append(" window=").append(intervalSeconds).append("s");
+            if (hasTpsData) {
+                line.append(" ").append(tpsLine);
+            }
+            if (hasGaugeData) {
+                line.append(gaugeLine);
+            }
+            if (hasTimerData) {
+                line.append(" ").append(timerLine);
+            }
+            if (!hasTpsData && !hasGaugeData && !hasTimerData) {
+                line.append(" no-activity");
+            }
+            logByConfiguredLevel(line.toString());
         }
 
         // Save for next delta
         previousCounters = currentCounters;
+        previousTimerCounts = currentTimerCounts;
+        previousTimerTotalNanos = currentTimerTotalNanos;
         previousTimestamp = now;
+    }
+
+    private void logByConfiguredLevel(String line) {
+        if ("INFO".equalsIgnoreCase(logLevel)) {
+            log.info(line);
+        } else if ("TRACE".equalsIgnoreCase(logLevel)) {
+            log.trace(line);
+        } else {
+            log.debug(line);
+        }
     }
 }

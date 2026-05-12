@@ -462,8 +462,15 @@ public class DefaultExecutorServiceManager implements ExecutorServiceManager, Li
 			Thread.currentThread().setName(name + counterPart);
 		}
 		
-		pool.setCorePoolSize(profile.getPoolSize());
-		pool.setMaximumPoolSize(profile.getMaxPoolSize());
+		int currentMaxPoolSize = pool.getMaximumPoolSize();
+		if (minPoolSize > currentMaxPoolSize) {
+			pool.setMaximumPoolSize(maxPoolSize);
+			pool.setCorePoolSize(minPoolSize);
+		} else {
+			pool.setMaximumPoolSize(maxPoolSize);
+			pool.setCorePoolSize(minPoolSize);
+			
+		}
 		pool.setKeepAliveTime(profile.getKeepAliveTime(), profile.getTimeUnit());
 		pool.setRejectedExecutionHandler(profile.getRejectedPolicy());
 		

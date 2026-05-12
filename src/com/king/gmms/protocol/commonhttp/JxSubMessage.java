@@ -3,11 +3,6 @@ package com.king.gmms.protocol.commonhttp;
 import java.lang.reflect.Method;
 import java.util.List;
 
-import javax.xml.bind.annotation.XmlAccessType;
-import javax.xml.bind.annotation.XmlAccessorType;
-import javax.xml.bind.annotation.XmlElement;
-import javax.xml.bind.annotation.XmlRootElement;
-import javax.xml.bind.annotation.XmlType;
 
 import com.alibaba.fastjson.annotation.JSONField;
 import com.king.message.gmms.GmmsMessage;
@@ -18,35 +13,35 @@ import com.king.message.gmms.GmmsMessage;
  *
  */
 
-@XmlRootElement(name="MSG")  
-@XmlAccessorType(XmlAccessType.FIELD)  
+//@XmlRootElement(name="MSG")  
+//@XmlAccessorType(XmlAccessType.FIELD)  
 public class JxSubMessage {
 	
-	@XmlElement(required = true)
+	//@XmlElement(required = true)
 	@JSONField(name = "FROM")
 	private String FROM;
-	@XmlElement(required = true)
+	//@XmlElement(required = true)
 	@JSONField(name = "TO")
 	private String TO;
-	@XmlElement
+	//@XmlElement
 	@JSONField(name = "BODY")
 	private String BODY;
-	@XmlElement
+	//@XmlElement
 	@JSONField(name = "REFERENCE")
 	private String REFERENCE;
-	@XmlElement
+	//@XmlElement
 	@JSONField(name = "DCS")
 	private String DCS;
-	@XmlElement
+	//@XmlElement
 	@JSONField(name = "MINIMUMNUMBEROFMESSAGEPARTS")
 	private String MINIMUMNUMBEROFMESSAGEPARTS;
-	@XmlElement
+	//@XmlElement
 	@JSONField(name = "MAXIMUMNUMBEROFMESSAGEPARTS")
 	private String MAXIMUMNUMBEROFMESSAGEPARTS;
-	@XmlElement
+	//@XmlElement
 	@JSONField(name = "VALIDITY")
 	private String VALIDITY;
-	@XmlElement
+	//@XmlElement
 	@JSONField(name = "RSSID")
 	private String RSSID;
 	

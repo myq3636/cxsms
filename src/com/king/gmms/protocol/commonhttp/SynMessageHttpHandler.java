@@ -19,7 +19,6 @@ import org.jdom.Document;
 import org.jdom.Element;
 import org.jdom.JDOMException;
 import org.jdom.input.SAXBuilder;
-import org.xml.sax.InputSource;
 
 import com.alibaba.fastjson.JSONObject;
 import com.king.framework.SystemLogger;
@@ -143,10 +142,10 @@ public class SynMessageHttpHandler extends HttpHandler {
 		StringReader reader = null;
 		Map<String, String> result = new HashMap<String, String>();
 		try {
-			reader = new StringReader(xml);
-			InputSource source = new InputSource(reader);
+			//reader = new StringReader(xml);
+			//InputSource source = new InputSource(reader);
 			SAXBuilder sb = new SAXBuilder();
-			Document doc = sb.build(source);
+			Document doc = sb.build(xml);
 			Element root = doc.getRootElement();
 			// List node = root.getChildren();
 			String statusText = root.getChildText("status");

@@ -13,7 +13,6 @@ import com.king.gmms.ha.systemmanagement.SystemListener;
 import com.king.gmms.ha.systemmanagement.SystemSession;
 import com.king.gmms.ha.systemmanagement.SystemSessionFactory;
 import com.king.gmms.throttle.ReportInMsgCountTimer;
-import com.king.gmms.throttle.ResetDynamicCustInThresholdTimer;
 
 public abstract class AbstractSslServer implements A2PService, Runnable {
 	private static SystemLogger log = SystemLogger
@@ -32,7 +31,6 @@ public abstract class AbstractSslServer implements A2PService, Runnable {
 	protected boolean isEnableSysMgt = false;
     protected boolean canHandover = false;
 	protected ReportInMsgCountTimer reportInMsgCountTimer = null;
-	protected ResetDynamicCustInThresholdTimer resetDynamicCustInThresholdTimer = null;
 
 
 	public AbstractSslServer() {
@@ -43,35 +41,12 @@ public abstract class AbstractSslServer implements A2PService, Runnable {
 		port = Integer.parseInt(gmmsUtility.getModuleProperty("Port").trim());
 		isEnableSysMgt = gmmsUtility.isSystemManageEnable();
 		canHandover = gmmsUtility.isDBHandover();
-		if (canHandover || isEnableSysMgt) {
-			systemListener = SystemListener.getInstance();
-			try {
-				sysFactory = SystemSessionFactory.getInstance();
-				systemSession = sysFactory.getSystemSessionForFunction();
-				reportInMsgCountTimer = new ReportInMsgCountTimer(systemSession, 
-						gmmsUtility.getReportModuleIncomingMsgCountInterval());
-				resetDynamicCustInThresholdTimer = 
-					new ResetDynamicCustInThresholdTimer(gmmsUtility.getDynamicCustInThresholdExipreTime()/3);
-			} catch (Exception e) {
-				log.warn(e, e);
-			}
-		}
+		
 	}
 
 	public boolean startService() {
 		try {
-			if (canHandover || isEnableSysMgt) {
-				systemListener.start();
-				if (systemSession != null) {
-					boolean isRegister = sysFactory.moduleRegister();
-					if (!isRegister) {
-						log.warn("module register failed!");
-					}
-					reportInMsgCountTimer.startTimer("reportInMsgCountTimer");
-					resetDynamicCustInThresholdTimer.startTimer("resetDynamicCustInThresholdTimer");
-				}
-				
-			}
+			
 			log.info("{} starting...", module);
 			return true;
 		} catch (Exception ex) {
@@ -84,13 +59,7 @@ public abstract class AbstractSslServer implements A2PService, Runnable {
 	public boolean stopService() {
 		running = false;
 		try {
-			if (canHandover || isEnableSysMgt) {
-				beforeStop();
-				systemListener.stop();
-				if (systemSession != null) {
-					systemSession.shutdown();
-				}
-			}
+			
 			serverThread.join();
 			if (serverSocket != null) {
 				serverSocket.close();
@@ -114,15 +83,6 @@ public abstract class AbstractSslServer implements A2PService, Runnable {
 	 * send stop request
 	 */
 	public void beforeStop() {
-		if (canHandover || isEnableSysMgt) {
-			reportInMsgCountTimer.stopTimer();
-			resetDynamicCustInThresholdTimer.stopTimer();
-			ConnectionManagementForFunction systemManager = ConnectionManagementForFunction
-					.getInstance();
-			boolean flag = systemManager.moduleStop(module);
-			if (flag) {
-				systemSession.moduleStop();
-			}
-		}
+		
 	}
 }

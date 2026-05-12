@@ -29,13 +29,28 @@ public class DistributedThrottlingManager {
     private DistributedThrottlingManager() {}
 
     /**
-     * 获取指定 SSID 的许可 (阻塞模式)
+     * 获取指定 SSID 的许可 (阻塞模式，带初始 TPS)
      * @param ssid 客户 SSID
      */
     public void acquire(int ssid, int tps) {
         if (tps <= 0) return; // 不限速
         
         RateLimiter limiter = getOrInitLimiter(ssid, tps);
+        limiter.acquire();
+    }
+
+    /**
+     * 获取指定 SSID 的许可 (自动从配置加载 TPS)
+     * @param ssid 客户 SSID
+     */
+    public void acquire(int ssid) {
+        RateLimiter limiter = limiters.get(ssid);
+        if (limiter == null) {
+            com.king.gmms.domain.A2PCustomerInfo info = com.king.gmms.GmmsUtility.getInstance().getCustomerManager().getCustomerBySSID(ssid);
+            int tps = info != null ? info.getOutgoingThrottlingNum() : 0;
+            if (tps <= 0) return; // 不限速
+            limiter = getOrInitLimiter(ssid, tps);
+        }
         limiter.acquire();
     }
 

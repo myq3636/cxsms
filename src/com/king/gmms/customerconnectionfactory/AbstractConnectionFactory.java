@@ -13,7 +13,6 @@ import com.king.gmms.connectionpool.BindMode;
 import com.king.gmms.connectionpool.connection.AbstractMultiConnection;
 import com.king.gmms.connectionpool.connection.ConnectionManager;
 import com.king.gmms.connectionpool.session.Session;
-import com.king.gmms.connectionpool.systemmanagement.ConnectionManagementForFunction;
 import com.king.gmms.domain.*;
 import com.king.gmms.ha.TransactionURI;
 import com.king.gmms.messagequeue.OperatorMessageQueue;
@@ -41,8 +40,6 @@ public abstract class AbstractConnectionFactory implements CustomerConnectionFac
     protected ConcurrentHashMap<String, ConnectionManager> ssid2connectionManagers;
     protected String moduleName;
     private static SystemLogger log = SystemLogger.getSystemLogger(AbstractConnectionFactory.class);
-    protected ConnectionManagementForFunction systemManager = null;
-    protected boolean isEnableMgt = false;
     
     public AbstractConnectionFactory() {
         gmmsUtility = GmmsUtility.getInstance();
@@ -50,11 +47,6 @@ public abstract class AbstractConnectionFactory implements CustomerConnectionFac
         ssid2connectionManagers = new ConcurrentHashMap<String, ConnectionManager> ();
         cim = gmmsUtility.getCustomerManager();
         moduleName = System.getProperty("module");
-        isEnableMgt = gmmsUtility.isSystemManageEnable();
-        if(isEnableMgt){
-	        systemManager = ConnectionManagementForFunction.getInstance();
-	        systemManager.setConnectionFactory(this);
-        }
     }
     
     public void putConnectionManager(int ssid, String name,
@@ -498,9 +490,5 @@ public abstract class AbstractConnectionFactory implements CustomerConnectionFac
 		this.removeOperatorMessageQueue(ssid);
 	}
 	public abstract void initConnectionFactory(int ssid, int type);
-
-	public ConnectionManagementForFunction getSystemManager() {
-		return systemManager;
-	}
 
 }

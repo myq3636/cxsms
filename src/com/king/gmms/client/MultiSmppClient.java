@@ -88,18 +88,16 @@ public class MultiSmppClient extends AbstractClient {
 		}
 		customerFactory.initializeSession();
 		
-		startAgentConnection();
-		
-		// V4.0 Start Redis Heartbeat
-		startRedisHeartbeat();
+		log.info("Redis stream mode enabled, skip legacy internal agent connections.");
 		
 		return true;
 	}
 
 	public boolean stopService() {
 		beforeStop();
+		stopOutboundConsumer();
 		stopRedisHeartbeat();
-		return false;
+		return true;
 	}
 
 	/**

@@ -3,11 +3,6 @@ package com.king.gmms.protocol.commonhttp;
 import java.lang.reflect.Method;
 import java.util.List;
 
-import javax.xml.bind.annotation.XmlAccessType;
-import javax.xml.bind.annotation.XmlAccessorType;
-import javax.xml.bind.annotation.XmlElement;
-import javax.xml.bind.annotation.XmlRootElement;
-import javax.xml.bind.annotation.XmlType;
 
 import com.king.message.gmms.GmmsMessage;
 
@@ -17,19 +12,19 @@ import com.king.message.gmms.GmmsMessage;
  *
  */
 
-@XmlRootElement(name="MtMessage")  
-@XmlAccessorType(XmlAccessType.FIELD)  
+//@XmlRootElement(name="MtMessage")  
+//@XmlAccessorType(XmlAccessType.FIELD)  
 public class YueFanMessage {
 
-	@XmlElement(required = true)
+	//@XmlElement(required = true)
 	private String phoneNumber;
-	@XmlElement
+	//@XmlElement
 	private String content;
-	@XmlElement
+	//@XmlElement
 	private String sendTime;
-	@XmlElement
+	//@XmlElement
 	private String smsId;
-	@XmlElement
+	//@XmlElement
 	private String subCode;
 	
 	

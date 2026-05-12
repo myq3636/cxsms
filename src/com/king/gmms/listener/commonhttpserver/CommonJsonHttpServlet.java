@@ -15,14 +15,11 @@ import java.util.concurrent.ExecutorService;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
-import javax.xml.bind.JAXBContext;
-import javax.xml.bind.Unmarshaller;
 
 import org.jdom.Document;
 import org.jdom.Element;
 import org.jdom.JDOMException;
 import org.jdom.input.SAXBuilder;
-import org.xml.sax.InputSource;
 
 import com.alibaba.fastjson.JSONObject;
 import com.king.framework.SystemLogger;
@@ -90,10 +87,6 @@ public class CommonJsonHttpServlet extends AbstractHttpServer {
 				if (alSsid != null && alSsid.size() > 0) {
 					for (int i = 0; i < alSsid.size(); i++) {
 						int ssid = alSsid.get(i);
-						
-						// V4.0 Async Routing: Register SSID for DR polling
-						com.king.gmms.messagequeue.DRStreamConsumer.getInstance().registerSSID(ssid);
-						
 						if (ctm.inCurrentA2P(ctm.getConnectedRelay(ssid,
 								GmmsMessage.AIC_MSG_TYPE_TEXT))) {
 							OperatorMessageQueue queue = factory
@@ -289,16 +282,16 @@ public class CommonJsonHttpServlet extends AbstractHttpServer {
 						gmmsMessage.setInTransID(Long.toString(System.currentTimeMillis()));				
 						gmmsMessage.setTimeStamp(gmmsUtility.getGMTTime());
 						
-						// V4.1 Async Submit-MQ: Produce to Redis Stream instead of local memory queue
-						if (!com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceSubmitMessage(gmmsMessage)) {
+						if (!putGmmsMessage2RouterQueue(gmmsMessage)) {
 							gmmsUtility.getCdrManager().logInSubmit(gmmsMessage);
 							if (gmmsMessage.getDeliveryReport()) {
 								gmmsMessage.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 								gmmsMessage.setRSsID(sInfo.getSSID());
 								gmmsMessage.setOutMsgID(gmmsMessage.getInMsgID());
 								gmmsMessage.setStatus(GmmsStatus.REJECTED);
-								// Produce rejection DR to stream:core:results
-								com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceResult(gmmsMessage);
+								if (!putGmmsMessage2RouterQueue(gmmsMessage)) {
+									gmmsUtility.getCdrManager().logInDeliveryReportRes(gmmsMessage);									
+								}
 							}							
 						}
 					}
@@ -512,10 +505,11 @@ public class CommonJsonHttpServlet extends AbstractHttpServer {
 		StringReader reader = null;
 		JxMessage jxMessage= new JxMessage();		 
 		try {
-			reader = new StringReader(xml);
-			InputSource source = new InputSource(reader);
+			/*
+			 * reader = new StringReader(xml); InputSource source = new InputSource(reader);
+			 */
 			SAXBuilder sb = new SAXBuilder();
-			Document doc = sb.build(source);
+			Document doc = sb.build(xml);
 			Element root = doc.getRootElement();
 			List node = root.getChildren();
 			if (node == null) {
