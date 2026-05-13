@@ -55,6 +55,10 @@ public class MQMMessageSender implements Runnable {
 		log.info("MQMMessageSender Thread start!");
 		while (true) {
 			try {
+				if (!MqmActiveState.isActive()) {
+					Thread.sleep(1000L);
+					continue;
+				}
 				// Throttling for resends
 				try {
 					int resendThrottle = gmmsUtility.getResendDRThrottle();
@@ -73,15 +77,14 @@ public class MQMMessageSender implements Runnable {
 					// V4.1 Async Distribution via Redis Streams
 					if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(type)
 							|| GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(type)) {
-						// Submit types (MT) go to pending stream for Core processing
-						success = StreamQueueManager.getInstance().produceSubmitMessage(msg);
+						success = StreamQueueManager.getInstance().produceMqmSubmitMessage(msg);
 					} else if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(type)
 							|| GmmsMessage.MSG_TYPE_DELIVERY_REPORT_QUERY.equalsIgnoreCase(type)) {
-						// Report types (DR feedback) go to results stream for Core processing
-						success = StreamQueueManager.getInstance().produceResult(msg);
+						success = StreamQueueManager.getInstance().produceMqmReportMessage(msg);
 					} else {
-						log.warn(msg, "Unknown message type {} in MQM, attempting default result stream", type);
-						success = StreamQueueManager.getInstance().produceResult(msg);
+						log.warn(msg, "Unknown message type {} in MQM, handle as message error", type);
+						handleMessageError(msg);
+						success = true;
 					}
 
 					if (!success) {

@@ -140,16 +140,16 @@ public class CoreOutboundOutboxManager {
         }
     }
 
-    private void markTimeoutResult(GmmsMessage msg) {
-        if (msg == null) {
-            return;
-        }
-        if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(msg.getMessageType())
-                || GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(msg.getMessageType())) {
-            msg.setStatus(GmmsStatus.SUBMIT_RESP_ERROR);
-            msg.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT_RESP);
-        }
-    }
+	private void markTimeoutResult(GmmsMessage msg) {
+		if (msg == null) {
+			return;
+		}
+		if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(msg.getMessageType())
+				|| GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(msg.getMessageType())) {
+			msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
+			msg.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT_RESP);
+		}
+	}
 
     private boolean needOutbox(GmmsMessage msg, String streamKey) {
         if (msg == null || streamKey == null || !streamKey.startsWith(StreamQueueManager.STR_MT_ROUTED_PREFIX)) {

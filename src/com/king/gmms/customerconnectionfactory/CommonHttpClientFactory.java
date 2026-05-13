@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import com.king.framework.A2PThreadGroup;
 import com.king.framework.SystemLogger;
 import com.king.gmms.client.QueryHttpMessageThread;
+import com.king.gmms.connectionpool.session.Session;
 import com.king.gmms.connectionpool.sessionfactory.CommonHttpSessionFactory;
 import com.king.gmms.connectionpool.sessionfactory.SessionFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
@@ -15,8 +16,8 @@ import com.king.gmms.domain.A2PSingleConnectionInfo;
 import com.king.gmms.messagequeue.CustomerMessageQueue;
 import com.king.gmms.messagequeue.OperatorMessageQueue;
 import com.king.gmms.messagequeue.ShortConnectionCustomerMessageQueue;
+import com.king.gmms.util.SystemConstants;
 import com.king.message.gmms.GmmsMessage;
-import com.king.gmms.messagequeue.HttpClientConsumer;
 
 public class CommonHttpClientFactory extends ShortConnectionFactory {
 	private static SystemLogger log = SystemLogger
@@ -25,16 +26,13 @@ public class CommonHttpClientFactory extends ShortConnectionFactory {
 	
 	private ConcurrentHashMap<Integer,QueryHttpMessageThread[]> queryThreads = null;
 	private ConcurrentHashMap<String,String> queryMinID = null;  //save queryID,  value type: <shortName:queryID>
-	private HttpClientConsumer clientConsumer = null;
+	private ConcurrentHashMap<Integer, Boolean> initializedHttpSsids = null;
 	private CommonHttpClientFactory() {
 		super();
 		queryThreads = new ConcurrentHashMap<Integer,QueryHttpMessageThread[]>();
 		queryMinID = new ConcurrentHashMap<String,String>();
+		initializedHttpSsids = new ConcurrentHashMap<Integer, Boolean>();
 		isServer = false;
-		
-		// V4.1 Initialize and start the Redis Stream consumer for outbound tasks
-		clientConsumer = new HttpClientConsumer();
-		clientConsumer.start();
 	}
 
 	protected void startOperatorMessageQueue(OperatorMessageQueue queue,
@@ -55,6 +53,45 @@ public class CommonHttpClientFactory extends ShortConnectionFactory {
 
 		}
 
+	}
+
+	public void initializeAllHttpCustomers() {
+		int count = 0;
+		for (A2PCustomerInfo info : cim.getAllCustomerInfos()) {
+			if (info == null) {
+				continue;
+			}
+			if (!SystemConstants.COMMONHTTPCLIENT_MODULE_TYPE.equalsIgnoreCase(info.getChlQueue())) {
+				continue;
+			}
+			if (info instanceof A2PSingleConnectionInfo
+					&& !((A2PSingleConnectionInfo) info).isChlInit()) {
+				continue;
+			}
+			initializedHttpSsids.put(info.getSSID(), Boolean.TRUE);
+			count++;
+		}
+		log.info("CommonHttpClient initialized HTTP customer metadata. count={}", count);
+	}
+
+	public Session getSession(int ssid) {
+		A2PCustomerInfo info = cim.getCustomerBySSID(ssid);
+		if (info == null) {
+			log.warn("HTTP customer not found. ssid={}", ssid);
+			return null;
+		}
+		if (!SystemConstants.COMMONHTTPCLIENT_MODULE_TYPE.equalsIgnoreCase(info.getChlQueue())) {
+			log.warn("Customer is not configured for CommonHttpClient. ssid={}, chlQueue={}",
+					ssid, info.getChlQueue());
+			return null;
+		}
+		if (info instanceof A2PSingleConnectionInfo
+				&& !((A2PSingleConnectionInfo) info).isChlInit()) {
+			log.warn("HTTP customer is not initialized. ssid={}", ssid);
+			return null;
+		}
+		initializedHttpSsids.put(ssid, Boolean.TRUE);
+		return new CommonHttpSessionFactory(info).getSession();
 	}
 	
 	public void initQueryMsgThread(){

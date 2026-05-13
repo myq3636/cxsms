@@ -139,6 +139,9 @@ public abstract class A2PCustomerInfo {
 	protected String smppSubmitPendingMode = "memory";
 	protected int smppSubmitPendingRedisTTLSeconds = 600;
 	protected int smppSubmitPendingRedisTimeoutSeconds = 0;
+	protected String smppDRPendingMode = "memory";
+	protected int smppDRPendingRedisTTLSeconds = 600;
+	protected int smppDRPendingRedisTimeoutSeconds = 0;
 	protected Pattern pAllowOriPrefixList = null;
 
 	protected ArrayList<Integer> oriNumberLens = new ArrayList<Integer>();
@@ -1410,6 +1413,14 @@ public abstract class A2PCustomerInfo {
 		}
 		smppSubmitPendingRedisTTLSeconds = cfg.getInt("SMPPSubmitPendingRedisTTLSeconds", 600);
 		smppSubmitPendingRedisTimeoutSeconds = cfg.getInt("SMPPSubmitPendingRedisTimeoutSeconds", 0);
+		smppDRPendingMode = cfg.getString("SMPPDRPendingMode", "memory");
+		if (smppDRPendingMode == null || smppDRPendingMode.trim().length() == 0) {
+			smppDRPendingMode = "memory";
+		} else {
+			smppDRPendingMode = smppDRPendingMode.trim().toLowerCase();
+		}
+		smppDRPendingRedisTTLSeconds = cfg.getInt("SMPPDRPendingRedisTTLSeconds", 600);
+		smppDRPendingRedisTimeoutSeconds = cfg.getInt("SMPPDRPendingRedisTimeoutSeconds", 0);
 		//drMapping
 		String drUnknownMappingStatus = cfg.getString("SMSOptionDRStatusMapping");
 		if(drUnknownMappingStatus!=null && !"".equalsIgnoreCase(drUnknownMappingStatus)) {
@@ -3723,6 +3734,18 @@ public abstract class A2PCustomerInfo {
 
 	public int getSMPPSubmitPendingRedisTimeoutSeconds() {
 		return smppSubmitPendingRedisTimeoutSeconds;
+	}
+
+	public String getSMPPDRPendingMode() {
+		return smppDRPendingMode;
+	}
+
+	public int getSMPPDRPendingRedisTTLSeconds() {
+		return smppDRPendingRedisTTLSeconds;
+	}
+
+	public int getSMPPDRPendingRedisTimeoutSeconds() {
+		return smppDRPendingRedisTimeoutSeconds;
 	}
 	
 	public void setIsEnableGuavaBuffer(String buffer) {

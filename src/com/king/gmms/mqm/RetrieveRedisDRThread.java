@@ -42,7 +42,9 @@ public class RetrieveRedisDRThread extends Thread {
 		log.debug("Redis send DR to wdq thread is start!");
 		while(startFlag){			
 			try{
-				execute();
+				if (MqmActiveState.isActive()) {
+					execute();
+				}
 				
 				Thread.sleep(1000);
 				

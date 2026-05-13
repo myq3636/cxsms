@@ -79,6 +79,13 @@ public class A2PMultiConnectionInfo extends A2PCustomerInfo{
             this.connectionType = sc.getConnectionType();
             this.isServerEnquireLink = sc.isServerEnquireLink();
             this.isEnquireLink = sc.isEnquireLink();
+            this.isEnableGuavaBuffer = sc.isEnableGuavaBuffer();
+            this.smppSubmitPendingMode = sc.getSMPPSubmitPendingMode();
+            this.smppSubmitPendingRedisTTLSeconds = sc.getSMPPSubmitPendingRedisTTLSeconds();
+            this.smppSubmitPendingRedisTimeoutSeconds = sc.getSMPPSubmitPendingRedisTimeoutSeconds();
+            this.smppDRPendingMode = sc.getSMPPDRPendingMode();
+            this.smppDRPendingRedisTTLSeconds = sc.getSMPPDRPendingRedisTTLSeconds();
+            this.smppDRPendingRedisTimeoutSeconds = sc.getSMPPDRPendingRedisTimeoutSeconds();
             this.pAllowOriPrefixList = sc.getAllowOriPrefixList();
 
             this.oriNumberLens = sc.getOriNumberLens();

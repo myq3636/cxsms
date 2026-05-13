@@ -44,15 +44,18 @@ public class OutboundStreamConsumer {
     private final String consumerName;
     
     private volatile boolean running = false;
+    private volatile long lastPoolConfigRefreshMs = 0L;
     private ExecutorService dispatcherThread;
     private ThreadPoolExecutor workerPool;
     private final ConcurrentHashMap<String, Boolean> processingMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> pendingDoorbellMap = new ConcurrentHashMap<>();
+    private final RedisStreamConsumerConfig consumerConfig;
 
     private OutboundStreamConsumer() {
         this.queueManager = StreamQueueManager.getInstance();
         String nodeID = System.getProperty("NodeID", "0");
         this.consumerName = MODULE_ROLE + "-" + FUNCTION_NAME + "-" + nodeID;
+        this.consumerConfig = RedisStreamConsumerConfig.load("Client", "ClientOutboundSubmit", 50, 200, 2000, 100, 50);
     }
 
     public static OutboundStreamConsumer getInstance() {
@@ -64,8 +67,8 @@ public class OutboundStreamConsumer {
         running = true;
 
         workerPool = new ThreadPoolExecutor(
-            50, 200, 60L, TimeUnit.SECONDS, 
-            new LinkedBlockingQueue<Runnable>(2000), 
+            consumerConfig.workerCorePoolSize(), consumerConfig.workerMaxPoolSize(), 60L, TimeUnit.SECONDS, 
+            new LinkedBlockingQueue<Runnable>(consumerConfig.workerQueueSize()), 
             new ThreadPoolExecutor.CallerRunsPolicy()
         );
 
@@ -73,8 +76,8 @@ public class OutboundStreamConsumer {
         dispatcherThread.execute(this::dispatcherLoop);
         queueManager.reRingExistingStreams(StreamQueueManager.STR_MT_ROUTED_PREFIX + "*", true);
 
-        logger.info("Client outbound-submit consumer started. Consumer: {}, Shards: {}",
-            consumerName, GmmsUtility.getInstance().getMyShards());
+        logger.info("Client outbound-submit consumer started. Consumer: {}, Shards: {}, Config: {}",
+            consumerName, GmmsUtility.getInstance().getMyShards(), consumerConfig.summary());
     }
 
     public synchronized void stop() {
@@ -87,6 +90,7 @@ public class OutboundStreamConsumer {
     private void dispatcherLoop() {
         while (running) {
             try {
+                refreshWorkerPoolConfig();
                 // 监听 Routed 活跃队列门铃
                 String streamKey = queueManager.popResponsibleDoorbell(StreamQueueManager.ZSET_MT_ROUTED_ACTIVE, true);
                 if (streamKey != null) {
@@ -97,7 +101,7 @@ public class OutboundStreamConsumer {
                         pendingDoorbellMap.put(streamKey, true);
                     }
                 } else {
-                    Thread.sleep(50);
+                    Thread.sleep(consumerConfig.dispatcherIdleSleepMs());
                 }
             } catch (InterruptedException ie) {
                 break;
@@ -127,7 +131,7 @@ public class OutboundStreamConsumer {
                     query.put(streamKey, StreamEntryID.UNRECEIVED_ENTRY);
                     
                     // 批量拉取
-                    List<GmmsMessage> messages = queueManager.consumeBatch(groupName, consumerName, 100, query, true);
+                    List<GmmsMessage> messages = queueManager.consumeBatch(groupName, consumerName, consumerConfig.batchSize(), query, true);
 
                     if (messages == null || messages.isEmpty()) {
                         break; 
@@ -148,6 +152,15 @@ public class OutboundStreamConsumer {
         }
     }
 
+    private void refreshWorkerPoolConfig() {
+        long now = System.currentTimeMillis();
+        if (now - lastPoolConfigRefreshMs < 5000L) {
+            return;
+        }
+        lastPoolConfigRefreshMs = now;
+        consumerConfig.applyWorkerPool(workerPool);
+    }
+
     private void processAutoClaim(String streamKey) {
         List<GmmsMessage> orphans = queueManager.autoClaimBatch(streamKey, groupName, consumerName,
                 queueManager.getAutoClaimIdleMs(), queueManager.getAutoClaimBatchSize(), true);
@@ -162,6 +175,10 @@ public class OutboundStreamConsumer {
     private void processMessage(String streamKey, GmmsMessage msg) {
         long start = System.nanoTime();
         try {
+            MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                    MetricsNames.FLOW_CLIENT, msg, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
+            MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                    MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
             int ssid = msg.getOSsID();
             // 1. TPS 节流控制 (基于 SSID 通道配置)
             DistributedThrottlingManager.getInstance().acquire(ssid);
@@ -172,7 +189,8 @@ public class OutboundStreamConsumer {
             logger.error(msg, "Error processing outbound stream message", e);
             handleFailure(msg, "Internal error during outbound processing", streamKey);
         } finally {
-            MetricsCollector.getInstance().recordTime(MetricsNames.timer("consumer", "process", msg, "latency"),
+            MetricsCollector.getInstance().recordTime(MetricsNames.timer(MetricsNames.COMPONENT_CONSUMER,
+                    MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_LATENCY),
                     System.nanoTime() - start);
         }
     }
@@ -184,6 +202,10 @@ public class OutboundStreamConsumer {
             if (session != null && isConnected(session)) {
                 boolean success = session.submit(msg);
                 if (success) {
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                            MetricsNames.FLOW_CLIENT, msg, MetricsNames.ACTION_SMPP_SENT));
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                            MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_SMPP_SENT));
                     queueManager.ack(streamKey, groupName, msg, true);
                 } else {
                     handleFailure(msg, "Session submit rejected", streamKey);
@@ -205,7 +227,12 @@ public class OutboundStreamConsumer {
     private void handleFailure(GmmsMessage msg, String reason, String streamKey) {
         boolean resultProduced = false;
         try {
-            MetricsCollector.getInstance().incrementCounter(MetricsNames.counter("consumer", "process", msg, "fail"));
+            MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(MetricsNames.COMPONENT_CONSUMER,
+                    MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_FAIL));
+            MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                    MetricsNames.FLOW_CLIENT, msg, MetricsNames.ACTION_FAILED_BEFORE_RESPONSE));
+            MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                    MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_FAILED_BEFORE_RESPONSE));
             logger.warn(msg, "Outbound submit failed before SMPP response: {}", reason);
             msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
             msg.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT_RESP);

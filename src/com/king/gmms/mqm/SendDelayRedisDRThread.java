@@ -36,7 +36,9 @@ public class SendDelayRedisDRThread extends Thread {
 		log.debug("Redis send DR to customer thread is start!");
 		while(startFlag){			
 			try{
-				execute();				
+				if (MqmActiveState.isActive()) {
+					execute();
+				}
 				Thread.sleep(100);
 				
 			}catch(Exception e){

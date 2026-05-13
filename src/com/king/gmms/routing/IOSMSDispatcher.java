@@ -14,6 +14,7 @@ import com.king.gmms.domain.EnumberDTO;
 import com.king.gmms.processor.DBBackupHandler;
 import com.king.gmms.util.BufferMonitor;
 import com.king.message.gmms.GmmsMessage;
+import com.king.message.gmms.GmmsStatus;
 
 /**
  * <p>
@@ -152,6 +153,7 @@ public class IOSMSDispatcher extends MessageDispatcher {
 			if(a2pSecondChannelRouter.dispatch(msg)) {
 				//routing replacement
 				ctm.getSystemRoutingReplace(msg);
+				restoreTransientRecipientError(msg);
 				return RouteResponse.RouteOK;
 			}else {
 				if(!numChannelRouter.dispatch(msg)) {
@@ -218,8 +220,17 @@ public class IOSMSDispatcher extends MessageDispatcher {
 				) {
 			oCustomer.getReicipienSecondRoutingtCache().put("SecRouting_"+msg.getRecipientAddress(), "true");
 		}
+		restoreTransientRecipientError(msg);
 		return RouteResponse.RouteOK;
 
+	}
+
+	private void restoreTransientRecipientError(GmmsMessage msg) {
+		if (msg != null
+				&& msg.getRSsID() > 0
+				&& msg.getStatusCode() == GmmsStatus.RECIPIENT_ADDR_ERROR.getCode()) {
+			msg.setStatus(GmmsStatus.UNASSIGNED);
+		}
 	}
 
 }

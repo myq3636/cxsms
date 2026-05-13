@@ -36,6 +36,7 @@ public class MTStreamConsumer {
     private final String groupName = "CoreMTGroup";
     private final String consumerName;
     private volatile boolean running = false;
+    private volatile long lastPoolConfigRefreshMs = 0L;
     
     private ExecutorService dispatcherThread;
     private ThreadPoolExecutor workerPool;
@@ -43,10 +44,12 @@ public class MTStreamConsumer {
     private final ConcurrentHashMap<String, Boolean> pendingDoorbellMap = new ConcurrentHashMap<>();
 
     private final StreamQueueManager queueManager;
+    private final RedisStreamConsumerConfig consumerConfig;
 
     private MTStreamConsumer() {
         this.consumerName = MODULE_ROLE + "-" + FUNCTION_NAME + "-" + System.getProperty("NodeID", "0");
         this.queueManager = StreamQueueManager.getInstance();
+        this.consumerConfig = RedisStreamConsumerConfig.load("Core", "CoreMT", 50, 100, 1000, 100, 50);
     }
 
     public static MTStreamConsumer getInstance() { return instance; }
@@ -56,16 +59,16 @@ public class MTStreamConsumer {
         running = true;
         
         workerPool = new ThreadPoolExecutor(
-            50, 100, 60L, TimeUnit.SECONDS, 
-            new LinkedBlockingQueue<Runnable>(1000), 
+            consumerConfig.workerCorePoolSize(), consumerConfig.workerMaxPoolSize(), 60L, TimeUnit.SECONDS, 
+            new LinkedBlockingQueue<Runnable>(consumerConfig.workerQueueSize()), 
             new ThreadPoolExecutor.CallerRunsPolicy()
         );
 
         dispatcherThread = Executors.newSingleThreadExecutor();
         dispatcherThread.execute(this::dispatcherLoop);
 
-        logger.info("Core MT-router consumer started. Consumer: {}, Shards: {}",
-            consumerName, GmmsUtility.getInstance().getMyShards());
+        logger.info("Core MT-router consumer started. Consumer: {}, Shards: {}, Config: {}",
+            consumerName, GmmsUtility.getInstance().getMyShards(), consumerConfig.summary());
     }
 
     public synchronized void stop() {
@@ -78,6 +81,7 @@ public class MTStreamConsumer {
     private void dispatcherLoop() {
         while (running) {
             try {
+                refreshWorkerPoolConfig();
                 String streamKey = queueManager.popResponsibleDoorbell(StreamQueueManager.ZSET_MT_PENDING_ACTIVE, true);
                 if (streamKey != null) {
                     if (processingMap.putIfAbsent(streamKey, true) == null) {
@@ -86,7 +90,7 @@ public class MTStreamConsumer {
                         pendingDoorbellMap.put(streamKey, true);
                     }
                 } else {
-                    Thread.sleep(50);
+                    Thread.sleep(consumerConfig.dispatcherIdleSleepMs());
                 }
             } catch (InterruptedException ie) {
                 break;
@@ -116,7 +120,7 @@ public class MTStreamConsumer {
                     query.put(streamKey, StreamEntryID.UNRECEIVED_ENTRY);
                     
                     // 使用 Manager 封装的批量消费方法
-                    List<GmmsMessage> messages = queueManager.consumeBatch(groupName, consumerName, 100, query, true);
+                    List<GmmsMessage> messages = queueManager.consumeBatch(groupName, consumerName, consumerConfig.batchSize(), query, true);
 
                     if (messages == null || messages.isEmpty()) {
                         break; 
@@ -137,6 +141,15 @@ public class MTStreamConsumer {
         }
     }
 
+    private void refreshWorkerPoolConfig() {
+        long now = System.currentTimeMillis();
+        if (now - lastPoolConfigRefreshMs < 5000L) {
+            return;
+        }
+        lastPoolConfigRefreshMs = now;
+        consumerConfig.applyWorkerPool(workerPool);
+    }
+
     private void processAutoClaim(String streamKey) {
         List<GmmsMessage> orphans = queueManager.autoClaimBatch(streamKey, groupName, consumerName,
                 queueManager.getAutoClaimIdleMs(), queueManager.getAutoClaimBatchSize(), true);
@@ -151,18 +164,33 @@ public class MTStreamConsumer {
     private void processMessage(String streamKey, GmmsMessage msg) {
         long start = System.nanoTime();
         try {
+            MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                    MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
+            MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                    MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
             boolean processed = InternalCoreEngineSession.getReactiveInstance().processSubmitFromStream(msg);
             if (processed) {
                 queueManager.ack(streamKey, groupName, msg, true);
             } else {
-                MetricsCollector.getInstance().incrementCounter(MetricsNames.counter("consumer", "process", msg, "fail"));
+                MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(MetricsNames.COMPONENT_CONSUMER,
+                        MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_FAIL));
+                MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                        MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_ROUTING_FAILED));
+                MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                        MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_ROUTING_FAILED));
                 queueManager.logNack(streamKey, groupName, consumerName, msg, true, "process_return_false");
             }
         } catch (Exception e) {
-            MetricsCollector.getInstance().incrementCounter(MetricsNames.counter("consumer", "process", msg, "fail"));
+            MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(MetricsNames.COMPONENT_CONSUMER,
+                    MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_FAIL));
+            MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                    MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_ROUTING_FAILED));
+            MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                    MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_ROUTING_FAILED));
             logger.error(msg, "Failed to process MT from stream {}", streamKey, e);
         } finally {
-            MetricsCollector.getInstance().recordTime(MetricsNames.timer("consumer", "process", msg, "latency"),
+            MetricsCollector.getInstance().recordTime(MetricsNames.timer(MetricsNames.COMPONENT_CONSUMER,
+                    MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_LATENCY),
                     System.nanoTime() - start);
         }
     }

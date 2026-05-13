@@ -26,6 +26,7 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 	private List<MQMMessageSender> drSenders = null;
 	private List<MQMMessageSender> retrySenders = null;
 	private ModuleStatusReporter statusReporter = null;
+	private MqmActiveCoordinator activeCoordinator = null;
 	//private SystemSession systemSession = null; // system client
 	//private SystemSessionFactory sysFactory = null;
 	private boolean isEnableSysMgt = false;
@@ -50,6 +51,9 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 				gmmsUtility.getNodeId());
 		gmmsUtility.initDBManager(dbstatus);		
 		gmmsUtility.initCDRManager();
+		activeCoordinator = new MqmActiveCoordinator(gmmsUtility, System.getProperty("module", "MsgQueueMonitor"),
+				gmmsUtility.getNodeId());
+		activeCoordinator.start();
 		
 		// V4.1 Async Transformation: No more TCP MQM connection/listener needed
 		// startMQMConnection();
@@ -68,6 +72,10 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 	public boolean stopService() {
 		if (isEnableSysMgt||canHandover) {
 			beforeStop();
+		}
+		if (activeCoordinator != null) {
+			activeCoordinator.stop();
+			activeCoordinator = null;
 		}
 		if (statusReporter != null) {
 			statusReporter.stop();

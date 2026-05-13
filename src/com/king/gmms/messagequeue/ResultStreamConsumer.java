@@ -30,6 +30,7 @@ public class ResultStreamConsumer {
     private final String groupName = "CoreResultGroup";
     private final String consumerName;
     private volatile boolean running = false;
+    private volatile long lastPoolConfigRefreshMs = 0L;
 
     private ExecutorService dispatcherThread;
     private ThreadPoolExecutor workerPool;
@@ -37,10 +38,12 @@ public class ResultStreamConsumer {
     private final ConcurrentHashMap<String, Boolean> pendingDoorbellMap = new ConcurrentHashMap<String, Boolean>();
 
     private final StreamQueueManager queueManager;
+    private final RedisStreamConsumerConfig consumerConfig;
 
     private ResultStreamConsumer() {
         this.consumerName = MODULE_ROLE + "-" + FUNCTION_NAME + "-" + System.getProperty("NodeID", "0");
         this.queueManager = StreamQueueManager.getInstance();
+        this.consumerConfig = RedisStreamConsumerConfig.load("Core", "CoreResult", 10, 30, 1000, 100, 50);
     }
 
     public static ResultStreamConsumer getInstance() {
@@ -54,8 +57,8 @@ public class ResultStreamConsumer {
         running = true;
 
         workerPool = new ThreadPoolExecutor(
-            10, 30, 60L, TimeUnit.SECONDS,
-            new LinkedBlockingQueue<Runnable>(1000),
+            consumerConfig.workerCorePoolSize(), consumerConfig.workerMaxPoolSize(), 60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<Runnable>(consumerConfig.workerQueueSize()),
             new ThreadPoolExecutor.CallerRunsPolicy()
         );
 
@@ -67,7 +70,8 @@ public class ResultStreamConsumer {
         });
 
         queueManager.triggerDoorbell(StreamQueueManager.STR_CORE_RESULTS, false);
-        logger.info("Core outbound-result consumer started. Group: {}, Consumer: {}", groupName, consumerName);
+        logger.info("Core outbound-result consumer started. Group: {}, Consumer: {}, Config: {}",
+                groupName, consumerName, consumerConfig.summary());
     }
 
     public synchronized void stop() {
@@ -84,6 +88,7 @@ public class ResultStreamConsumer {
     private void dispatcherLoop() {
         while (running) {
             try {
+                refreshWorkerPoolConfig();
                 String streamKey = queueManager.popDoorbell(StreamQueueManager.ZSET_CORE_RESULTS_ACTIVE, false);
                 if (streamKey != null) {
                     if (processingMap.putIfAbsent(streamKey, true) == null) {
@@ -92,7 +97,7 @@ public class ResultStreamConsumer {
                         pendingDoorbellMap.put(streamKey, true);
                     }
                 } else {
-                    Thread.sleep(50);
+                    Thread.sleep(consumerConfig.dispatcherIdleSleepMs());
                 }
             } catch (InterruptedException ie) {
                 break;
@@ -119,7 +124,7 @@ public class ResultStreamConsumer {
                     Map<String, StreamEntryID> query = new HashMap<String, StreamEntryID>();
                     query.put(streamKey, StreamEntryID.UNRECEIVED_ENTRY);
 
-                    List<GmmsMessage> messages = queueManager.consumeBatch(groupName, consumerName, 100, query, false);
+                    List<GmmsMessage> messages = queueManager.consumeBatch(groupName, consumerName, consumerConfig.batchSize(), query, false);
                     if (messages == null || messages.isEmpty()) {
                         break;
                     }
@@ -139,6 +144,15 @@ public class ResultStreamConsumer {
         }
     }
 
+    private void refreshWorkerPoolConfig() {
+        long now = System.currentTimeMillis();
+        if (now - lastPoolConfigRefreshMs < 5000L) {
+            return;
+        }
+        lastPoolConfigRefreshMs = now;
+        consumerConfig.applyWorkerPool(workerPool);
+    }
+
     private void processAutoClaim(String streamKey) {
         List<GmmsMessage> orphans = queueManager.autoClaimBatch(streamKey, groupName, consumerName,
             queueManager.getAutoClaimIdleMs(), queueManager.getAutoClaimBatchSize(), false);
@@ -153,18 +167,30 @@ public class ResultStreamConsumer {
     private void processResult(String streamKey, GmmsMessage msg) {
         long start = System.nanoTime();
         try {
+            String resultType = msg.getRedisStreamMessageType() != null
+                    ? msg.getRedisStreamMessageType() : msg.getMessageType();
             if (!InternalCoreEngineSession.getReactiveInstance().handleOutboundResultInternal(msg)) {
-                MetricsCollector.getInstance().incrementCounter(MetricsNames.counter("consumer", "process", msg, "fail"));
+                MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(MetricsNames.COMPONENT_CONSUMER,
+                        MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_FAIL));
                 queueManager.logNack(streamKey, groupName, consumerName, msg, false, "core_rejected_outbound_result");
                 return;
+            }
+            if (GmmsMessage.MSG_TYPE_SUBMIT_RESP.equalsIgnoreCase(resultType)) {
+                MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                        MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_PROCESSED));
+            } else if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP.equalsIgnoreCase(resultType)) {
+                MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                        MetricsNames.STAGE_OUT_DR, msg, false, MetricsNames.ACTION_PROCESSED));
             }
             CoreOutboundOutboxManager.getInstance().complete(msg);
             queueManager.ack(streamKey, groupName, msg, false);
         } catch (Exception e) {
-            MetricsCollector.getInstance().incrementCounter(MetricsNames.counter("consumer", "process", msg, "fail"));
+            MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(MetricsNames.COMPONENT_CONSUMER,
+                    MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_FAIL));
             logger.error(msg, "Failed to process result in Core", e);
         } finally {
-            MetricsCollector.getInstance().recordTime(MetricsNames.timer("consumer", "process", msg, "latency"),
+            MetricsCollector.getInstance().recordTime(MetricsNames.timer(MetricsNames.COMPONENT_CONSUMER,
+                    MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_LATENCY),
                     System.nanoTime() - start);
         }
     }

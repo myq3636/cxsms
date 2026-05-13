@@ -131,6 +131,9 @@ public class RedisClient {
 	public void setExpire(String key, int time) { stateRedis.setExpired(key, time); }
 	public boolean setString(String key, String obj, int time) { return stateRedis.setString(key, obj, time); }
 	public String setnxString(String key, String value, int expireSeconds) { return stateRedis.setnxString(key, value, expireSeconds); }
+	public boolean setStringIfAbsent(String key, String value, int expireSeconds) { return stateRedis.setStringIfAbsent(key, value, expireSeconds); }
+	public boolean compareAndSetString(String key, String expectedValue, String newValue, int expireSeconds) { return stateRedis.compareAndSetString(key, expectedValue, newValue, expireSeconds); }
+	public boolean deleteIfStringEquals(String key, String expectedValue) { return stateRedis.deleteIfStringEquals(key, expectedValue); }
 	public boolean lpush(String key, String obj) { return stateRedis.lpush(key, obj); }
 
 	private static final java.util.concurrent.BlockingQueue<RedisConnection.RedisTask> asyncRedisQueue = new java.util.concurrent.LinkedBlockingQueue<RedisConnection.RedisTask>(100000);
@@ -173,6 +176,7 @@ public class RedisClient {
 	public boolean zrem(String key, String[] members) { return stateRedis.zrem(key, members); }
 	public List<redis.clients.jedis.resps.Tuple> zpopmin(String key) { return stateRedis.zpopmin(key); }
 	public Long zadd(String key, double score, String member) { return stateRedis.zadd(key, score, member); }
+	public String claimDueZSetMember(String fromKey, String toKey, double dueScore, double processingScore) { return stateRedis.claimDueZSetMember(fromKey, toKey, dueScore, processingScore); }
 	public boolean setRoutingInfo(String keyword, Map<String, Map<String, String>> infos) { return stateRedis.setHashMapWithPipline(keyword, infos); }
 	public boolean setContentTemplate(String keyword, Map<String, Map<String, String>> infos) { return stateRedis.setHashMapWithPipline(keyword, infos); }
 	public void delPipeline(String key, String hashKey) { stateRedis.delPipeline(key, hashKey); }
@@ -237,11 +241,14 @@ public class RedisClient {
 
 	// --- Submit-MQ ---
 	public String xaddToSubmitMq(String key, Map<String, String> hash, long maxLen) {
+		return xaddToSubmitMq(key, hash, maxLen, true);
+	}
+	public String xaddToSubmitMq(String key, Map<String, String> hash, long maxLen, boolean approximateTrimming) {
 		if (submitMqRedis == null) {
 			log.error("xaddToSubmitMq failed. submitMqRedis is null, key={}", key);
 			return null;
 		}
-		return submitMqRedis.xadd(key, hash, maxLen);
+		return submitMqRedis.xadd(key, hash, maxLen, approximateTrimming);
 	}
 	public boolean xgroupCreateSubmitMq(String key, String groupName, boolean mkStream) {
 		return submitMqRedis != null ? submitMqRedis.xgroupCreate(key, groupName, mkStream) : false;
@@ -258,6 +265,9 @@ public class RedisClient {
 	public Map.Entry<redis.clients.jedis.StreamEntryID, List<redis.clients.jedis.resps.StreamEntry>> xautoclaimSubmitMq(String key, String group, String consumer, long minIdleMs, redis.clients.jedis.StreamEntryID start, int count) {
 		return submitMqRedis != null ? submitMqRedis.xautoclaim(key, group, consumer, minIdleMs, start, count) : null;
 	}
+	public List<redis.clients.jedis.resps.StreamPendingSummary> xpendingSubmitMq(String key, String group) {
+		return submitMqRedis != null ? submitMqRedis.xpending(key, group) : null;
+	}
 	public List<redis.clients.jedis.resps.Tuple> zpopminSubmitMq(String key) {
 		return submitMqRedis != null ? submitMqRedis.zpopmin(key) : null;
 	}
@@ -270,6 +280,9 @@ public class RedisClient {
 	public Long zremSubmitMq(String key, String member) {
 		return submitMqRedis != null ? submitMqRedis.zremDoorbell(key, member) : 0L;
 	}
+	public Double zscoreSubmitMq(String key, String member) {
+		return submitMqRedis != null ? submitMqRedis.zscoreDoorbell(key, member) : null;
+	}
 	public long xlenSubmitMq(String key) {
 		return submitMqRedis != null ? submitMqRedis.xlen(key) : 0L;
 	}
@@ -279,7 +292,10 @@ public class RedisClient {
 
 	// --- Report-MQ ---
 	public String xaddToReportMq(String key, Map<String, String> hash, long maxLen) {
-		return reportMqRedis != null ? reportMqRedis.xadd(key, hash, maxLen) : null;
+		return xaddToReportMq(key, hash, maxLen, true);
+	}
+	public String xaddToReportMq(String key, Map<String, String> hash, long maxLen, boolean approximateTrimming) {
+		return reportMqRedis != null ? reportMqRedis.xadd(key, hash, maxLen, approximateTrimming) : null;
 	}
 	public boolean xgroupCreateReportMq(String key, String groupName, boolean mkStream) {
 		return reportMqRedis != null ? reportMqRedis.xgroupCreate(key, groupName, mkStream) : false;
@@ -296,6 +312,9 @@ public class RedisClient {
 	public Map.Entry<redis.clients.jedis.StreamEntryID, List<redis.clients.jedis.resps.StreamEntry>> xautoclaimReportMq(String key, String group, String consumer, long minIdleMs, redis.clients.jedis.StreamEntryID start, int count) {
 		return reportMqRedis != null ? reportMqRedis.xautoclaim(key, group, consumer, minIdleMs, start, count) : null;
 	}
+	public List<redis.clients.jedis.resps.StreamPendingSummary> xpendingReportMq(String key, String group) {
+		return reportMqRedis != null ? reportMqRedis.xpending(key, group) : null;
+	}
 	public List<redis.clients.jedis.resps.Tuple> zpopminReportMq(String key) {
 		return reportMqRedis != null ? reportMqRedis.zpopmin(key) : null;
 	}
@@ -307,6 +326,9 @@ public class RedisClient {
 	}
 	public Long zremReportMq(String key, String member) {
 		return reportMqRedis != null ? reportMqRedis.zremDoorbell(key, member) : 0L;
+	}
+	public Double zscoreReportMq(String key, String member) {
+		return reportMqRedis != null ? reportMqRedis.zscoreDoorbell(key, member) : null;
 	}
 	public long xlenReportMq(String key) {
 		return reportMqRedis != null ? reportMqRedis.xlen(key) : 0L;

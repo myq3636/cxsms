@@ -355,7 +355,7 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 		boolean result = false;
 		try {
 			if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP.equalsIgnoreCase(msg.getMessageType())) {
-				//msg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
+				msg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 				msgStoreManager.handleInDeliveryReportRes(msg);
 			} else if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(msg.getMessageType())) {
 				msgStoreManager.handleInDeliveryReportRes(msg);
@@ -1388,6 +1388,60 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 		return result;
 	}
 
+	public boolean processMqmSubmitFromStream(GmmsMessage msg) {
+		try {
+			if (msg == null) {
+				log.warn("Null submit message when processing MQM stream.");
+				return true;
+			}
+			if (CsmUtility.isConcatenatedMsg(msg) && msg.getRoperator() < 0) {
+				if (!csmHandler.putMsg(msg)) {
+					msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
+					msgStoreManager.handleOutSubmitRes(msg);
+				}
+			} else {
+				if (!deliveryRouterHandler.putMsg(msg)) {
+					msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
+					msgStoreManager.handleOutSubmitRes(msg);
+				}
+			}
+			return true;
+		} catch (Exception e) {
+			log.warn(msg, "Failed to process MQM submit from Redis Stream", e);
+			return false;
+		}
+	}
+
+	public boolean processMqmReportFromStream(GmmsMessage msg) {
+		try {
+			if (msg == null) {
+				log.warn("Null report message when processing MQM stream.");
+				return true;
+			}
+			msg.setInnerTransaction(transaction);
+			if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(msg.getMessageType())) {
+				if (!processorHandler.putMsg(msg)) {
+					msg.setStatusCode(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT.getCode());
+					msgStoreManager.handleInDeliveryReportRes(msg);
+				}
+				return true;
+			}
+			if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT_QUERY.equalsIgnoreCase(msg.getMessageType())) {
+				if (!processorHandler.putMsg(msg)) {
+					msg.setStatusCode(GmmsStatus.FAIL_QUERY_DELIVERREPORT.getCode());
+					msgStoreManager.handleOutDeliveryReportRes(msg);
+				}
+				return true;
+			}
+			log.warn(msg, "Unsupported MQM report message type: {}", msg.getMessageType());
+			msgStoreManager.handleMessageError(msg);
+			return true;
+		} catch (Exception e) {
+			log.warn(msg, "Failed to process MQM report from Redis Stream", e);
+			return false;
+		}
+	}
+
 	private boolean processSubmitAck(GmmsMessage msg) {
 		boolean result = false;
 		try {
@@ -1450,7 +1504,9 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 			A2PCustomerInfo vdc = ctm.getCustomerBySSID(msg.getRSsID());
 			
 			if (msg != null) {
-				msg.setInnerTransaction(transaction);
+				if (msg.getInnerTransaction() == null) {
+					msg.setInnerTransaction(transaction);
+				}
 				result = processInnerAck(msg);
 				//TODO
 				/*if (msg.getDeliveryChannel()!=null &&
@@ -1567,16 +1623,7 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 					}
 				}
 				if(message != null){					
-					message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
-					message.setStatusCode(finalMsg.getStatusCode());
-					if (!GmmsStatus.RETRIEVED.getText().equalsIgnoreCase(
-							message.getStatusText())) {
-						message.setStatusText(GmmsStatus.getStatus(finalMsg.getStatusCode()).getText());
-					}
-					
-					message.setOutTransID(finalMsg.getOutTransID());
-					message.setTransaction(finalMsg.getTransaction());
-					message.setDeliveryChannel(finalMsg.getDeliveryChannel());
+					mergeInboundDeliveryReport(message, finalMsg);
 					return processDeliveryReport(message, finalPdu);
 				} else {
 					return processStoredDeliveryReport(finalMsg, finalPdu);
@@ -1585,6 +1632,18 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 		} catch (Exception e) {
 			log.warn(finalMsg, "Failed to handle inbound DR", e);
 			return false;
+		}
+	}
+
+	private void mergeInboundDeliveryReport(GmmsMessage original, GmmsMessage dr) {
+		original.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
+		original.setStatusCode(dr.getStatusCode());
+		if (!GmmsStatus.RETRIEVED.getText().equalsIgnoreCase(original.getStatusText())) {
+			original.setStatusText(GmmsStatus.getStatus(dr.getStatusCode()).getText());
+		}
+		original.setOutTransID(dr.getOutTransID());
+		if (dr.getDateIn() != null) {
+			original.setDateIn(dr.getDateIn());
 		}
 	}
 

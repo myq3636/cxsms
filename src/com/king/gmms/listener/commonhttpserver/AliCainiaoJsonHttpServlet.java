@@ -299,19 +299,19 @@ public class AliCainiaoJsonHttpServlet extends AbstractHttpServer {
 					gmmsMessage.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT);
 					gmmsMessage.setInTransID(Long.toString(System.currentTimeMillis()));				
 					gmmsMessage.setTimeStamp(gmmsUtility.getGMTTime());
-					
-					if (!putGmmsMessage2RouterQueue(gmmsMessage)) {
+
+					recordHttpSubmitReceived(gmmsMessage);
+					boolean produced = com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceSubmitMessage(gmmsMessage);
+					if (!produced) {
+						recordHttpSubmitRejected(gmmsMessage);
+						gmmsMessage.setStatus(GmmsStatus.SERVER_ERROR);
+						msg.setStatus(GmmsStatus.SERVER_ERROR);
+						log.warn(gmmsMessage, "Failed to produce HTTP submit to Redis Stream");
 						gmmsUtility.getCdrManager().logInSubmit(gmmsMessage);
-						if (gmmsMessage.getDeliveryReport()) {
-							gmmsMessage.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
-							gmmsMessage.setRSsID(sInfo.getSSID());
-							gmmsMessage.setOutMsgID(gmmsMessage.getInMsgID());
-							gmmsMessage.setStatus(GmmsStatus.REJECTED);
-							if (!putGmmsMessage2RouterQueue(gmmsMessage)) {
-								gmmsUtility.getCdrManager().logInDeliveryReportRes(gmmsMessage);									
-							}
-						}							
-					}					
+                		this.response(msg, request, response, 0,requestId, inmsgid);
+                		return;
+					}
+					recordHttpSubmitAccepted(gmmsMessage);
 				}
 			msg.setStatus(GmmsStatus.SUCCESS);
 			this.response(msg, request, response, split,requestId, inmsgid);	

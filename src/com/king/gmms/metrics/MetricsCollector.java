@@ -39,6 +39,17 @@ public class MetricsCollector {
     // ---- Timers: cumulative nanos + invocation count ----
     private final ConcurrentHashMap<String, AtomicLong> timerTotalNanos = new ConcurrentHashMap<String, AtomicLong>();
     private final ConcurrentHashMap<String, AtomicLong> timerCounts = new ConcurrentHashMap<String, AtomicLong>();
+    private final ConcurrentHashMap<String, AtomicLong> timerBuckets = new ConcurrentHashMap<String, AtomicLong>();
+    private static final String[] TIMER_BUCKET_NAMES = new String[] {
+        "le_10ms", "le_50ms", "le_100ms", "le_500ms", "le_1000ms", "gt_1000ms"
+    };
+    private static final long[] TIMER_BUCKET_LIMIT_NANOS = new long[] {
+        10L * 1000L * 1000L,
+        50L * 1000L * 1000L,
+        100L * 1000L * 1000L,
+        500L * 1000L * 1000L,
+        1000L * 1000L * 1000L
+    };
     private volatile boolean enabled = false;
 
     private MetricsCollector() {
@@ -63,6 +74,7 @@ public class MetricsCollector {
      */
     public void incrementCounter(String name) {
         if (!enabled) return;
+        if (name == null || name.length() == 0) return;
         getOrCreateCounter(name).incrementAndGet();
     }
 
@@ -71,6 +83,7 @@ public class MetricsCollector {
      */
     public void incrementCounter(String name, long delta) {
         if (!enabled) return;
+        if (name == null || name.length() == 0) return;
         getOrCreateCounter(name).addAndGet(delta);
     }
 
@@ -98,6 +111,7 @@ public class MetricsCollector {
      */
     public void setGauge(String name, long value) {
         if (!enabled) return;
+        if (name == null || name.length() == 0) return;
         AtomicLong gauge = gauges.get(name);
         if (gauge == null) {
             gauges.putIfAbsent(name, new AtomicLong(value));
@@ -121,8 +135,13 @@ public class MetricsCollector {
      */
     public void recordTime(String name, long nanos) {
         if (!enabled) return;
+        if (name == null || name.length() == 0) return;
+        if (nanos < 0) {
+            nanos = 0;
+        }
         getOrCreateTimerNanos(name).addAndGet(nanos);
         getOrCreateTimerCount(name).incrementAndGet();
+        getOrCreateTimerBucket(name, timerBucketName(nanos)).incrementAndGet();
     }
 
     /**
@@ -166,6 +185,35 @@ public class MetricsCollector {
             c = timerCounts.get(name);
         }
         return c;
+    }
+
+    private AtomicLong getOrCreateTimerBucket(String name, String bucket) {
+        String key = timerBucketKey(name, bucket);
+        AtomicLong c = timerBuckets.get(key);
+        if (c == null) {
+            timerBuckets.putIfAbsent(key, new AtomicLong(0));
+            c = timerBuckets.get(key);
+        }
+        return c;
+    }
+
+    private String timerBucketName(long nanos) {
+        for (int i = 0; i < TIMER_BUCKET_LIMIT_NANOS.length; i++) {
+            if (nanos <= TIMER_BUCKET_LIMIT_NANOS[i]) {
+                return TIMER_BUCKET_NAMES[i];
+            }
+        }
+        return TIMER_BUCKET_NAMES[TIMER_BUCKET_NAMES.length - 1];
+    }
+
+    public static String[] timerBucketNames() {
+        String[] copy = new String[TIMER_BUCKET_NAMES.length];
+        System.arraycopy(TIMER_BUCKET_NAMES, 0, copy, 0, TIMER_BUCKET_NAMES.length);
+        return copy;
+    }
+
+    public static String timerBucketKey(String name, String bucket) {
+        return name + "." + bucket;
     }
 
     // ==================== Snapshot ====================
@@ -214,6 +262,14 @@ public class MetricsCollector {
     public Map<String, Long> snapshotTimerTotalNanos() {
         TreeMap<String, Long> snapshot = new TreeMap<String, Long>();
         for (Map.Entry<String, AtomicLong> entry : timerTotalNanos.entrySet()) {
+            snapshot.put(entry.getKey(), entry.getValue().get());
+        }
+        return snapshot;
+    }
+
+    public Map<String, Long> snapshotTimerBuckets() {
+        TreeMap<String, Long> snapshot = new TreeMap<String, Long>();
+        for (Map.Entry<String, AtomicLong> entry : timerBuckets.entrySet()) {
             snapshot.put(entry.getKey(), entry.getValue().get());
         }
         return snapshot;

@@ -22,12 +22,15 @@ import com.king.gmms.customerconnectionfactory.CustomerConnectionFactory;
 import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.domain.ModuleConnectionInfo;
 import com.king.gmms.domain.ModuleManager;
+import com.king.gmms.ha.ModuleStatusReporter;
 import com.king.gmms.ha.TransactionURI;
 import com.king.gmms.ha.systemmanagement.SystemListener;
 import com.king.gmms.ha.systemmanagement.SystemSession;
 import com.king.gmms.ha.systemmanagement.SystemSessionFactory;
 import com.king.gmms.ha.systemmanagement.pdu.ModuleRegisterAck;
 import com.king.gmms.messagequeue.OperatorMessageQueue;
+import com.king.gmms.metrics.MetricsCollector;
+import com.king.gmms.metrics.MetricsNames;
 import com.king.gmms.protocol.smpp.pdu.Response;
 import com.king.gmms.throttle.ReportInMsgCountTimer;
 import com.king.gmms.throttle.ThrottlingControl;
@@ -51,6 +54,8 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 	protected String protocol = null;
 	protected static volatile boolean initAgent = false;
 	protected static volatile boolean isRunning = false;
+	protected static ModuleStatusReporter statusReporter = null;
+	protected static Object statusReporterMutex = new Object();
 	protected static int timeout = 10000;
 	protected SystemListener systemListener = null;
 	protected SystemSession systemSession = null; // system client
@@ -138,6 +143,7 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 	 */
 	public boolean startService() {
 		if (isRunning) {
+			ensureHttpServerStatusReporter();
 			return true;
 		}
 		try {
@@ -161,6 +167,7 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 			*/
 			gmmsUtility.initRedisClient(redisStatus);
 			gmmsUtility.initDBManager(dbstatus);
+			ensureHttpServerStatusReporter();
 			System.out.println("Starting service:"
 					+ System.getProperty("module") + "...");
 			new Thread(A2PThreadGroup.getInstance(), this).start();
@@ -292,6 +299,7 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 			if (log.isInfoEnabled())  {
 				log.info("AbstractHttpServer stopService");
 			}
+			stopHttpServerStatusReporter();
             
 			return true;
 		} catch (Exception e) {
@@ -299,6 +307,74 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 			e.printStackTrace();
 			return false;
 		}
+	}
+
+	protected void ensureHttpServerStatusReporter() {
+		synchronized (statusReporterMutex) {
+			if (statusReporter != null) {
+				return;
+			}
+			try {
+				String module = moduleName;
+				if (module == null || module.trim().length() == 0) {
+					module = System.getProperty("module", "CommonHttpServer");
+				}
+				statusReporter = ModuleStatusReporter.start(gmmsUtility, "httpserver", module, gmmsUtility.getNodeId());
+				log.info("{} HTTP server ModuleStatusReporter started.", module);
+			} catch (Exception e) {
+				log.warn("Failed to start HTTP server ModuleStatusReporter, HTTP servlet keeps running.", e);
+			}
+		}
+	}
+
+	protected void stopHttpServerStatusReporter() {
+		synchronized (statusReporterMutex) {
+			if (statusReporter == null) {
+				return;
+			}
+			try {
+				statusReporter.stop();
+			} catch (Exception e) {
+				log.warn("Failed to stop HTTP server ModuleStatusReporter.", e);
+			} finally {
+				statusReporter = null;
+			}
+		}
+	}
+
+	protected void recordHttpSubmitReceived(GmmsMessage msg) {
+		recordBusiness(MetricsNames.FLOW_SERVER, MetricsNames.STAGE_IN_SUBMIT, msg, false,
+				MetricsNames.ACTION_RECEIVED);
+	}
+
+	protected void recordHttpSubmitAccepted(GmmsMessage msg) {
+		recordBusiness(MetricsNames.FLOW_SERVER, MetricsNames.STAGE_IN_SUBMIT, msg, false,
+				MetricsNames.ACTION_ACCEPTED_TO_REDIS);
+	}
+
+	protected void recordHttpSubmitRejected(GmmsMessage msg) {
+		recordBusiness(MetricsNames.FLOW_SERVER, MetricsNames.STAGE_IN_SUBMIT, msg, false,
+				MetricsNames.ACTION_REJECTED_BEFORE_REDIS);
+	}
+
+	protected void recordHttpDrReceived(GmmsMessage msg) {
+		recordBusiness(MetricsNames.FLOW_SERVER, MetricsNames.STAGE_IN_DR, msg, true,
+				MetricsNames.ACTION_RECEIVED);
+	}
+
+	protected void recordHttpDrWrittenToRedis(GmmsMessage msg) {
+		recordBusiness(MetricsNames.FLOW_SERVER, MetricsNames.STAGE_IN_DR, msg, true,
+				MetricsNames.ACTION_WRITTEN_TO_REDIS);
+	}
+
+	protected void recordHttpDrRejected(GmmsMessage msg) {
+		recordBusiness(MetricsNames.FLOW_SERVER, MetricsNames.STAGE_IN_DR, msg, true,
+				MetricsNames.ACTION_REJECTED_BEFORE_REDIS);
+	}
+
+	private void recordBusiness(String flow, String stage, GmmsMessage msg, boolean useRssid, String action) {
+		MetricsCollector.getInstance().incrementCounter(MetricsNames.business(flow, msg, action));
+		MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(stage, msg, useRssid, action));
 	}
 
 	@Override

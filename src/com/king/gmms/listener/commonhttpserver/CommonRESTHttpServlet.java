@@ -298,8 +298,10 @@ public class CommonRESTHttpServlet extends AbstractHttpServer {
 		if (hi != null) {
 			if (hi.isSuccessMessageStatus(hs)) {
 				// V4.4 Fast Accept: Directly produce to Redis Stream and respond immediately
+				recordHttpSubmitReceived(message);
 				boolean enqueued = StreamQueueManager.getInstance().produceSubmitMessage(message);
 				if (!enqueued) {
+					recordHttpSubmitRejected(message);
 					message.setStatus(GmmsStatus.INSUBMIT_RESP_FAILED);
 					gmmsUtility.getCdrManager().logInSubmit(message);
 					this.response(
@@ -307,6 +309,7 @@ public class CommonRESTHttpServlet extends AbstractHttpServer {
 							hi.mapGmmsStatus2HttpSubStatus(GmmsStatus.UNKNOWN_ERROR),
 							message, request, response);
 				} else {
+					recordHttpSubmitAccepted(message);
 					// Enqueue success, return SUCCESS immediately
 					message.setStatus(GmmsStatus.SUCCESS);
 					this.response(interfaceName, 
@@ -314,11 +317,15 @@ public class CommonRESTHttpServlet extends AbstractHttpServer {
 							message, request, response);
 				}
 			} else {// isn't a success response
+				recordHttpSubmitReceived(message);
+				recordHttpSubmitRejected(message);
 				message.setStatus(hi.mapHttpSubStatus2GmmsStatus(hs));
 				this.response(interfaceName, hs, message, request, response);
 				gmmsUtility.getCdrManager().logInSubmit(message);
 			}
 		} else {// hi is null
+			recordHttpSubmitReceived(message);
+			recordHttpSubmitRejected(message);
 			message.setStatus(GmmsStatus.UNKNOWN_ERROR);
 			gmmsUtility.getCdrManager().logInSubmit(message);
 			this.response(interfaceName, hs, message, request, response);
@@ -394,11 +401,15 @@ public class CommonRESTHttpServlet extends AbstractHttpServer {
 			if (hi.isSuccessMessageStatus(hs)) {
 
 				for (GmmsMessage msg : msgSet) {
-					if (!StreamQueueManager.getInstance().produceSubmitMessage(msg)) {
+					recordHttpSubmitReceived(msg);
+					boolean produced = StreamQueueManager.getInstance().produceSubmitMessage(msg);
+					if (!produced) {
+						recordHttpSubmitRejected(msg);
 						msg.setStatus(GmmsStatus.INSUBMIT_RESP_FAILED);
 						gmmsUtility.getCdrManager().logInSubmit(msg);
 						failedCount++;
 					} else {
+						recordHttpSubmitAccepted(msg);
 						successCount++;
 					}
 				}
@@ -420,6 +431,8 @@ public class CommonRESTHttpServlet extends AbstractHttpServer {
 			} else {// isn't a success response
 
 				for (GmmsMessage msg : msgSet) {
+					recordHttpSubmitReceived(msg);
+					recordHttpSubmitRejected(msg);
 					msg.setStatus(hi.mapHttpSubStatus2GmmsStatus(hs));
 					gmmsUtility.getCdrManager().logInSubmit(msg);
 				}
@@ -427,6 +440,8 @@ public class CommonRESTHttpServlet extends AbstractHttpServer {
 			}
 		} else {// hi is null
 			for (GmmsMessage msg : msgSet) {
+				recordHttpSubmitReceived(msg);
+				recordHttpSubmitRejected(msg);
 				msg.setStatus(GmmsStatus.UNKNOWN_ERROR);
 				gmmsUtility.getCdrManager().logInSubmit(msg);
 			}

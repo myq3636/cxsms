@@ -28,6 +28,7 @@ public class MessageIdGenerator {
     private volatile int decSn = 0;
     private static int msgStrSn = 0;
     private static int nodeId = 0; // V4.0 Node ID for multi-node uniqueness
+    private static boolean includeNodeId = false;
 
     private static Object mutex1 = new Object();
     private static Object mutex2 = new Object();
@@ -55,6 +56,15 @@ public class MessageIdGenerator {
     public static int getNodeId() {
         return nodeId;
     }
+
+    public static void setIncludeNodeId(boolean include) {
+        includeNodeId = include;
+    }
+
+    public static boolean isIncludeNodeId() {
+        return includeNodeId;
+    }
+
     /**
      *
      * @param ssid int, inMsgId:ossid; outMsgId:rssid; msgid:ossid
@@ -62,10 +72,11 @@ public class MessageIdGenerator {
      */
     private static String generateStringID(int ssid, int sn) {
     	StringBuilder builder = new StringBuilder();
-    	builder.append(ssid).append("_")
-    		.append(nodeId).append("_") // Node ID included for V4.0 uniqueness
-    		.append(System.currentTimeMillis())
-    		.append(sn);
+    	builder.append(ssid).append("_");
+    	if (includeNodeId) {
+    		builder.append(nodeId).append("_");
+    	}
+    	builder.append(System.currentTimeMillis()).append(sn);
         return builder.toString();
     }
 

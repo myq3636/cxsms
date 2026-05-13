@@ -69,6 +69,7 @@ public class GmmsMessage extends MessageBase {
 	protected String deliveryChannel = null;
 	protected String routingSsIDs = null;
 	protected String redisStreamID = null; // V4.0 Redis Stream ID for ACK
+	protected transient String redisStreamMessageType = null; // metrics hint: original type read from Redis
 	
 	
 //	protected boolean inClientPull = false;
@@ -767,6 +768,14 @@ public class GmmsMessage extends MessageBase {
 
 	public void setRedisStreamID(String redisStreamID) {
 		this.redisStreamID = redisStreamID;
+	}
+
+	public String getRedisStreamMessageType() {
+		return redisStreamMessageType;
+	}
+
+	public void setRedisStreamMessageType(String redisStreamMessageType) {
+		this.redisStreamMessageType = redisStreamMessageType;
 	}
 	
 	

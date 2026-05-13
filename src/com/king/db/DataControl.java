@@ -22,8 +22,11 @@ import java.util.StringTokenizer;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import com.zaxxer.hikari.HikariPoolMXBean;
 
 import com.king.framework.SystemLogger;
+import com.king.gmms.metrics.MetricsCollector;
+import com.king.gmms.metrics.MetricsNames;
 
 public class DataControl {
 	private static SystemLogger log = SystemLogger.getSystemLogger(DataControl.class);
@@ -261,6 +264,32 @@ public class DataControl {
 	}
 
 	public static void logPoolStats() {
+		if (dataSources == null || dataSources.isEmpty()) {
+			return;
+		}
+		Enumeration dsNames = dataSources.keys();
+		while (dsNames.hasMoreElements()) {
+			String dsName = (String) dsNames.nextElement();
+			Object source = dataSources.get(dsName);
+			if (!(source instanceof HikariDataSource)) {
+				continue;
+			}
+			HikariDataSource dataSource = (HikariDataSource) source;
+			if (dataSource.isClosed()) {
+				continue;
+			}
+			HikariPoolMXBean pool = dataSource.getHikariPoolMXBean();
+			if (pool == null) {
+				continue;
+			}
+			MetricsCollector collector = MetricsCollector.getInstance();
+			collector.setGauge(MetricsNames.dbGauge(dsName, "active"), pool.getActiveConnections());
+			collector.setGauge(MetricsNames.dbGauge(dsName, "idle"), pool.getIdleConnections());
+			collector.setGauge(MetricsNames.dbGauge(dsName, "total"), pool.getTotalConnections());
+			collector.setGauge(MetricsNames.dbGauge(dsName, "waiting"), pool.getThreadsAwaitingConnection());
+			collector.setGauge(MetricsNames.dbGauge(dsName, "max"), dataSource.getMaximumPoolSize());
+			collector.setGauge(MetricsNames.dbGauge(dsName, "min_idle"), dataSource.getMinimumIdle());
+		}
 	}
 
 	public static DataManager getDataManager(String dmName)

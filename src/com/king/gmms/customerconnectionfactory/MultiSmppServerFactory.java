@@ -275,4 +275,32 @@ public class MultiSmppServerFactory extends AbstractConnectionFactory {
 		return strategy.getSession(msg);
 	}
 
+	public Session getFallbackSession(GmmsMessage msg) {
+		if (msg == null) {
+			return null;
+		}
+		int ssid = GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(msg.getMessageType())
+				? msg.getRSsID() : msg.getOSsID();
+		String prefix = ssid + "_";
+		Iterator<Map.Entry<String, ConnectionManager>> it = ssid2connectionManagers.entrySet().iterator();
+		while (it.hasNext()) {
+			Map.Entry<String, ConnectionManager> entry = it.next();
+			if (entry.getKey() == null || !entry.getKey().startsWith(prefix)) {
+				continue;
+			}
+			ConnectionManager manager = entry.getValue();
+			if (manager == null) {
+				continue;
+			}
+			Session session = manager.getSession();
+			if (session != null) {
+				log.info(msg, "Fallback SMPP server session selected. ssid={}, managerKey={}, session={}",
+						ssid, entry.getKey(), session.getSessionName());
+				return session;
+			}
+		}
+		log.warn(msg, "No fallback SMPP server session for ssid {}", ssid);
+		return null;
+	}
+
 }

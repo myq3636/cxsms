@@ -28,7 +28,7 @@ public abstract class AbstractClient implements A2PService {
         gmmsUtility.initClientShardAssignment();
         statusReporter = ModuleStatusReporter.start(gmmsUtility, "client", module, gmmsUtility.getNodeId());
      // 初始化时启动 Client 专属的流消费者
-        startOutboundConsumer();
+        startClientStreamConsumers();
     	return true;
     }
     
@@ -43,6 +43,14 @@ public abstract class AbstractClient implements A2PService {
             statusReporter.stop();
             statusReporter = null;
         }
+    }
+
+    protected void startClientStreamConsumers() {
+        startOutboundConsumer();
+    }
+
+    protected void stopClientStreamConsumers() {
+        stopOutboundConsumer();
     }
     
     /**

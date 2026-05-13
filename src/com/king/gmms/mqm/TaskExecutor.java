@@ -28,6 +28,11 @@ public class TaskExecutor implements Runnable {
             try{
                 task = taskList.poll(5000L, TimeUnit.MILLISECONDS);
                 if (task != null) {
+                    if (!MqmActiveState.isActive()) {
+                        log.debug("Skip MQM task because this module is standby. table={}, reason={}",
+                                table, MqmActiveState.getReason());
+                        continue;
+                    }
                     task.executeTask();
                 }
             }catch(Exception e){

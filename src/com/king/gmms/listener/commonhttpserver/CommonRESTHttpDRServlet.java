@@ -69,7 +69,8 @@ public class CommonRESTHttpDRServlet extends AbstractHttpServer {
 						}
 					}
 				} // end of size > 0
-				startAgentConnection(factory);
+				// Redis Stream mode: HTTP DR ingress no longer needs an internal agent connection.
+				// startAgentConnection(factory);
 			}
 			super.startService();
 
@@ -143,19 +144,26 @@ public class CommonRESTHttpDRServlet extends AbstractHttpServer {
 		}
 
 		if (hi != null) {
+			recordHttpDrReceived(msg);
 			if (hi.isSuccessDRRespStatus(hs)) {
-				// V4.1 Async Feedback Loop: Produce result (DR) to Redis Stream
-				if (!com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceResult(msg)) {
+				boolean produced = com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceInboundDeliveryReport(msg);
+				if (!produced) {
+					recordHttpDrRejected(msg);
 					msg.setStatus(GmmsStatus.ENROUTE);
 					gmmsUtility.getCdrManager().logOutDeliveryReportRes(msg);
+				} else {
+					recordHttpDrWrittenToRedis(msg);
 				}
 				this.response(interfaceName, hs, msg, response);
 			} else {// isn't DELEVRED DR status
+				recordHttpDrRejected(msg);
 				msg.setStatus(hi.mapHttpDRRespStatus2GmmsStatus(hs));
 				this.response(interfaceName, hs, msg, response);
 				gmmsUtility.getCdrManager().logOutDeliveryReportRes(msg);
 			}
 		} else {// hi is null
+			recordHttpDrReceived(msg);
+			recordHttpDrRejected(msg);
 			msg.setStatus(GmmsStatus.UNKNOWN);
 			this.response(interfaceName, hs, msg, response);
 			gmmsUtility.getCdrManager().logOutDeliveryReportRes(msg);

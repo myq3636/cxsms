@@ -8,6 +8,7 @@ import java.util.Set;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
+import com.king.gmms.ha.SmppServerDrRouteResolver;
 import com.king.gmms.metrics.MetricsCollector;
 import com.king.gmms.metrics.MetricsNames;
 import com.king.message.gmms.GmmsMessage;
@@ -16,6 +17,7 @@ import com.king.redis.SerializableHandler;
 
 import redis.clients.jedis.StreamEntryID;
 import redis.clients.jedis.resps.StreamEntry;
+import redis.clients.jedis.resps.StreamPendingSummary;
 import redis.clients.jedis.resps.Tuple;
 
 /**
@@ -31,11 +33,14 @@ public class StreamQueueManager {
 	private static final StreamQueueManager instance = new StreamQueueManager();
 
 	private final RedisClient redisClient;
-	private final long MAX_LEN = 1000000;
 
 	// 队列名称模板
 	public static final String STR_MT_PENDING_PREFIX = "stream:mt:pending:";
 	public static final String STR_MT_ROUTED_PREFIX = "stream:mt:routed:";
+	public static final String STR_HTTP_SUBMIT_PREFIX = "stream:http:submit:";
+	public static final String STR_HTTP_DR_PREFIX = "stream:http:dr:";
+	public static final String STR_MQM_SUBMIT_PREFIX = "stream:mqm:submit:";
+	public static final String STR_MQM_REPORT_PREFIX = "stream:mqm:report:";
 	public static final String STR_DR_PENDING_PREFIX = "stream:dr:pending:";
 	public static final String STR_INBOUND_DR_PREFIX = "stream:core:inbound-dr:";
 	
@@ -45,6 +50,10 @@ public class StreamQueueManager {
 	// 全局活跃门铃 ZSet 键名
 	public static final String ZSET_MT_PENDING_ACTIVE = "zset:mt:pending:active";
 	public static final String ZSET_MT_ROUTED_ACTIVE = "zset:mt:routed:active";
+	public static final String ZSET_HTTP_SUBMIT_ACTIVE = "zset:http:submit:active";
+	public static final String ZSET_HTTP_DR_ACTIVE = "zset:http:dr:active";
+	public static final String ZSET_MQM_SUBMIT_ACTIVE = "zset:mqm:submit:active";
+	public static final String ZSET_MQM_REPORT_ACTIVE = "zset:mqm:report:active";
 	public static final String ZSET_DR_PENDING_ACTIVE = "zset:dr:pending:active";
 	public static final String ZSET_INBOUND_DR_ACTIVE = "zset:core:inbound-dr:active";
 	public static final String ZSET_CORE_RESULTS_ACTIVE = "zset:core:results:active";
@@ -55,6 +64,7 @@ public class StreamQueueManager {
 		if (isGlobalPELMonitorEnabled()) {
 			startPELMonitor();
 		}
+		startBacklogMonitor();
 	}
 
 	public static StreamQueueManager getInstance() {
@@ -90,16 +100,7 @@ public class StreamQueueManager {
 	public int calculateOutboundShardId(GmmsMessage msg) {
 		int totalShards = GmmsUtility.getInstance().getTotalShards();
 		if (totalShards <= 1) return 0;
-		String longMessageKey = msg.getSarMsgRefNum();
-		if (isBlank(longMessageKey)) {
-			longMessageKey = msg.getInMsgID();
-		}
-		String hashKey;
-		if (!isBlank(longMessageKey)) {
-			hashKey = msg.getRSsID() + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress() + "_" + longMessageKey;
-		} else {
-			hashKey = msg.getRSsID() + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
-		}
+		String hashKey = msg.getRSsID() + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
 		return (hashKey.hashCode() & Integer.MAX_VALUE) % totalShards;
 	}
 
@@ -115,8 +116,67 @@ public class StreamQueueManager {
 		return produced;
 	}
 
+	public boolean produceHttpSubmitMessage(GmmsMessage msg) {
+		int targetSsid = msg.getRSsID();
+		int shardId = calculateHttpShardId(msg, targetSsid);
+		String key = STR_HTTP_SUBMIT_PREFIX + targetSsid + ":" + shardId;
+		return produce(key, msg, true);
+	}
+
+	public boolean produceHttpDeliveryReport(GmmsMessage msg) {
+		int targetSsid = msg.getOSsID() > 0 ? msg.getOSsID() : msg.getRSsID();
+		int shardId = calculateHttpShardId(msg, targetSsid);
+		String key = STR_HTTP_DR_PREFIX + targetSsid + ":" + shardId;
+		return produce(key, msg, false);
+	}
+
+	private int calculateHttpShardId(GmmsMessage msg, int targetSsid) {
+		int totalShards = GmmsUtility.getInstance().getTotalShards();
+		if (totalShards <= 1) return 0;
+		String hashKey = targetSsid + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
+		return (hashKey.hashCode() & Integer.MAX_VALUE) % totalShards;
+	}
+
+	public boolean produceMqmSubmitMessage(GmmsMessage msg) {
+		int targetSsid = msg.getOSsID();
+		int shardId = calculateMqmShardId(msg, targetSsid);
+		String key = STR_MQM_SUBMIT_PREFIX + targetSsid + ":" + shardId;
+		return produce(key, msg, true);
+	}
+
+	public boolean produceMqmReportMessage(GmmsMessage msg) {
+		int targetSsid = msg.getOSsID() > 0 ? msg.getOSsID() : msg.getRSsID();
+		int shardId = calculateMqmShardId(msg, targetSsid);
+		String key = STR_MQM_REPORT_PREFIX + targetSsid + ":" + shardId;
+		return produce(key, msg, false);
+	}
+
+	private int calculateMqmShardId(GmmsMessage msg, int targetSsid) {
+		int totalShards = GmmsUtility.getInstance().getTotalShards();
+		if (totalShards <= 1) return 0;
+		String hashKey;
+		if (msg.getSarMsgRefNum() != null && msg.getSarMsgRefNum().length() > 0) {
+			hashKey = targetSsid + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress() + "_" + msg.getSarMsgRefNum();
+		} else {
+			hashKey = targetSsid + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
+		}
+		return (hashKey.hashCode() & Integer.MAX_VALUE) % totalShards;
+	}
+
 	public boolean produceDeliveryReport(GmmsMessage msg) {
 		String key = getDrPendingQueue(msg);
+		if (isBlank(key)) {
+			logger.warn(msg, "Can not resolve SMPP server DR stream key.");
+			return false;
+		}
+		return produce(key, msg, false);
+	}
+
+	public boolean produceDeliveryReportToModule(GmmsMessage msg, String moduleName) {
+		String key = STR_DR_PENDING_PREFIX + msg.getOSsID();
+		if (!isBlank(moduleName)) {
+			key += ":" + moduleName;
+		}
 		return produce(key, msg, false);
 	}
 
@@ -135,12 +195,24 @@ public class StreamQueueManager {
 	 */
 	private boolean produce(String key, GmmsMessage msg, boolean isSubmitMq) {
 		try {
+			if (isBlank(key)) {
+				logStreamTrace("STREAM-PUT", key, null, null, null, msg, isSubmitMq,
+						"result=fail reason=blank_stream_key");
+				incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_FAIL);
+				return false;
+			}
+			if (isBackPressureBlocked(key, isSubmitMq)) {
+				logStreamTrace("STREAM-PUT", key, null, null, null, msg, isSubmitMq,
+						"result=fail reason=backpressure_blocked");
+				incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_FAIL);
+				return false;
+			}
 			Map<String, String> body = new HashMap<>();
 			body.put("body", SerializableHandler.convertGmmsMessage2RedisMessage(msg));
 			
 			String msgId = isSubmitMq 
-				? redisClient.xaddToSubmitMq(key, body, MAX_LEN)
-				: redisClient.xaddToReportMq(key, body, MAX_LEN);
+				? redisClient.xaddToSubmitMq(key, body, getStreamMaxLen(), isApproximateTrimming())
+				: redisClient.xaddToReportMq(key, body, getStreamMaxLen(), isApproximateTrimming());
 				
 			if (msgId != null) {
 				String zsetKey = getDoorbellZSet(key);
@@ -148,23 +220,23 @@ public class StreamQueueManager {
 				if (zsetKey == null || doorbellResult == null || doorbellResult.longValue() < 0L) {
 					logStreamTrace("STREAM-PUT", key, null, null, msgId, msg, isSubmitMq,
 							"zset=" + zsetKey + " doorbell=" + doorbellResult + " result=fail reason=doorbell_failed");
-					incrementStreamCounter("out", key, msg, "write_fail");
+					incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_FAIL);
 					return false;
 				}
-				incrementStreamCounter("out", key, msg, "write_ok");
+				incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_OK);
 				logStreamTrace("STREAM-PUT", key, null, null, msgId, msg, isSubmitMq,
 						"zset=" + zsetKey + " doorbell=" + doorbellResult + " result=ok");
 			} else {
 				logStreamTrace("STREAM-PUT", key, null, null, null, msg, isSubmitMq,
 						"result=fail reason=xadd_returned_null");
-				incrementStreamCounter("out", key, msg, "write_fail");
+				incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_FAIL);
 			}
 			return msgId != null;
 		} catch (Exception e) {
 			logStreamTrace("STREAM-PUT", key, null, null, null, msg, isSubmitMq,
 					"result=fail reason=exception:" + e.getClass().getSimpleName());
 			logger.error("Produce to stream " + key + " failed", e);
-			incrementStreamCounter("out", key, msg, "write_fail");
+			incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_FAIL);
 			return false;
 		}
 	}
@@ -201,6 +273,14 @@ public class StreamQueueManager {
 			return ZSET_MT_PENDING_ACTIVE;
 		} else if (streamKey.startsWith(STR_MT_ROUTED_PREFIX)) {
 			return ZSET_MT_ROUTED_ACTIVE;
+		} else if (streamKey.startsWith(STR_HTTP_SUBMIT_PREFIX)) {
+			return ZSET_HTTP_SUBMIT_ACTIVE;
+		} else if (streamKey.startsWith(STR_HTTP_DR_PREFIX)) {
+			return ZSET_HTTP_DR_ACTIVE;
+		} else if (streamKey.startsWith(STR_MQM_SUBMIT_PREFIX)) {
+			return ZSET_MQM_SUBMIT_ACTIVE;
+		} else if (streamKey.startsWith(STR_MQM_REPORT_PREFIX)) {
+			return ZSET_MQM_REPORT_ACTIVE;
 		} else if (streamKey.startsWith(STR_DR_PENDING_PREFIX)) {
 			return ZSET_DR_PENDING_ACTIVE;
 		} else if (streamKey.startsWith(STR_INBOUND_DR_PREFIX)) {
@@ -299,6 +379,19 @@ public class StreamQueueManager {
 					logger.warn("Failed to parse shardId from streamKey: " + streamKey);
 				}
 			}
+		} else if (streamKey.startsWith(STR_HTTP_SUBMIT_PREFIX)
+				|| streamKey.startsWith(STR_HTTP_DR_PREFIX)
+				|| streamKey.startsWith(STR_MQM_SUBMIT_PREFIX)
+				|| streamKey.startsWith(STR_MQM_REPORT_PREFIX)) {
+			String[] parts = streamKey.split(":");
+			if (parts.length >= 5) {
+				try {
+					int shardId = Integer.parseInt(parts[4]);
+					return GmmsUtility.getInstance().getMyShards().contains(shardId);
+				} catch (Exception e) {
+					logger.warn("Failed to parse stream shardId from streamKey: " + streamKey);
+				}
+			}
 		} else if (streamKey.startsWith(STR_DR_PENDING_PREFIX)) {
 			String[] parts = streamKey.split(":");
 			if (parts.length >= 5) {
@@ -337,7 +430,15 @@ public class StreamQueueManager {
 	}
 
 	public String getDrPendingQueue(GmmsMessage msg) {
-		return buildServerPendingQueue(msg, msg.getOSsID(), false);
+		if (msg == null) {
+			return null;
+		}
+		String key = STR_DR_PENDING_PREFIX + msg.getOSsID();
+		String moduleName = SmppServerDrRouteResolver.getInstance().resolveTargetModule(msg);
+		if (isBlank(moduleName)) {
+			return null;
+		}
+		return key + ":" + moduleName;
 	}
 
 	public String getServerDeliveryQueue(GmmsMessage msg) {
@@ -366,7 +467,8 @@ public class StreamQueueManager {
 	}
 
 	public String getInboundDrQueue(GmmsMessage msg) {
-		return STR_INBOUND_DR_PREFIX + msg.getOSsID();
+		int targetSsid = msg.getRSsID() >= 0 ? msg.getRSsID() : msg.getOSsID();
+		return STR_INBOUND_DR_PREFIX + targetSsid;
 	}
 
 	public void createGroup(String key, String groupName, boolean isSubmitMq) {
@@ -389,11 +491,11 @@ public class StreamQueueManager {
 			}
 			if (acked != null && acked.longValue() > 0) {
 				Long deleted = isSubmitMq ? redisClient.xdelSubmitMq(key, id) : redisClient.xdelReportMq(key, id);
-				incrementStreamCounter("in", key, msg, "ack");
+				incrementStreamCounter(MetricsNames.FLOW_IN, key, msg, MetricsNames.ACTION_ACK);
 				logStreamTrace("STREAM-ACK", key, groupName, null, rid, msg, isSubmitMq,
 						"acked=" + acked + " deleted=" + deleted + " result=ok");
 			} else {
-				incrementStreamCounter("in", key, msg, "ack_fail");
+				incrementStreamCounter(MetricsNames.FLOW_IN, key, msg, MetricsNames.ACTION_ACK_FAIL);
 				logStreamTrace("STREAM-ACK", key, groupName, null, rid, msg, isSubmitMq,
 						"acked=" + acked + " result=fail reason=ack_returned_zero");
 			}
@@ -420,8 +522,9 @@ public class StreamQueueManager {
 				GmmsMessage msg = SerializableHandler.convertRedisMssage2GmmsMessage(body);
 				if (msg != null) {
 					msg.setRedisStreamID(se.getID().toString());
+					msg.setRedisStreamMessageType(msg.getMessageType());
 					messages.add(msg);
-					incrementStreamCounter("in", entry.getKey(), msg, "read");
+					incrementStreamCounter(MetricsNames.FLOW_IN, entry.getKey(), msg, MetricsNames.ACTION_READ);
 					logStreamTrace("STREAM-GET", entry.getKey(), groupName, consumerName,
 							se.getID().toString(), msg, isSubmitMq, "result=ok");
 				} else {
@@ -447,10 +550,51 @@ public class StreamQueueManager {
 		}
 		String line = buildStreamTraceLine(event, streamKey, groupName, consumerName, redisId, isSubmitMq, detail);
 		if (msg != null) {
-			logger.info(msg, line + " msg={}", msg);
+			logger.info(msg, line + " msg={}", shouldPrintFullMessage(event) ? msg : shortMessage(msg));
 		} else {
 			logger.info("{} msg=null", line);
 		}
+	}
+
+	private boolean shouldPrintFullMessage(String event) {
+		return "STREAM-GET".equals(event);
+	}
+
+	private String shortMessage(GmmsMessage msg) {
+		if (msg == null) {
+			return "null";
+		}
+		StringBuilder sb = new StringBuilder(256);
+		sb.append("{msgId=").append(msg.getMsgID());
+		sb.append(",in=").append(msg.getInMsgID());
+		sb.append(",out=").append(msg.getOutMsgID());
+		sb.append(",type=").append(msg.getMessageType());
+		sb.append(",status=").append(msg.getStatusCode()).append("/").append(msg.getStatusText());
+		sb.append(",os=").append(msg.getOSsID());
+		sb.append(",rs=").append(msg.getRSsID());
+		sb.append(",oa=").append(msg.getSenderAddress());
+		sb.append(",ra=").append(msg.getRecipientAddress());
+		sb.append(",split=").append(msg.getSplitStatus());
+		sb.append(",udh=").append(formatUdh(msg.getUdh()));
+		sb.append(",sar=").append(msg.getSarMsgRefNum());
+		sb.append(",outTrans=").append(msg.getOutTransID());
+		sb.append("}");
+		return sb.toString();
+	}
+
+	private String formatUdh(byte[] udh) {
+		if (udh == null || udh.length == 0) {
+			return "";
+		}
+		StringBuilder sb = new StringBuilder(udh.length * 2);
+		for (byte value : udh) {
+			String hex = Integer.toHexString(value & 0xff).toUpperCase();
+			if (hex.length() < 2) {
+				sb.append('0');
+			}
+			sb.append(hex);
+		}
+		return sb.toString();
 	}
 
 	private void logStreamTraceWithoutMessage(String event, String streamKey, String groupName, String consumerName,
@@ -496,6 +640,18 @@ public class StreamQueueManager {
 		if (streamKey.startsWith(STR_MT_ROUTED_PREFIX)) {
 			return "core->client";
 		}
+		if (streamKey.startsWith(STR_HTTP_SUBMIT_PREFIX)) {
+			return "core->http-client-submit";
+		}
+		if (streamKey.startsWith(STR_HTTP_DR_PREFIX)) {
+			return "core->http-client-dr";
+		}
+		if (streamKey.startsWith(STR_MQM_SUBMIT_PREFIX)) {
+			return "mqm->core-submit";
+		}
+		if (streamKey.startsWith(STR_MQM_REPORT_PREFIX)) {
+			return "mqm->core-report";
+		}
 		if (streamKey.startsWith(STR_DR_PENDING_PREFIX)) {
 			return "core->server";
 		}
@@ -517,16 +673,24 @@ public class StreamQueueManager {
 
 	private void incrementStreamCounter(String flow, String streamKey, GmmsMessage msg, String action) {
 		MetricsCollector.getInstance().incrementCounter(
-				MetricsNames.build("stream", flow, metricMessageType(streamKey, msg), action));
+				MetricsNames.build(MetricsNames.COMPONENT_STREAM, flow, metricMessageType(streamKey, msg), action));
 	}
 
 	private String metricMessageType(String streamKey, GmmsMessage msg) {
 		if (streamKey != null) {
 			if (streamKey.startsWith(STR_MT_PENDING_PREFIX) || streamKey.startsWith(STR_MT_ROUTED_PREFIX)
+					|| streamKey.startsWith(STR_HTTP_SUBMIT_PREFIX) || streamKey.startsWith(STR_MQM_SUBMIT_PREFIX)
 					|| STR_OUTBOUND_HTTP.equals(streamKey)) {
 				return "submit";
 			}
-			if (streamKey.startsWith(STR_DR_PENDING_PREFIX) || streamKey.startsWith(STR_INBOUND_DR_PREFIX)) {
+			if (STR_CORE_RESULTS.equals(streamKey) && msg != null && msg.getRedisStreamMessageType() != null) {
+				return MetricsNames.msgType(msg.getRedisStreamMessageType());
+			}
+			if (streamKey.startsWith(STR_DR_PENDING_PREFIX) || streamKey.startsWith(STR_INBOUND_DR_PREFIX)
+					|| streamKey.startsWith(STR_HTTP_DR_PREFIX) || streamKey.startsWith(STR_MQM_REPORT_PREFIX)) {
+				if (msg != null && msg.getRedisStreamMessageType() != null) {
+					return MetricsNames.msgType(msg.getRedisStreamMessageType());
+				}
 				return MetricsNames.msgType(msg);
 			}
 		}
@@ -558,7 +722,10 @@ public class StreamQueueManager {
 	public boolean produceOutboundMessage(GmmsMessage msg) {
 		String key;
 		if ("HTTP".equalsIgnoreCase(msg.getProperty("Protocol") != null ? msg.getProperty("Protocol").toString() : "")) {
-			key = STR_OUTBOUND_HTTP;
+			if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(msg.getMessageType())) {
+				return produceHttpDeliveryReport(msg);
+			}
+			return produceHttpSubmitMessage(msg);
 		} else {
 			int shardId = calculateOutboundShardId(msg);
 			key = STR_MT_ROUTED_PREFIX + msg.getRSsID() + ":" + shardId;
@@ -591,6 +758,40 @@ public class StreamQueueManager {
 		return intProperty("RedisStreamAutoClaimBatchSize", 100);
 	}
 
+	private long getStreamMaxLen() {
+		long maxLen = longProperty("RedisStreamMaxLen", 1000000L);
+		return maxLen <= 0 ? 1000000L : maxLen;
+	}
+
+	private boolean isApproximateTrimming() {
+		return Boolean.parseBoolean(GmmsUtility.getInstance().getCommonProperty("RedisStreamTrimApproximate", "true"));
+	}
+
+	private boolean isBackPressureEnabled() {
+		return Boolean.parseBoolean(GmmsUtility.getInstance().getCommonProperty("RedisStreamBackPressureEnable", "false"));
+	}
+
+	private long getBackPressureBlockThreshold() {
+		return longProperty("RedisStreamMonitor.BlockXLEN", 500000L);
+	}
+
+	private boolean isBackPressureBlocked(String streamKey, boolean isSubmitMq) {
+		if (!isBackPressureEnabled()) {
+			return false;
+		}
+		long blockThreshold = getBackPressureBlockThreshold();
+		if (blockThreshold <= 0) {
+			return false;
+		}
+		long len = streamLength(streamKey, isSubmitMq);
+		if (len < blockThreshold) {
+			return false;
+		}
+		logger.warn("[STREAM-BACKPRESSURE] module={} stream={} xlen={} blockThreshold={} isSubmitMq={} action=block",
+				System.getProperty("module", ""), streamKey, len, blockThreshold, isSubmitMq);
+		return true;
+	}
+
 	private boolean isGlobalPELMonitorEnabled() {
 		return Boolean.parseBoolean(GmmsUtility.getInstance().getCommonProperty("RedisStreamGlobalPELMonitorEnable", "false"));
 	}
@@ -613,6 +814,134 @@ public class StreamQueueManager {
 
 	private Thread pelMonitorThread;
 	private volatile boolean pelMonitorRunning = false;
+	private Thread backlogMonitorThread;
+	private volatile boolean backlogMonitorRunning = false;
+
+	private synchronized void startBacklogMonitor() {
+		if (backlogMonitorRunning) {
+			return;
+		}
+		backlogMonitorRunning = true;
+		backlogMonitorThread = new Thread(new Runnable() {
+			@Override
+			public void run() {
+				logger.info("RedisStreamBacklogMonitor started");
+				while (backlogMonitorRunning) {
+					try {
+						if (isBacklogMonitorEnabled()) {
+							scanBacklogByModuleRole();
+						}
+						Thread.sleep(getBacklogMonitorIntervalSeconds() * 1000L);
+					} catch (InterruptedException e) {
+						break;
+					} catch (Exception e) {
+						logger.error("RedisStreamBacklogMonitor error", e);
+						try {
+							Thread.sleep(30000L);
+						} catch (InterruptedException ignored) {
+							break;
+						}
+					}
+				}
+			}
+		}, "RedisStreamBacklogMonitor");
+		backlogMonitorThread.setDaemon(true);
+		backlogMonitorThread.start();
+	}
+
+	private boolean isBacklogMonitorEnabled() {
+		return Boolean.parseBoolean(GmmsUtility.getInstance().getCommonProperty("RedisStreamMonitor.Enable", "false"));
+	}
+
+	private int getBacklogMonitorIntervalSeconds() {
+		int interval = intProperty("RedisStreamMonitor.IntervalSeconds", 30);
+		return interval <= 0 ? 30 : interval;
+	}
+
+	private void scanBacklogByModuleRole() {
+		String module = System.getProperty("module", "");
+		String lowerModule = module == null ? "" : module.toLowerCase();
+		String nodeId = System.getProperty("NodeID", "0");
+		if (lowerModule.contains("core")) {
+			scanBacklogPattern(STR_MT_PENDING_PREFIX + "*", "CoreMTGroup", ZSET_MT_PENDING_ACTIVE, true, "server_to_core");
+			scanBacklogPattern(STR_INBOUND_DR_PREFIX + "*", "CoreInboundDRGroup", ZSET_INBOUND_DR_ACTIVE, false, "client_to_core");
+			scanBacklogPattern(STR_CORE_RESULTS, "CoreResultGroup", ZSET_CORE_RESULTS_ACTIVE, false, "result_to_core");
+			scanBacklogPattern(STR_MQM_SUBMIT_PREFIX + "*", "CoreMQMSubmitGroup", ZSET_MQM_SUBMIT_ACTIVE, true, "mqm_to_core_submit");
+			scanBacklogPattern(STR_MQM_REPORT_PREFIX + "*", "CoreMQMReportGroup", ZSET_MQM_REPORT_ACTIVE, false, "mqm_to_core_report");
+		} else if (lowerModule.contains("commonhttpclient")) {
+			scanBacklogPattern(STR_HTTP_SUBMIT_PREFIX + "*", "HttpClientSubmitGroup", ZSET_HTTP_SUBMIT_ACTIVE, true, "core_to_http_submit");
+			scanBacklogPattern(STR_HTTP_DR_PREFIX + "*", "HttpClientDRGroup", ZSET_HTTP_DR_ACTIVE, false, "core_to_http_dr");
+		} else if (lowerModule.contains("client")) {
+			scanBacklogPattern(STR_MT_ROUTED_PREFIX + "*", "ClientOutboundSubmitGroup", ZSET_MT_ROUTED_ACTIVE, true, "core_to_client");
+		} else if (lowerModule.contains("server")) {
+			scanBacklogPattern(STR_DR_PENDING_PREFIX + "*", "ServerDrToCustomerGroup_" + nodeId,
+					ZSET_DR_PENDING_ACTIVE, false, "core_to_server");
+		}
+	}
+
+	private void scanBacklogPattern(String pattern, String groupName, String doorbellKey,
+			boolean isSubmitMq, String flow) {
+		Set<String> streams = isSubmitMq ? redisClient.keysSubmitMq(pattern) : redisClient.keysReportMq(pattern);
+		long totalXlen = 0L;
+		long totalPending = 0L;
+		long doorbellMissing = 0L;
+		if (streams != null) {
+			for (String streamKey : streams) {
+				if (!isResponsibleForStream(streamKey)) {
+					continue;
+				}
+				long xlen = streamLength(streamKey, isSubmitMq);
+				if (xlen <= 0) {
+					continue;
+				}
+				totalXlen += xlen;
+				createGroup(streamKey, groupName, isSubmitMq);
+				long pending = pendingCount(streamKey, groupName, isSubmitMq);
+				if (pending > 0) {
+					totalPending += pending;
+				}
+				boolean missingDoorbell = !hasDoorbell(doorbellKey, streamKey, isSubmitMq);
+				if (missingDoorbell) {
+					doorbellMissing++;
+				}
+				logBacklogIfNeeded(flow, streamKey, groupName, xlen, pending, missingDoorbell, isSubmitMq);
+			}
+		}
+		MetricsCollector.getInstance().setGauge(MetricsNames.gauge("redis.stream." + flow, "xlen"), totalXlen);
+		MetricsCollector.getInstance().setGauge(MetricsNames.gauge("redis.stream." + flow, "pending"), totalPending);
+		MetricsCollector.getInstance().setGauge(MetricsNames.gauge("redis.stream." + flow, "doorbell_missing"), doorbellMissing);
+	}
+
+	private long pendingCount(String streamKey, String groupName, boolean isSubmitMq) {
+		List<StreamPendingSummary> summaries = isSubmitMq
+				? redisClient.xpendingSubmitMq(streamKey, groupName)
+				: redisClient.xpendingReportMq(streamKey, groupName);
+		if (summaries == null || summaries.isEmpty() || summaries.get(0) == null) {
+			return 0L;
+		}
+		return summaries.get(0).getTotal();
+	}
+
+	private boolean hasDoorbell(String doorbellKey, String streamKey, boolean isSubmitMq) {
+		Double score = isSubmitMq
+				? redisClient.zscoreSubmitMq(doorbellKey, streamKey)
+				: redisClient.zscoreReportMq(doorbellKey, streamKey);
+		return score != null;
+	}
+
+	private void logBacklogIfNeeded(String flow, String streamKey, String groupName, long xlen,
+			long pending, boolean missingDoorbell, boolean isSubmitMq) {
+		long warnXlen = longProperty("RedisStreamMonitor.WarnXLEN", 100000L);
+		long warnPending = longProperty("RedisStreamMonitor.WarnPending", 10000L);
+		boolean warn = xlen >= warnXlen || pending >= warnPending || missingDoorbell;
+		if (!warn) {
+			return;
+		}
+		logger.warn("[STREAM-BACKLOG] module={} flow={} stream={} group={} xlen={} pending={} doorbellMissing={} "
+				+ "warnXlen={} warnPending={} isSubmitMq={}",
+				System.getProperty("module", ""), flow, streamKey, groupName, xlen, pending, missingDoorbell,
+				warnXlen, warnPending, isSubmitMq);
+	}
 
 	public synchronized void startPELMonitor() {
 		if (pelMonitorRunning) return;
@@ -687,6 +1016,7 @@ public class StreamQueueManager {
 			GmmsMessage msg = SerializableHandler.convertRedisMssage2GmmsMessage(body);
 			if (msg != null) {
 				msg.setRedisStreamID(se.getID().toString());
+				msg.setRedisStreamMessageType(msg.getMessageType());
 				messages.add(msg);
 				logStreamTrace("STREAM-CLAIM", streamKey, groupName, consumerName,
 						se.getID().toString(), msg, isSubmitMq,

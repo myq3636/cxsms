@@ -14,6 +14,7 @@ import com.king.framework.SystemLogger;
 import com.king.gmms.connectionpool.ConnectionStatus;
 import com.king.gmms.connectionpool.session.Session;
 import com.king.gmms.customerconnectionfactory.MultiSmppServerFactory;
+import com.king.gmms.ha.SmppServerDrRouteResolver;
 import com.king.gmms.metrics.MetricsCollector;
 import com.king.gmms.metrics.MetricsNames;
 import com.king.message.gmms.GmmsMessage;
@@ -37,6 +38,7 @@ public class DRStreamConsumer {
     private final String groupName;
     private final String consumerName;
     private volatile boolean running = false;
+    private volatile long lastPoolConfigRefreshMs = 0L;
     
     private ExecutorService dispatcherThread;
     private ThreadPoolExecutor workerPool;
@@ -44,12 +46,14 @@ public class DRStreamConsumer {
     private final ConcurrentHashMap<String, Boolean> pendingDoorbellMap = new ConcurrentHashMap<>();
 
     private final StreamQueueManager queueManager;
+    private final RedisStreamConsumerConfig consumerConfig;
 
     private DRStreamConsumer() {
         String nodeId = System.getProperty("NodeID", "0");
         this.groupName = "ServerDrToCustomerGroup_" + nodeId;
         this.consumerName = MODULE_ROLE + "-" + FUNCTION_NAME + "-" + nodeId;
         this.queueManager = StreamQueueManager.getInstance();
+        this.consumerConfig = RedisStreamConsumerConfig.load("Server", "ServerDrToCustomer", 20, 50, 5000, 100, 100);
     }
 
     public static DRStreamConsumer getInstance() { return instance; }
@@ -59,15 +63,16 @@ public class DRStreamConsumer {
         running = true;
         
         workerPool = new ThreadPoolExecutor(
-            20, 50, 60L, TimeUnit.SECONDS, 
-            new LinkedBlockingQueue<Runnable>(5000), 
+            consumerConfig.workerCorePoolSize(), consumerConfig.workerMaxPoolSize(), 60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<Runnable>(consumerConfig.workerQueueSize()),
             new ThreadPoolExecutor.CallerRunsPolicy()
         );
 
         dispatcherThread = Executors.newSingleThreadExecutor();
         dispatcherThread.execute(this::dispatcherLoop);
 
-        logger.info("Server DR-to-customer consumer started. Group: {}, Consumer: {}", groupName, consumerName);
+        logger.info("Server DR-to-customer consumer started. Group: {}, Consumer: {}, Config: {}",
+            groupName, consumerName, consumerConfig.summary());
         queueManager.reRingExistingStreams(StreamQueueManager.STR_DR_PENDING_PREFIX + "*", false);
     }
 
@@ -81,6 +86,7 @@ public class DRStreamConsumer {
     private void dispatcherLoop() {
         while (running) {
             try {
+                refreshWorkerPoolConfig();
                 String streamKey = queueManager.popResponsibleDoorbell(StreamQueueManager.ZSET_DR_PENDING_ACTIVE, false);
                 if (streamKey != null) {
                     logger.debug("Server DR-to-customer popped doorbell. streamKey={}", streamKey);
@@ -92,7 +98,7 @@ public class DRStreamConsumer {
                         logger.debug("Server DR-to-customer stream already processing, mark pending doorbell. streamKey={}", streamKey);
                     }
                 } else {
-                    Thread.sleep(100);
+                    Thread.sleep(consumerConfig.dispatcherIdleSleepMs());
                 }
             } catch (InterruptedException ie) {
                 break;
@@ -124,7 +130,7 @@ public class DRStreamConsumer {
                     query.put(streamKey, StreamEntryID.UNRECEIVED_ENTRY);
                     
                     // 使用 Manager 封装的批量消费方法 (Report-MQ 通道)
-                    List<GmmsMessage> messages = queueManager.consumeBatch(groupName, consumerName, 100, query, false);
+                    List<GmmsMessage> messages = queueManager.consumeBatch(groupName, consumerName, consumerConfig.batchSize(), query, false);
 
                     if (messages == null || messages.isEmpty()) {
                         logger.debug("Server DR-to-customer no messages read. streamKey={}, group={}, consumer={}",
@@ -149,6 +155,15 @@ public class DRStreamConsumer {
             }
         }
     }
+
+    private void refreshWorkerPoolConfig() {
+        long now = System.currentTimeMillis();
+        if (now - lastPoolConfigRefreshMs < 5000L) {
+            return;
+        }
+        lastPoolConfigRefreshMs = now;
+        consumerConfig.applyWorkerPool(workerPool);
+    }
     
     private void processAutoClaim(String streamKey) {
         List<GmmsMessage> orphans = queueManager.autoClaimBatch(streamKey, groupName, consumerName,
@@ -164,7 +179,7 @@ public class DRStreamConsumer {
     private void sendDeliveryReport(String streamKey, GmmsMessage msg) {
         long start = System.nanoTime();
         try {
-            Session session = MultiSmppServerFactory.getInstance().getSession(msg);
+            Session session = resolveServerSession(msg);
             if (session == null) {
                 logger.warn(msg, "Server DR-to-customer session not found. streamKey={}", streamKey);
                 failToCoreAndAck(streamKey, msg, "session not found");
@@ -173,6 +188,10 @@ public class DRStreamConsumer {
             logger.info(msg, "Server DR-to-customer resolved session. streamKey={}, session={}, status={}",
                 streamKey, session.getSessionName(), session.getStatus());
             if (session != null && isConnected(session) && session.submit(msg)) {
+                MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                        MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_SENT_TO_CUSTOMER));
+                MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                        MetricsNames.STAGE_OUT_DR, msg, false, MetricsNames.ACTION_SENT_TO_CUSTOMER));
                 queueManager.ack(streamKey, groupName, msg, false);
                 logger.debug(msg, "Server DR-to-customer sent and acked. streamKey={}, session={}",
                     streamKey, session.getSessionName());
@@ -186,9 +205,29 @@ public class DRStreamConsumer {
             logger.error(msg, "Failed to send DR through MultiSmppSession", e);
             failToCoreAndAck(streamKey, msg, "exception: " + e.getClass().getSimpleName());
         } finally {
-            MetricsCollector.getInstance().recordTime(MetricsNames.timer("consumer", "process", msg, "latency"),
+            MetricsCollector.getInstance().recordTime(MetricsNames.timer(MetricsNames.COMPONENT_CONSUMER,
+                    MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_LATENCY),
                     System.nanoTime() - start);
         }
+    }
+
+    private Session resolveServerSession(GmmsMessage msg) {
+        String currentModule = System.getProperty("module", "");
+        SmppServerDrRouteResolver resolver = SmppServerDrRouteResolver.getInstance();
+        boolean originalModule = resolver.isOriginalModule(msg, currentModule);
+        if (originalModule && msg.getTransaction() == null && msg.getInnerTransaction() != null) {
+            msg.setTransaction(msg.getInnerTransaction());
+        }
+        Session session = MultiSmppServerFactory.getInstance().getSession(msg);
+        if (session != null) {
+            return session;
+        }
+        if (!originalModule) {
+            logger.warn(msg, "SMPP DR old strategy did not resolve session on fallback module. currentModule={}, originalModule={}",
+                    currentModule, resolver.originalModule(msg));
+            return MultiSmppServerFactory.getInstance().getFallbackSession(msg);
+        }
+        return null;
     }
     
     private boolean isConnected(Session session) {
@@ -197,7 +236,12 @@ public class DRStreamConsumer {
     }
     
     private void failToCoreAndAck(String streamKey, GmmsMessage msg, String reason) {
-        MetricsCollector.getInstance().incrementCounter(MetricsNames.counter("consumer", "process", msg, "fail"));
+        MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(MetricsNames.COMPONENT_CONSUMER,
+                MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_FAIL));
+        MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_FAILED_TO_CUSTOMER));
+        MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                MetricsNames.STAGE_OUT_DR, msg, false, MetricsNames.ACTION_FAILED_TO_CUSTOMER));
         if (GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(msg.getMessageType())) {
             msg.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT_RESP);
             msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);

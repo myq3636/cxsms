@@ -101,8 +101,8 @@ public class CommonJsonHttpServlet extends AbstractHttpServer {
 				else {
 					log.info("No client is started directly.");
 				}
-				//receiverThreadPool = executorServiceManager.newFixedThreadPool(this, "IntReceiver_commonHttpServer", 10);
-				startAgentConnection(factory);
+				// Redis Stream mode: HTTP ingress no longer needs an internal agent connection.
+				// startAgentConnection(factory);
 			}
 			super.startService();
 		} catch (Exception ex) {
@@ -281,19 +281,19 @@ public class CommonJsonHttpServlet extends AbstractHttpServer {
 						gmmsMessage.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT);
 						gmmsMessage.setInTransID(Long.toString(System.currentTimeMillis()));				
 						gmmsMessage.setTimeStamp(gmmsUtility.getGMTTime());
-						
-						if (!putGmmsMessage2RouterQueue(gmmsMessage)) {
+
+						recordHttpSubmitReceived(gmmsMessage);
+						boolean produced = com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceSubmitMessage(gmmsMessage);
+						if (!produced) {
+							recordHttpSubmitRejected(gmmsMessage);
+							gmmsMessage.setStatus(GmmsStatus.SERVER_ERROR);
+							msg.setStatus(GmmsStatus.SERVER_ERROR);
+							log.warn(gmmsMessage, "Failed to produce HTTP submit to Redis Stream");
 							gmmsUtility.getCdrManager().logInSubmit(gmmsMessage);
-							if (gmmsMessage.getDeliveryReport()) {
-								gmmsMessage.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
-								gmmsMessage.setRSsID(sInfo.getSSID());
-								gmmsMessage.setOutMsgID(gmmsMessage.getInMsgID());
-								gmmsMessage.setStatus(GmmsStatus.REJECTED);
-								if (!putGmmsMessage2RouterQueue(gmmsMessage)) {
-									gmmsUtility.getCdrManager().logInDeliveryReportRes(gmmsMessage);									
-								}
-							}							
+							this.response(msg, request, response);
+							return;
 						}
+						recordHttpSubmitAccepted(gmmsMessage);
 					}
 				}
 		} catch (Exception e) {

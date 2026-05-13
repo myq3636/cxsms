@@ -7121,6 +7121,10 @@ public class A2PCustomerManager implements LifecycleListener {
 		return this.protocol_ssid_map.get(protocol.trim().toLowerCase());
 	}
 
+	public List<A2PCustomerInfo> getAllCustomerInfos() {
+		return new ArrayList<A2PCustomerInfo>(this.ssid_cust_map.values());
+	}
+
 	public ArrayList<Integer> getSsidByQueryMsg() {
 		return this.queryMsg_ssid_list;
 	}

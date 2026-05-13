@@ -285,6 +285,46 @@ public class RedisConnection {
 		}
 	}
 
+	public boolean setStringIfAbsent(String key, String value, int expireSeconds) {
+		String script = "if redis.call('exists', KEYS[1]) == 0 then "
+				+ "redis.call('setex', KEYS[1], tonumber(ARGV[2]), ARGV[1]); return 1; "
+				+ "else return 0; end";
+		try (Jedis jedis = pool.getResource()) {
+			Object result = jedis.eval(script, Arrays.asList(key),
+					Arrays.asList(value, String.valueOf(expireSeconds)));
+			return Long.valueOf(1L).equals(result);
+		} catch (Exception e) {
+			logger.error("setStringIfAbsent failed. key={}", key, e);
+			return false;
+		}
+	}
+
+	public boolean compareAndSetString(String key, String expectedValue, String newValue, int expireSeconds) {
+		String script = "if redis.call('get', KEYS[1]) == ARGV[1] then "
+				+ "redis.call('setex', KEYS[1], tonumber(ARGV[3]), ARGV[2]); return 1; "
+				+ "else return 0; end";
+		try (Jedis jedis = pool.getResource()) {
+			Object result = jedis.eval(script, Arrays.asList(key),
+					Arrays.asList(expectedValue, newValue, String.valueOf(expireSeconds)));
+			return Long.valueOf(1L).equals(result);
+		} catch (Exception e) {
+			logger.error("compareAndSetString failed. key={}", key, e);
+			return false;
+		}
+	}
+
+	public boolean deleteIfStringEquals(String key, String expectedValue) {
+		String script = "if redis.call('get', KEYS[1]) == ARGV[1] then "
+				+ "return redis.call('del', KEYS[1]); else return 0; end";
+		try (Jedis jedis = pool.getResource()) {
+			Object result = jedis.eval(script, Arrays.asList(key), Arrays.asList(expectedValue));
+			return Long.valueOf(1L).equals(result);
+		} catch (Exception e) {
+			logger.error("deleteIfStringEquals failed. key={}", key, e);
+			return false;
+		}
+	}
+
 	public void setExpired(String key, int time) {
 		try (Jedis jedis = pool.getResource()) {
 			jedis.expire(key, (long) time);
@@ -792,8 +832,15 @@ public class RedisConnection {
 	 * @return 生成的消息 ID
 	 */
 	public String xadd(String key, Map<String, String> hash, long maxLen) {
+		return xadd(key, hash, maxLen, true);
+	}
+
+	public String xadd(String key, Map<String, String> hash, long maxLen, boolean approximateTrimming) {
 		try (Jedis jedis = pool.getResource()) {
-			XAddParams params = new XAddParams().id(StreamEntryID.NEW_ENTRY).maxLen(maxLen).approximateTrimming();
+			XAddParams params = new XAddParams().id(StreamEntryID.NEW_ENTRY).maxLen(maxLen);
+			if (approximateTrimming) {
+				params.approximateTrimming();
+			}
 			return jedis.xadd(key, hash, params).toString();
 		} catch (Exception e) {
 			logger.error("xadd failed. key={}", key, e);
@@ -963,6 +1010,25 @@ public class RedisConnection {
 		}
 	}
 
+	public String claimDueZSetMember(String fromKey, String toKey, double dueScore, double processingScore) {
+		String script =
+				"local members = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, 1) "
+				+ "if members == nil or #members == 0 then return nil end "
+				+ "if redis.call('ZREM', KEYS[1], members[1]) == 1 then "
+				+ "  redis.call('ZADD', KEYS[2], ARGV[2], members[1]) "
+				+ "  return members[1] "
+				+ "end "
+				+ "return nil";
+		try (Jedis jedis = pool.getResource()) {
+			Object result = jedis.eval(script, Arrays.asList(fromKey, toKey),
+					Arrays.asList(String.valueOf(dueScore), String.valueOf(processingScore)));
+			return result == null ? null : String.valueOf(result);
+		} catch (Exception e) {
+			logger.error("claimDueZSetMember failed. fromKey={}, toKey={}", fromKey, toKey, e);
+			return null;
+		}
+	}
+
 	public java.util.Set<String> zrangeDoorbell(String key, long start, long end) {
 		try (Jedis jedis = pool.getResource()) {
 			return new java.util.LinkedHashSet<String>(jedis.zrange(key, start, end));
@@ -978,6 +1044,15 @@ public class RedisConnection {
 		} catch (Exception e) {
 			logger.error("zremDoorbell failed. key={}, member={}", key, member, e);
 			return 0L;
+		}
+	}
+
+	public Double zscoreDoorbell(String key, String member) {
+		try (Jedis jedis = pool.getResource()) {
+			return jedis.zscore(key, member);
+		} catch (Exception e) {
+			logger.error("zscoreDoorbell failed. key={}, member={}", key, member, e);
+			return null;
 		}
 	}
 

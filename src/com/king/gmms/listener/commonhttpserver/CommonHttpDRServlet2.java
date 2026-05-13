@@ -61,7 +61,8 @@ public class CommonHttpDRServlet2 extends AbstractHttpServer {
 						}
 					}
 				} // end of size > 0
-				startAgentConnection(factory);
+				// Redis Stream mode: HTTP DR ingress no longer needs an internal agent connection.
+				// startAgentConnection(factory);
 			}
 			super.startService();
 
@@ -102,28 +103,26 @@ public class CommonHttpDRServlet2 extends AbstractHttpServer {
 		}
 		HttpInterface hi = him.getHttpInterfaceMap().get(interfaceName);
 		if (hi != null) {
+			recordHttpDrReceived(msg);
 			if (hi.isSuccessDRRespStatus(hs)) {
-				factory.putServletParam(msg.getMsgID(), responseParameter);
-				if (!putGmmsMessage2RouterQueue(msg)) {
+				boolean produced = com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceInboundDeliveryReport(msg);
+				if (!produced) {
+					recordHttpDrRejected(msg);
 					msg.setStatus(GmmsStatus.ENROUTE);
-					this.response(interfaceName, hs, msg, response);
 					gmmsUtility.getCdrManager().logOutDeliveryReportRes(msg);
-					factory.removeServlet(msg.getMsgID());
 				} else {
-					try {
-						synchronized (responseParameter) {
-							responseParameter.wait(timeout);
-						}
-					} catch (Exception e) {
-						log.warn(msg, "Fail to waiting for the response");
-					}
+					recordHttpDrWrittenToRedis(msg);
 				}
+				this.response(interfaceName, hs, msg, response);
 			} else {// isn't DELEVRED DR status
+				recordHttpDrRejected(msg);
 				msg.setStatus(hi.mapHttpDRRespStatus2GmmsStatus(hs));
 				this.response(interfaceName, hs, msg, response);
 				gmmsUtility.getCdrManager().logOutDeliveryReportRes(msg);
 			}
 		} else {// hi is null
+			recordHttpDrReceived(msg);
+			recordHttpDrRejected(msg);
 			msg.setStatus(GmmsStatus.UNKNOWN);
 			this.response(interfaceName, hs, msg, response);
 			gmmsUtility.getCdrManager().logOutDeliveryReportRes(msg);

@@ -108,6 +108,11 @@ public class ModuleStatusReporter {
 				redis.sadd("system:server:nodes", nodeId);
 				log.info("Registered server node set. identity={}, key={}, nodeId={}, costMs={}",
 						identity, "system:server:nodes", nodeId, System.currentTimeMillis() - stepStart);
+			} else if ("httpserver".equalsIgnoreCase(role)) {
+				stepStart = System.currentTimeMillis();
+				redis.sadd("system:httpserver:nodes", nodeId);
+				log.info("Registered httpserver node set. identity={}, key={}, nodeId={}, costMs={}",
+						identity, "system:httpserver:nodes", nodeId, System.currentTimeMillis() - stepStart);
 			}
 			stepStart = System.currentTimeMillis();
 			redis.setString(statusKey, "ONLINE", ttlSeconds);
@@ -131,6 +136,8 @@ public class ModuleStatusReporter {
 			redis.srem(nodesKey, nodeId);
 			if ("server".equalsIgnoreCase(role)) {
 				redis.srem("system:server:nodes", nodeId);
+			} else if ("httpserver".equalsIgnoreCase(role)) {
+				redis.srem("system:httpserver:nodes", nodeId);
 			}
 			redis.del(statusKey);
 			redis.del(detailKey);

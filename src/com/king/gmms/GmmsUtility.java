@@ -31,6 +31,7 @@ import com.king.gmms.threadpool.impl.DefaultExecutorServiceManager;
 import com.king.gmms.util.SystemConstants;
 import com.king.message.gmms.*;
 import com.king.redis.RedisClient;
+import com.king.gmms.metrics.MetricsNames;
 import com.king.gmms.metrics.MetricsReporter;
 
 import java.util.regex.Pattern;
@@ -407,6 +408,8 @@ public class GmmsUtility {
 			nodeId = props.getProperty("NodeID", "0").trim();
 			System.setProperty("NodeID", nodeId);
 			com.king.message.gmms.MessageIdGenerator.setNodeId(toNumericNodeId(nodeId));
+			com.king.message.gmms.MessageIdGenerator.setIncludeNodeId(
+					Boolean.parseBoolean(props.getProperty("MessageIdIncludeNodeId", "false").trim()));
 			
 			routerModule = props.getProperty("RouterModule", "DeliveryRouter")
 					.trim();
@@ -587,19 +590,7 @@ public class GmmsUtility {
 			maxMessageExpireTimeFromCust = Integer.parseInt(props.getProperty(
 					"MaxMessageExpireTimeFromCust", "10080").trim());
 			
-			boolean metricsEnable = Boolean.parseBoolean(props.getProperty("Metrics.Enable", "true").trim());
-			int metricsInterval = Integer.parseInt(props.getProperty("Metrics.ReportIntervalSeconds", "30").trim());
-			String metricsLogLevel = props.getProperty("Metrics.LogLevel", "DEBUG").trim();
-			boolean metricsPrintZero = Boolean.parseBoolean(props.getProperty("Metrics.PrintZero", "false").trim());
-			boolean metricsPrintGauge = Boolean.parseBoolean(props.getProperty("Metrics.PrintGauge", "false").trim());
-			double metricsMinTps = doubleProp(props, "Metrics.MinTPS", 0.01);
-			MetricsReporter.getInstance().configure(metricsLogLevel, metricsPrintZero, metricsPrintGauge, metricsMinTps);
-			if (metricsEnable) {
-				MetricsReporter.getInstance().start(metricsInterval);
-			} else {
-				com.king.gmms.metrics.MetricsCollector.getInstance().setEnabled(false);
-				log.info("MetricsReporter disabled by Metrics.Enable=false");
-			}
+			applyMetricsConfig(props);
 			applyDbPoolStatsConfig(props);
 			
 			initialized = true;
@@ -712,7 +703,9 @@ public class GmmsUtility {
 			if (!isRuntimeConfigKey(key)) {
 				continue;
 			}
-			if (isIntegerRuntimeKey(key)) {
+			if (isLongRuntimeKey(key)) {
+				Long.parseLong(props.getProperty(key, getDefaultRuntimeValue(key)).trim());
+			} else if (isIntegerRuntimeKey(key)) {
 				Integer.parseInt(props.getProperty(key, getDefaultRuntimeValue(key)).trim());
 			} else if ("Smpp.ServiceTypeIDTag".equals(key)) {
 				Short.parseShort(props.getProperty(key, "1401").trim(), 16);
@@ -762,6 +755,8 @@ public class GmmsUtility {
 			else if ("MaxMessageExpireTimeFromCust".equals(key)) maxMessageExpireTimeFromCust = intProp(props, key, 10080);
 			else if ("CDRFileSwitchInterval".equals(key)) cdrMaxTime = intProp(props, key, 300);
 			else if ("CDRFileMaxSize".equals(key)) cdrMaxSize = intProp(props, key, 100);
+			else if ("MessageIdIncludeNodeId".equals(key)) com.king.message.gmms.MessageIdGenerator.setIncludeNodeId(
+					Boolean.parseBoolean(props.getProperty(key, "false").trim()));
 			else if ("ScreenedIPs".equals(key)) screenedIPs = parseStringSet(props.getProperty(key), false);
 			else if ("LoopbackAddresses".equals(key)) loopbacks = parseStringSet(props.getProperty(key), true);
 			else if ("TotalShards".equals(key)) {
@@ -778,7 +773,8 @@ public class GmmsUtility {
 			else if ("ThrottlingControl.MaxCustIncomingThresholdMagnification".equals(key)) maxCustIncomingThresholdMagnification = intProp(props, key, 5);
 			else if ("Metrics.Enable".equals(key) || "Metrics.ReportIntervalSeconds".equals(key)
 					|| "Metrics.LogLevel".equals(key) || "Metrics.PrintZero".equals(key)
-					|| "Metrics.PrintGauge".equals(key) || "Metrics.MinTPS".equals(key)) metricsChanged = true;
+					|| "Metrics.PrintGauge".equals(key) || "Metrics.MinTPS".equals(key)
+					|| "Metrics.Ssid.Enable".equals(key)) metricsChanged = true;
 			else if ("DB.PoolStats.Enable".equals(key) || "DB.PoolStats.IntervalSeconds".equals(key)) dbPoolStatsChanged = true;
 		}
 		if (shardChanged) {
@@ -807,14 +803,10 @@ public class GmmsUtility {
 		boolean metricsPrintZero = Boolean.parseBoolean(props.getProperty("Metrics.PrintZero", "false").trim());
 		boolean metricsPrintGauge = Boolean.parseBoolean(props.getProperty("Metrics.PrintGauge", "false").trim());
 		double metricsMinTps = doubleProp(props, "Metrics.MinTPS", 0.01);
-		MetricsReporter.getInstance().configure(metricsLogLevel, metricsPrintZero, metricsPrintGauge, metricsMinTps);
-		if (metricsEnable) {
-			MetricsReporter.getInstance().restart(metricsInterval);
-		} else {
-			MetricsReporter.getInstance().stop();
-			com.king.gmms.metrics.MetricsCollector.getInstance().setEnabled(false);
-			log.info("MetricsReporter disabled by GmmsConfig reload.");
-		}
+		boolean metricsSsidEnable = Boolean.parseBoolean(props.getProperty("Metrics.Ssid.Enable", "false").trim());
+		MetricsNames.configureSsidMetrics(metricsSsidEnable);
+		MetricsReporter.getInstance().applyConfig(metricsEnable, metricsInterval, metricsLogLevel,
+				metricsPrintZero, metricsPrintGauge, metricsMinTps);
 	}
 
 	private void applyDbPoolStatsConfig(Properties props) {
@@ -862,7 +854,8 @@ public class GmmsUtility {
 	}
 
 	private boolean isRuntimeConfigKey(String key) {
-		return isDirectRuntimeKey(key) || isCommonRuntimeKey(key) || isModuleRuntimeKey(key) || isShardRuntimeKey(key);
+		return isDirectRuntimeKey(key) || isCommonRuntimeKey(key) || isModuleRuntimeKey(key)
+				|| isShardRuntimeKey(key) || isRedisStreamTuningKey(key) || isMqmRuntimeKey(key);
 	}
 
 	private boolean isDirectRuntimeKey(String key) {
@@ -873,8 +866,13 @@ public class GmmsUtility {
 			"WaitingEnquireLinkResponseTime", "StoreDRModeEnable", "BlackholeSsid", "DNSTimeOut",
 			"MaxServiceTypeID", "Smpp.ServiceTypeIDTag", "MinMessageExpireTimeFromCust",
 			"MaxMessageExpireTimeFromCust", "CDRFileSwitchInterval", "CDRFileMaxSize",
-			"ScreenedIPs", "LoopbackAddresses", "Metrics.Enable", "Metrics.ReportIntervalSeconds",
+			"MessageIdIncludeNodeId", "ScreenedIPs", "LoopbackAddresses", "Metrics.Enable", "Metrics.ReportIntervalSeconds",
 			"Metrics.LogLevel", "Metrics.PrintZero", "Metrics.PrintGauge", "Metrics.MinTPS",
+			"Metrics.Ssid.Enable",
+			"AutoInDR.DirectStreamEnable", "AutoInDR.DelayDispatcherEnable", "AutoInDR.DelayBatchSize",
+			"AutoInDR.DelayClaimTimeoutMs", "AutoInDR.DelayRetryDelayMs", "AutoInDR.DelayMaxRetry",
+			"AutoInDR.FallbackToLegacyDelayDR", "AutoInDR.DelayPayloadTTLSeconds",
+			"AutoInDR.DispatcherIdleSleepMs",
 			"DB.StartupCheck", "DB.StartupCheckSql", "DB.PoolStats.Enable", "DB.PoolStats.IntervalSeconds",
 			"ThrottlingControl.ConsecutiveNumToAlert", "ThrottlingControl.MaxAlertMailNum",
 			"ThrottlingControl.ReportModuleIncomingMsgCountInterval",
@@ -891,6 +889,10 @@ public class GmmsUtility {
 			"RedisStreamGlobalPELMonitorEnable", "RedisStreamDoorbellScanLimit",
 			"RedisStreamAutoClaimIdleMs", "RedisStreamAutoClaimBatchSize",
 			"RedisStreamTraceLogEnable",
+			"SMPPSubmitPendingRedisScanIntervalMs", "SMPPSubmitPendingRedisScanBatchSize",
+			"SMPPSubmitPendingRedisResultRetryMs", "SMPPSubmitPendingRedisRetryTTLSeconds",
+			"SMPPDRPendingRedisScanIntervalMs", "SMPPDRPendingRedisScanBatchSize",
+			"SMPPDRPendingRedisResultRetryMs", "SMPPDRPendingRedisRetryTTLSeconds",
 			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress", "DNSPort",
 			"DNSMaxFailedLimit", "DNSTestPeriod", "DNSTestNumber", "DNSBufferCapacity",
 			"DNSBufferTimeout", "NMGAddress", "NMGPort", "DefaultRetryPolicy",
@@ -924,9 +926,26 @@ public class GmmsUtility {
 				|| key.startsWith("ClientShard.");
 	}
 
+	private boolean isMqmRuntimeKey(String key) {
+		return "MQM.ActiveStandbyEnable".equals(key)
+				|| "MQM.ActivePriority".equals(key)
+				|| "MQM.ActiveLeaseTtlSeconds".equals(key)
+				|| "MQM.ActiveRenewSeconds".equals(key)
+				|| "MQM.StandbyCheckSeconds".equals(key)
+				|| "MQM.ActivePriorityDelayMs".equals(key);
+	}
+
 	private boolean isIntegerRuntimeKey(String key) {
-		if ("Smpp.ServiceTypeIDTag".equals(key) || isBooleanRuntimeKey(key) || isShardRuntimeKey(key)) {
+		if ("Smpp.ServiceTypeIDTag".equals(key) || isBooleanRuntimeKey(key) || isShardRuntimeKey(key)
+				|| isLongRuntimeKey(key)) {
 			return false;
+		}
+		if (key.startsWith("RedisStreamConsumer.") || key.startsWith("RedisStreamMonitor.")) {
+			return true;
+		}
+		if ("MQM.ActiveLeaseTtlSeconds".equals(key) || "MQM.ActiveRenewSeconds".equals(key)
+				|| "MQM.StandbyCheckSeconds".equals(key) || "MQM.ActivePriorityDelayMs".equals(key)) {
+			return true;
 		}
 		return isDirectRuntimeKey(key) && !"ScreenedIPs".equals(key) && !"LoopbackAddresses".equals(key);
 	}
@@ -934,8 +953,30 @@ public class GmmsUtility {
 	private boolean isBooleanRuntimeKey(String key) {
 		return "StoreDRModeEnable".equals(key) || "RedisStreamGlobalPELMonitorEnable".equals(key)
 				|| "RedisStreamTraceLogEnable".equals(key)
+				|| "RedisStreamTrimApproximate".equals(key)
+				|| "RedisStreamBackPressureEnable".equals(key)
+				|| "RedisStreamMonitor.Enable".equals(key)
 				|| "Metrics.Enable".equals(key) || "Metrics.PrintZero".equals(key)
-				|| "Metrics.PrintGauge".equals(key);
+				|| "Metrics.PrintGauge".equals(key) || "Metrics.Ssid.Enable".equals(key)
+				|| "AutoInDR.DirectStreamEnable".equals(key)
+				|| "AutoInDR.DelayDispatcherEnable".equals(key)
+				|| "AutoInDR.FallbackToLegacyDelayDR".equals(key)
+				|| "MQM.ActiveStandbyEnable".equals(key);
+	}
+
+	private boolean isLongRuntimeKey(String key) {
+		return "RedisStreamMaxLen".equals(key)
+				|| "AutoInDR.DelayClaimTimeoutMs".equals(key)
+				|| "AutoInDR.DelayRetryDelayMs".equals(key)
+				|| "AutoInDR.DispatcherIdleSleepMs".equals(key);
+	}
+
+	private boolean isRedisStreamTuningKey(String key) {
+		return "RedisStreamMaxLen".equals(key)
+				|| "RedisStreamTrimApproximate".equals(key)
+				|| "RedisStreamBackPressureEnable".equals(key)
+				|| key.startsWith("RedisStreamConsumer.")
+				|| key.startsWith("RedisStreamMonitor.");
 	}
 
 	private String getDefaultRuntimeValue(String key) {
@@ -964,8 +1005,32 @@ public class GmmsUtility {
 		if ("Metrics.PrintZero".equals(key)) return "false";
 		if ("Metrics.PrintGauge".equals(key)) return "false";
 		if ("Metrics.MinTPS".equals(key)) return "0.01";
+		if ("Metrics.Ssid.Enable".equals(key)) return "false";
 		if ("DB.PoolStats.Enable".equals(key)) return "false";
 		if ("DB.PoolStats.IntervalSeconds".equals(key)) return "60";
+		if ("RedisStreamMaxLen".equals(key)) return "1000000";
+		if ("RedisStreamTrimApproximate".equals(key)) return "true";
+		if ("RedisStreamBackPressureEnable".equals(key)) return "false";
+		if ("RedisStreamMonitor.Enable".equals(key)) return "false";
+		if ("RedisStreamMonitor.IntervalSeconds".equals(key)) return "30";
+		if ("RedisStreamMonitor.WarnXLEN".equals(key)) return "100000";
+		if ("RedisStreamMonitor.BlockXLEN".equals(key)) return "500000";
+		if ("RedisStreamMonitor.WarnPending".equals(key)) return "10000";
+		if ("MQM.ActiveStandbyEnable".equals(key)) return "true";
+		if ("MQM.ActivePriority".equals(key)) return "MsgQueueMonitor1,MsgQueueMonitor2";
+		if ("MQM.ActiveLeaseTtlSeconds".equals(key)) return "30";
+		if ("MQM.ActiveRenewSeconds".equals(key)) return "10";
+		if ("MQM.StandbyCheckSeconds".equals(key)) return "5";
+		if ("MQM.ActivePriorityDelayMs".equals(key)) return "3000";
+		if ("AutoInDR.DirectStreamEnable".equals(key)) return "false";
+		if ("AutoInDR.DelayDispatcherEnable".equals(key)) return "true";
+		if ("AutoInDR.DelayBatchSize".equals(key)) return "200";
+		if ("AutoInDR.DelayClaimTimeoutMs".equals(key)) return "60000";
+		if ("AutoInDR.DelayRetryDelayMs".equals(key)) return "3000";
+		if ("AutoInDR.DelayMaxRetry".equals(key)) return "20";
+		if ("AutoInDR.FallbackToLegacyDelayDR".equals(key)) return "true";
+		if ("AutoInDR.DelayPayloadTTLSeconds".equals(key)) return "172800";
+		if ("AutoInDR.DispatcherIdleSleepMs".equals(key)) return "200";
 		return "0";
 	}
 

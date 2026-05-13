@@ -29,8 +29,11 @@ import com.king.gmms.domain.ModuleManager;
 import com.king.gmms.domain.MultiNodeCustomerInfo;
 import com.king.gmms.domain.SingleNodeCustomerInfo;
 import com.king.gmms.ha.ModuleURI;
+import com.king.gmms.ha.SmppServerSessionRegistry;
 import com.king.gmms.ha.TransactionURI;
 import com.king.gmms.messagequeue.OperatorMessageQueue;
+import com.king.gmms.metrics.MetricsCollector;
+import com.king.gmms.metrics.MetricsNames;
 import com.king.gmms.protocol.smpp.MultiSmppPduProcessor;
 import com.king.gmms.protocol.smpp.Smpp;
 import com.king.gmms.protocol.smpp.pdu.BindReceiver;
@@ -56,8 +59,10 @@ import com.king.gmms.protocol.smpp.version.SMPPVersion;
 import com.king.gmms.strategy.StrategyType;
 import com.king.gmms.throttle.ThrottlingControl;
 import com.king.gmms.util.SystemConstants;
+import com.king.gmms.smpp.pending.PendingDrTimeoutHandler;
 import com.king.gmms.smpp.pending.PendingSubmitEntry;
 import com.king.gmms.smpp.pending.SmppPendingSubmitManager;
+import com.king.gmms.smpp.pending.SmppPendingDrManager;
 import com.king.gmms.smpp.pending.PendingSubmitTimeoutHandler;
 import com.king.message.gmms.ExceptionMessageManager;
 import com.king.message.gmms.GmmsMessage;
@@ -80,7 +85,7 @@ import com.king.gmms.metrics.SmppPduLogger;
  * @author not attributable
  * @version 1.0
  */
-public class MultiSmppSession extends AbstractCommonSession implements PendingSubmitTimeoutHandler {
+public class MultiSmppSession extends AbstractCommonSession implements PendingSubmitTimeoutHandler, PendingDrTimeoutHandler {
     private static SystemLogger log = SystemLogger.getSystemLogger(MultiSmppSession.class);
     private static final SmppPduLogger pduLogger = SmppPduLogger.getInstance();
     protected String gmmsSystemID = "AicGMMSServer";
@@ -96,6 +101,9 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
     protected MessageIdGenerator messageIdGenerator = MessageIdGenerator.getInstance();
     protected ExceptionMessageManager exMsgManager = ExceptionMessageManager.getInstance();
     protected SmppPendingSubmitManager pendingSubmitManager = null;
+    protected SmppPendingDrManager pendingDrManager = null;
+    private String serverRegistrySessionKey = null;
+    private volatile long lastServerRegistryRefreshMs = 0L;
     
     //construct for server
     public MultiSmppSession(Socket socket) {
@@ -195,6 +203,13 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         return module + ":" + ssid + ":" + connectionName + ":" + sessionNum;
     }
 
+    private String buildPendingDrSessionKey() {
+        String module = System.getProperty("module", "");
+        String ssid = customerInfo == null ? "0" : Integer.toString(customerInfo.getSSID());
+        String connectionName = connectionInfo == null ? sessionName : connectionInfo.getConnectionName();
+        return module + ":" + ssid + ":" + connectionName + ":" + sessionNum;
+    }
+
     public void setSessionThread(SessionThread thread) {
         this.sessionThread = thread;
     }
@@ -205,6 +220,14 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
 
     public String getSourceSysID() {
         return this.sourceSysID;
+    }
+
+    public String getRemoteIp() {
+        return this.ip;
+    }
+
+    public String getBindOptionName() {
+        return this.bindOption == null ? "" : this.bindOption.toString();
     }
     
 	public boolean createConnection() throws IOException {
@@ -493,6 +516,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
 
         }//end of if initial or disconnect
         else { // already bound, can receive other PDUs
+                refreshServerBindRegistry(false);
                 request.setVersion(smppVersion);
                 GmmsMessage msg = null;
                 if (commandId == Data.SUBMIT_SM) {
@@ -505,14 +529,15 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 	
                 	msg = processor.handleSubmitSM(request);
                 	
-                	// V4.0 Sticky Routing: Tag message with source session context
-                	if (msg != null) {
-                		msg.setInnerTransaction(transaction);
-                	}
+                    tagServerInboundContext(msg);
 
                 	if(log.isInfoEnabled()){
     					log.info(msg, "Smpp receive message :{}",msg);
                 	}
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                            MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_RECEIVED));
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                            MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_RECEIVED));
                 	String msgType = msg.getMessageType();
                 	if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(msgType) ||
                             GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(msgType)) {
@@ -523,6 +548,10 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
           					    	 if(log.isInfoEnabled()){
           		                        	log.info(msg, "Request PDU is blocked by billing, and msg is {}", msg);
           		                		}					    	 					    	
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                            MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_REJECTED_BEFORE_REDIS));
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                            MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_REJECTED_BEFORE_REDIS));
           					    	 Response response = request.getResponse();
      				                 response.setCommandStatus(com.king.gmms.protocol.smpp.util.Data.ESME_RPROVNOTALLWD);
      				                 connection.send(response.getData().getBuffer()); 
@@ -541,6 +570,10 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
               					    	 if(log.isInfoEnabled()){
               		                        	log.info(msg, "Request PDU is blocked by billing, and msg is {}", msg);
               		                		}					    	 					    	
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                            MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_REJECTED_BEFORE_REDIS));
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                            MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_REJECTED_BEFORE_REDIS));
               					    	 Response response = request.getResponse();
          				                 response.setCommandStatus(com.king.gmms.protocol.smpp.util.Data.ESME_RPROVNOTALLWD);
          				                 connection.send(response.getData().getBuffer()); 
@@ -557,6 +590,10 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 	// V4.0 异步化：将消息提交到 Redis Stream (Submit-MQ)
                     boolean produceSuccess = StreamQueueManager.getInstance().produceSubmitMessage(msg);
                     if(!produceSuccess){
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                            MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_REJECTED_BEFORE_REDIS));
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                            MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_REJECTED_BEFORE_REDIS));
                         log.error(msg, "Failed to produce SUBMIT_SM to Redis Stream!");
                         Response response = request.getResponse();
                         try{
@@ -566,6 +603,10 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                         	log.warn(msg,"Fail to send error response");
                         }
                     } else {
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                            MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_ACCEPTED_TO_REDIS));
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                            MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_ACCEPTED_TO_REDIS));
                         // V4.0 异步化：入队成功后立即向 ESME 确认
                         Response response = request.getResponse();
                         try {
@@ -591,14 +632,15 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 	}
                 	msg = processor.handleDeliverSM(request);
 
-                	// V4.0 Sticky Routing: Tag message with source session context
-                	if (msg != null) {
-                		msg.setInnerTransaction(transaction);
-                	}
+                    tagServerInboundContext(msg);
 
                 	if(log.isInfoEnabled()){
                 		log.info(msg, "Smpp receive message :{}",msg);
                 	}
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                            MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_RECEIVED));
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                            MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_RECEIVED));
                 	
                 	String msgType = msg.getMessageType();
 
@@ -611,6 +653,10 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
           					    	 if(log.isInfoEnabled()){
           		                        	log.info(msg, "Request PDU is blocked by billing, and msg is {}", msg);
           		                		}					    	 					    	
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                            MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_REJECTED_BEFORE_REDIS));
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                            MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_REJECTED_BEFORE_REDIS));
           					    	 Response response = request.getResponse();
      				                 response.setCommandStatus(com.king.gmms.protocol.smpp.util.Data.ESME_RPROVNOTALLWD);
      				                 connection.send(response.getData().getBuffer()); 
@@ -630,6 +676,10 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
           					    	 if(log.isInfoEnabled()){
           		                        	log.info(msg, "Request PDU is blocked by billing, and msg is {}", msg);
           		                		}					    	 					    	
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                            MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_REJECTED_BEFORE_REDIS));
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                            MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_REJECTED_BEFORE_REDIS));
           					    	 Response response = request.getResponse();
      				                 response.setCommandStatus(com.king.gmms.protocol.smpp.util.Data.ESME_RPROVNOTALLWD);
      				                 connection.send(response.getData().getBuffer()); 
@@ -645,6 +695,10 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 	// V4.0 异步化：将消息提交到 Redis Stream (Submit-MQ)
                     boolean produceSuccess = StreamQueueManager.getInstance().produceSubmitMessage(msg);
                     if(!produceSuccess){
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                            MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_REJECTED_BEFORE_REDIS));
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                            MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_REJECTED_BEFORE_REDIS));
                         log.error(msg, "Failed to produce DELIVER_SM to Redis Stream!");
                         Response response = request.getResponse();
                         try{
@@ -654,6 +708,10 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                         	log.warn(msg,"Fail to send error response");
                         }
                     } else {
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                            MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_ACCEPTED_TO_REDIS));
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                            MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_ACCEPTED_TO_REDIS));
                         // V4.0 异步化：入队成功后立即向 ESME 确认
                         Response response = request.getResponse();
                         try {
@@ -1056,6 +1114,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                             smpp.initSmppPara(cusInfo,this.connectionInfo);
                             startBufferMonitor(customerInfo);
                             updateReceivers();
+                            registerServerBindSession();
                             result = true;
                             break;
                         }
@@ -1146,6 +1205,63 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         return result;
     }
 
+    private void tagServerInboundContext(GmmsMessage msg) {
+        if (msg == null) {
+            return;
+        }
+        msg.setInnerTransaction(transaction);
+        if (!StringUtility.stringIsNotEmpty(msg.getConnectionID()) && transaction != null) {
+            msg.setConnectionID(transaction.getConnectionName());
+        }
+    }
+
+    private void registerServerBindSession() {
+        if (!isServer) {
+            return;
+        }
+        try {
+            serverRegistrySessionKey = SmppServerSessionRegistry.getInstance().register(this);
+            lastServerRegistryRefreshMs = System.currentTimeMillis();
+        } catch (Exception e) {
+            log.warn("Failed to register SMPP server bind session.", e);
+        }
+    }
+
+    private void refreshServerBindRegistry(boolean force) {
+        if (!isServer || customerInfo == null || connectionInfo == null) {
+            return;
+        }
+        try {
+            SmppServerSessionRegistry registry = SmppServerSessionRegistry.getInstance();
+            if (!registry.isEnabled()) {
+                return;
+            }
+            long now = System.currentTimeMillis();
+            if (!force && now - lastServerRegistryRefreshMs < registry.refreshIntervalMs()) {
+                return;
+            }
+            String refreshedKey = registry.refresh(this);
+            if (refreshedKey != null) {
+                serverRegistrySessionKey = refreshedKey;
+                lastServerRegistryRefreshMs = now;
+            }
+        } catch (Exception e) {
+            log.warn("Failed to refresh SMPP server bind session registry.", e);
+        }
+    }
+
+    private void unregisterServerBindSession() {
+        if (!isServer) {
+            return;
+        }
+        try {
+            SmppServerSessionRegistry.getInstance().unregister(this, serverRegistrySessionKey);
+            serverRegistrySessionKey = null;
+        } catch (Exception e) {
+            log.warn("Failed to unregister SMPP server bind session.", e);
+        }
+    }
+
     private void processClientRequest(Request request) {
         int commandId = request.getCommandId();
         if (commandId == Data.ENQUIRE_LINK) {
@@ -1163,7 +1279,15 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         	}
         	GmmsMessage msg = processor.handleDeliver_SM4Client(request);
         	if (msg != null && GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(msg.getMessageType())) {
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                            MetricsNames.FLOW_CLIENT, msg, MetricsNames.ACTION_RECEIVED));
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                            MetricsNames.STAGE_IN_DR, msg, true, MetricsNames.ACTION_RECEIVED));
                 if (StreamQueueManager.getInstance().produceInboundDeliveryReport(msg)) {
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                            MetricsNames.FLOW_CLIENT, msg, MetricsNames.ACTION_WRITTEN_TO_REDIS));
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                            MetricsNames.STAGE_IN_DR, msg, true, MetricsNames.ACTION_WRITTEN_TO_REDIS));
                 	GmmsMessage respMsg = new GmmsMessage(msg);
                 	respMsg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP);
                 	sendDeliverSMRespWithoutInnerack(respMsg);
@@ -1257,17 +1381,33 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
 
     private void handleDeliver_SM_Resp(Response response) {
         Integer sequence = response.getSequenceNumber();
-        GmmsMessage bufferedMsg = bufferMonitor.remove(Integer.toString(sequence));
+        String sequenceKey = Integer.toString(sequence);
+        GmmsMessage bufferedMsg = null;
+        PendingSubmitEntry pendingDrEntry = pendingDrManager == null ? null : pendingDrManager.get(sequenceKey);
+        if (pendingDrEntry != null) {
+            bufferedMsg = pendingDrEntry.getMessage();
+        }
+        if (bufferedMsg == null && bufferMonitor != null) {
+            bufferedMsg = bufferMonitor.remove(sequenceKey);
+        }
         if (bufferedMsg != null) {
             processor.handleDeliver_SM_Resp( (DeliverSMResp) response,
                                             bufferedMsg);
             // V5.0: DR Response 通过 Redis Stream 回传 Core，完成解耦闭环
             if (!com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceResult(bufferedMsg)) {
             	log.error(bufferedMsg, "Failed to produce DR_RESP to stream:core:results, sequence={}",
-                        Integer.toString(sequence));
-            } else if (log.isInfoEnabled()) {
-                log.info(bufferedMsg, "Produced DR_RESP to stream:core:results from {} session, sequence={}",
-                        isServer ? "server" : "client", Integer.toString(sequence));
+                        sequenceKey);
+                if (pendingDrManager != null && pendingDrEntry != null) {
+                    pendingDrManager.markResultPending(sequenceKey, bufferedMsg);
+                }
+            } else {
+                if (pendingDrManager != null && pendingDrEntry != null) {
+                    pendingDrManager.remove(sequenceKey);
+                }
+                if (log.isInfoEnabled()) {
+                    log.info(bufferedMsg, "Produced DR_RESP to stream:core:results from {} session, sequence={}",
+                            isServer ? "server" : "client", sequenceKey);
+                }
             }
         }
         else {
@@ -1310,7 +1450,15 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         if (bufferedMsg != null) {
             processor.handleSubmit_SM_Resp( (SubmitSMResp) response,
                                            bufferedMsg);
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                            MetricsNames.FLOW_CLIENT, bufferedMsg, MetricsNames.ACTION_RESPONSE_RECEIVED));
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                            MetricsNames.STAGE_OUT_SUBMIT, bufferedMsg, true, MetricsNames.ACTION_RESPONSE_RECEIVED));
             if(StreamQueueManager.getInstance().produceResult(bufferedMsg)){
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                            MetricsNames.FLOW_CLIENT, bufferedMsg, MetricsNames.ACTION_RESULT_WRITTEN));
+                    MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                            MetricsNames.STAGE_OUT_SUBMIT, bufferedMsg, true, MetricsNames.ACTION_RESULT_WRITTEN));
                 if (pendingSubmitManager != null && pendingEntry != null) {
                     pendingSubmitManager.remove(sequenceKey);
                 }
@@ -1373,10 +1521,15 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 		log.info("SMSCSession stopping and TransactionURI is:{}" , getTransactionURI());
                 	}
                 }
+                unregisterServerBindSession();
 
                 if (pendingSubmitManager != null) {
                     pendingSubmitManager.shutdown(true, "session_stop");
                     pendingSubmitManager = null;
+                }
+                if (pendingDrManager != null) {
+                    pendingDrManager.shutdown(true, "session_stop");
+                    pendingDrManager = null;
                 }
                 
                 if(isServer){
@@ -1418,13 +1571,18 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             }
             keepRunning = false;
             try {
-            	if (executorServiceManager != null) {
+                unregisterServerBindSession();
+                if (executorServiceManager != null) {
     				executorServiceManager.shutdown(receiverThreadPool);
     			}
 
             	if (pendingSubmitManager != null) {
                     pendingSubmitManager.shutdown(true, "session_destroy");
                     pendingSubmitManager = null;
+                }
+                if (pendingDrManager != null) {
+                    pendingDrManager.shutdown(true, "session_destroy");
+                    pendingDrManager = null;
                 }
             	
             	if (sessionThread != null) {
@@ -1572,6 +1730,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             request.assignSequenceNumber();
 
             key = Integer.toString(request.getSequenceNumber());            
+            msg.setOutTransID(key);
             boolean isPutBuffer = false;
             while (isKeepRunning() && !isPutBuffer) {
                 if (pendingSubmitManager == null) {
@@ -1783,11 +1942,17 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             delivSm.setVersion(ver);
             delivSm.assignSequenceNumber();
             key = Integer.toString(delivSm.getSequenceNumber());
-            while (isKeepRunning() &&
-                   !bufferMonitor.put(key, deliverMsg))
-                ;
+            deliverMsg.setInTransID(key);
+            boolean isPutBuffer = false;
+            while (isKeepRunning() && !isPutBuffer) {
+                if (pendingDrManager == null) {
+                    pendingDrManager = new SmppPendingDrManager(buildPendingDrSessionKey(),
+                            customerInfo.getWindowSize(), customerInfo.getBufferTimeout(), this);
+                }
+                isPutBuffer = pendingDrManager.put(key, deliverMsg);
+            }
             if(log.isDebugEnabled()){
-        		log.debug(deliverMsg,"bufferMonitor put deliverMsg with SequenceNumber = {}", key);
+                log.debug(deliverMsg,"pendingDrManager put deliverMsg with SequenceNumber = {}", key);
             }
             if (isKeepRunning()) {
                 connection.send(delivSm.getData().getBuffer());
@@ -1819,7 +1984,9 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         finally {
             if (!result) {
                 try {
-                    bufferMonitor.remove(key);
+                    if (pendingDrManager != null) {
+                        pendingDrManager.remove(key);
+                    }
                 }
                 catch (Exception ex) {
 
@@ -1921,6 +2088,10 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
     }
 
     public boolean timeoutPendingSubmit(Object obj, GmmsMessage msg) {
+        return handleResponseTimeout(obj, msg);
+    }
+
+    public boolean timeoutPendingDr(Object obj, GmmsMessage msg) {
         return handleResponseTimeout(obj, msg);
     }
 

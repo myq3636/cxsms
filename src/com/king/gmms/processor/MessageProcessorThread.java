@@ -25,6 +25,8 @@ import com.king.gmms.domain.A2PSingleConnectionInfo;
 import com.king.gmms.domain.ModuleManager;
 import com.king.gmms.ha.TransactionURI;
 import com.king.gmms.messagequeue.OperatorMessageQueue;
+import com.king.gmms.metrics.MetricsCollector;
+import com.king.gmms.metrics.MetricsNames;
 import com.king.gmms.threadpool.RunnableMsgTask;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
@@ -721,11 +723,16 @@ public class MessageProcessorThread extends RunnableMsgTask{
 			// V4.1 Decentralized HTTP Outbound: Dispatch via Redis Stream
 			if (server != null && "HTTP".equalsIgnoreCase(server.getProtocol())) {
 				String moduleName = moduleManager.selectChannel(queue);
-				msg.setProperty("Protocol", "HTTP");
 				msg.setDeliveryChannel(moduleName); // Preserve selected module label
-				if (com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceOutboundMessage(msg)) {
+				if (com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceHttpSubmitMessage(msg)) {
+					MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+							MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_ROUTING_SUCCESS));
+					MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+							MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_ROUTED_TO_REDIS));
+					MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+							MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_ROUTED_TO_REDIS));
 					if (log.isInfoEnabled()) {
-						log.info(msg, "Dispatched HTTP MT task to Redis Stream: {}", com.king.gmms.messagequeue.StreamQueueManager.STR_OUTBOUND_HTTP);
+						log.info(msg, "Dispatched HTTP MT task to Redis Stream for target ssid {}", msg.getRSsID());
 					}
 					continue;
 				} else {
@@ -738,11 +745,21 @@ public class MessageProcessorThread extends RunnableMsgTask{
 				String moduleName = moduleManager.selectChannel(queue);
 				msg.setDeliveryChannel(moduleName);
 				if (com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceServerDeliveryMessage(msg)) {
+					MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+							MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_ROUTING_SUCCESS));
+					MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+							MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_ROUTED_TO_REDIS));
+					MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+							MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_ROUTED_TO_REDIS));
 					if(log.isInfoEnabled()){
 						log.info(msg, "Dispatched SMPP delivery task to Redis Stream for rssid {}, module {}",
 								msg.getRSsID(), moduleName);
 					}
 				} else {
+					MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+							MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_ROUTING_FAILED));
+					MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+							MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_ROUTING_FAILED));
 					msg.setStatus(GmmsStatus.SERVER_ERROR);
 					if(log.isInfoEnabled()){
 						log.info(msg, "Failed to dispatch SMPP delivery task to Redis Stream for rssid {}, module {}",
@@ -753,10 +770,20 @@ public class MessageProcessorThread extends RunnableMsgTask{
 				continue;
 			}
 			if (com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceOutboundMessage(msg)) {
+				MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+						MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_ROUTING_SUCCESS));
+				MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+						MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_ROUTED_TO_REDIS));
+				MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+						MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_ROUTED_TO_REDIS));
 				if(log.isInfoEnabled()){
 					log.info(msg, "Dispatched SMPP MT task to Redis Stream for rssid {}", msg.getRSsID());
 				}
 			} else {
+				MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+						MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_ROUTING_FAILED));
+				MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+						MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_ROUTING_FAILED));
 				msg.setStatus(GmmsStatus.SERVER_ERROR);
 				if(log.isInfoEnabled()){
 					log.info(msg, "Failed to dispatch SMPP MT task to Redis Stream for rssid {}", msg.getRSsID());
@@ -873,15 +900,16 @@ public class MessageProcessorThread extends RunnableMsgTask{
 			// V4.1 High-Reliability Decentralized DR Push
 			boolean success = false;
 			if (server != null && "HTTP".equalsIgnoreCase(server.getProtocol())) {
-				message.setProperty("Protocol", "HTTP");
 				message.setDeliveryChannel(moduleName);
-				success = com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceOutboundMessage(message);
+				success = com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceHttpDeliveryReport(message);
 			} else {
 				// Old logic for Carrier DR ingestion or Sticky routing
 				success = com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceDeliveryReport(message);
 			}
 
 			if (!success) {
+				MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+						MetricsNames.STAGE_OUT_DR, message, false, MetricsNames.ACTION_ROUTING_FAILED));
 				if(log.isInfoEnabled()){
 					log.info(message,
 								"Can not produce the DR message to Redis Stream");
@@ -889,6 +917,8 @@ public class MessageProcessorThread extends RunnableMsgTask{
 				message.setStatusCode(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT.getCode());
 				dbHandler.putMsg(message);
 			} else {
+				MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+						MetricsNames.STAGE_OUT_DR, message, false, MetricsNames.ACTION_ROUTED_TO_REDIS));
 				if(log.isDebugEnabled()){
 					log.debug(message, "Success to produce DR message to Redis Stream");
 				}

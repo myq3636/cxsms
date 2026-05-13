@@ -10,6 +10,7 @@ import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PSingleConnectionInfo;
 import com.king.gmms.domain.ModuleManager;
+import com.king.gmms.messagequeue.HttpClientStreamConsumer;
 import com.king.message.gmms.GmmsMessage;
 
 public class CommonHttpClient extends AbstractClient {
@@ -38,6 +39,7 @@ public class CommonHttpClient extends AbstractClient {
     }
 
 	public boolean startService() {
+		customerFactory.initializeAllHttpCustomers();
 		if(!initSystemManagement()){
 	   		  log.warn("module register failed!");
 	    }
@@ -45,6 +47,24 @@ public class CommonHttpClient extends AbstractClient {
         //agentListener.start();
 		return true;
 	}
+
+    protected void startClientStreamConsumers() {
+        try {
+            HttpClientStreamConsumer.getInstance().start();
+            log.info("HttpClientStreamConsumer successfully started for module: " + module);
+        } catch (Exception e) {
+            log.error("Failed to start HttpClientStreamConsumer", e);
+        }
+    }
+
+    protected void stopClientStreamConsumers() {
+        try {
+            HttpClientStreamConsumer.getInstance().stop();
+            log.info("HttpClientStreamConsumer safely stopped for module: " + module);
+        } catch (Exception e) {
+            log.error("Failed to stop HttpClientStreamConsumer", e);
+        }
+    }
     
 	public boolean stopService() {
 		/*
@@ -52,6 +72,8 @@ public class CommonHttpClient extends AbstractClient {
 		 * systemListener.stop(); if(systemSession!=null){ systemSession.shutdown(); } }
 		 * agentListener.stop();
 		 */
-		return false;
+		stopClientStreamConsumers();
+		stopRedisHeartbeat();
+		return true;
 	}
 }

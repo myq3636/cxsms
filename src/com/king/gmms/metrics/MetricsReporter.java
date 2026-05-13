@@ -26,6 +26,7 @@ import com.king.framework.SystemLogger;
 public class MetricsReporter {
 
     private static final SystemLogger log = SystemLogger.getSystemLogger(MetricsReporter.class);
+    private static final SystemLogger metricsLog = SystemLogger.getSystemLogger("metrics.logger");
     private static final MetricsReporter INSTANCE = new MetricsReporter();
 
     private final MetricsCollector collector = MetricsCollector.getInstance();
@@ -41,6 +42,7 @@ public class MetricsReporter {
     private volatile Map<String, Long> previousCounters;
     private volatile Map<String, Long> previousTimerCounts;
     private volatile Map<String, Long> previousTimerTotalNanos;
+    private volatile Map<String, Long> previousTimerBuckets;
     private volatile long previousTimestamp;
 
     private MetricsReporter() {
@@ -59,12 +61,13 @@ public class MetricsReporter {
         if (running) {
             return;
         }
-        this.intervalSeconds = intervalSeconds;
+        this.intervalSeconds = sanitizeInterval(intervalSeconds);
         running = true;
         collector.setEnabled(true);
         previousCounters = collector.snapshotCounters();
         previousTimerCounts = collector.snapshotTimerCounts();
         previousTimerTotalNanos = collector.snapshotTimerTotalNanos();
+        previousTimerBuckets = collector.snapshotTimerBuckets();
         previousTimestamp = System.currentTimeMillis();
 
         scheduler = Executors.newSingleThreadScheduledExecutor(new java.util.concurrent.ThreadFactory() {
@@ -85,9 +88,9 @@ public class MetricsReporter {
                     log.warn("MetricsReporter error", e);
                 }
             }
-        }, intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
+        }, this.intervalSeconds, this.intervalSeconds, TimeUnit.SECONDS);
 
-        log.info("MetricsReporter started, interval={}s", intervalSeconds);
+        log.info("MetricsReporter started, interval={}s", this.intervalSeconds);
     }
 
     /**
@@ -99,7 +102,8 @@ public class MetricsReporter {
         }
         running = false;
         if (scheduler != null) {
-            scheduler.shutdown();
+            scheduler.shutdownNow();
+            scheduler = null;
         }
         collector.setEnabled(false);
         log.info("MetricsReporter stopped.");
@@ -107,8 +111,9 @@ public class MetricsReporter {
 
     public synchronized void restart(int intervalSeconds) {
         stop();
-        start(intervalSeconds);
-        log.info("MetricsReporter restarted, interval={}s", intervalSeconds);
+        int sanitizedInterval = sanitizeInterval(intervalSeconds);
+        start(sanitizedInterval);
+        log.info("MetricsReporter restarted, interval={}s", sanitizedInterval);
     }
 
     public synchronized void configure(String logLevel, boolean printZero, boolean printGauge, double minTps) {
@@ -122,6 +127,44 @@ public class MetricsReporter {
                 this.logLevel, this.printZero, this.printGauge, this.minTps);
     }
 
+    public synchronized void applyConfig(boolean enabled, int intervalSeconds, String logLevel,
+            boolean printZero, boolean printGauge, double minTps) {
+        int sanitizedInterval = sanitizeInterval(intervalSeconds);
+        configure(logLevel, printZero, printGauge, minTps);
+        if (!enabled) {
+            stop();
+            collector.setEnabled(false);
+            log.info("MetricsReporter disabled. interval={}s", sanitizedInterval);
+            return;
+        }
+        if (!running) {
+            start(sanitizedInterval);
+            return;
+        }
+        if (this.intervalSeconds != sanitizedInterval) {
+            restart(sanitizedInterval);
+            return;
+        }
+        collector.setEnabled(true);
+        log.info("MetricsReporter runtime config applied without restart. interval={}s", this.intervalSeconds);
+    }
+
+    public boolean isRunning() {
+        return running;
+    }
+
+    public int getIntervalSeconds() {
+        return intervalSeconds;
+    }
+
+    private int sanitizeInterval(int intervalSeconds) {
+        if (intervalSeconds <= 0) {
+            log.warn("Invalid Metrics.ReportIntervalSeconds={}, fallback to 30", intervalSeconds);
+            return 30;
+        }
+        return intervalSeconds;
+    }
+
     /**
      * Perform a single report cycle.
      */
@@ -131,6 +174,7 @@ public class MetricsReporter {
         Map<String, Long> currentGauges = collector.snapshotGauges();
         Map<String, Long> currentTimerCounts = collector.snapshotTimerCounts();
         Map<String, Long> currentTimerTotalNanos = collector.snapshotTimerTotalNanos();
+        Map<String, Long> currentTimerBuckets = collector.snapshotTimerBuckets();
 
         // ---- TPS calculation ----
         double elapsedSeconds = (now - previousTimestamp) / 1000.0;
@@ -193,7 +237,9 @@ public class MetricsReporter {
                 }
                 timerLine.append(name)
                          .append("={count=").append(countDelta)
-                         .append(", avgMs=").append(String.format("%.2f", avgMs)).append("}");
+                         .append(", avgMs=").append(String.format("%.2f", avgMs))
+                         .append(", buckets={").append(formatBucketDelta(name, currentTimerBuckets, previousTimerBuckets))
+                         .append("}}");
                 hasTimerData = true;
             }
             timerLine.append("\"");
@@ -223,16 +269,35 @@ public class MetricsReporter {
         previousCounters = currentCounters;
         previousTimerCounts = currentTimerCounts;
         previousTimerTotalNanos = currentTimerTotalNanos;
+        previousTimerBuckets = currentTimerBuckets;
         previousTimestamp = now;
+    }
+
+    private String formatBucketDelta(String timerName, Map<String, Long> currentBuckets,
+            Map<String, Long> previousBuckets) {
+        StringBuilder buckets = new StringBuilder(96);
+        String[] bucketNames = MetricsCollector.timerBucketNames();
+        for (int i = 0; i < bucketNames.length; i++) {
+            String bucket = bucketNames[i];
+            String key = MetricsCollector.timerBucketKey(timerName, bucket);
+            long current = currentBuckets.containsKey(key) ? currentBuckets.get(key) : 0L;
+            long previous = previousBuckets != null && previousBuckets.containsKey(key)
+                    ? previousBuckets.get(key) : 0L;
+            if (i > 0) {
+                buckets.append(",");
+            }
+            buckets.append(bucket).append("=").append(current - previous);
+        }
+        return buckets.toString();
     }
 
     private void logByConfiguredLevel(String line) {
         if ("INFO".equalsIgnoreCase(logLevel)) {
-            log.info(line);
+            metricsLog.info(line);
         } else if ("TRACE".equalsIgnoreCase(logLevel)) {
-            log.trace(line);
+            metricsLog.trace(line);
         } else {
-            log.debug(line);
+            metricsLog.debug(line);
         }
     }
 }
