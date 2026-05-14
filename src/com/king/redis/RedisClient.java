@@ -170,6 +170,7 @@ public class RedisClient {
 	public boolean setPipeline(String key, String value, int expireTime, String hashKey) { return stateRedis.setPipeline(key, value, expireTime, hashKey); }
 	public boolean setPendingMessage(String key, String value, int expireTime, String zsetKey, double score, String registryKey) { return stateRedis.setPendingMessage(key, value, expireTime, zsetKey, score, registryKey); }
 	public String consumePendingMessage(String key, String zsetKey) { return stateRedis.consumePendingMessage(key, zsetKey); }
+	public boolean requeuePendingMessageIfExists(String key, String value, int expireTime, String zsetKey, double score) { return stateRedis.requeuePendingMessageIfExists(key, value, expireTime, zsetKey, score); }
 	public boolean setDelayDR(String key, String value, int expireTime, double score, int ossid) { return stateRedis.setDelayDR(key, value, expireTime, score, ossid); }
 	public Set<String> zrange(String key, long start, long end) { return stateRedis.zrange(key, start, end); }
 	public Set<String> zrangeByIndex(String key, long start, long end) { return stateRedis.zrangeByIndex(key, start, end); }
@@ -285,6 +286,12 @@ public class RedisClient {
 	}
 	public long xlenSubmitMq(String key) {
 		return submitMqRedis != null ? submitMqRedis.xlen(key) : 0L;
+	}
+	public boolean streamEntryExistsSubmitMq(String key, String id) {
+		return submitMqRedis != null && submitMqRedis.streamEntryExists(key, id);
+	}
+	public boolean streamPendingEntryExistsSubmitMq(String key, String group, String id) {
+		return submitMqRedis != null && submitMqRedis.streamPendingEntryExists(key, group, id);
 	}
 	public Set<String> keysSubmitMq(String pattern) {
 		return submitMqRedis != null ? submitMqRedis.keys(pattern) : null;

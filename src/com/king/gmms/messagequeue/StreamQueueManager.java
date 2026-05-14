@@ -106,12 +106,10 @@ public class StreamQueueManager {
 
 	public boolean produceSubmitRouted(GmmsMessage msg, String channelId) {
 		String key = STR_MT_ROUTED_PREFIX + channelId;
-		if (!CoreOutboundOutboxManager.getInstance().register(msg, key)) {
-			return false;
-		}
 		boolean produced = produce(key, msg, true);
-		if (!produced) {
-			CoreOutboundOutboxManager.getInstance().remove(msg);
+		if (produced && !CoreOutboundOutboxManager.getInstance().register(msg, key, msg.getRedisStreamID())) {
+			deleteStreamEntry(key, msg.getRedisStreamID(), true);
+			return false;
 		}
 		return produced;
 	}
@@ -215,6 +213,7 @@ public class StreamQueueManager {
 				: redisClient.xaddToReportMq(key, body, getStreamMaxLen(), isApproximateTrimming());
 				
 			if (msgId != null) {
+				msg.setRedisStreamID(msgId);
 				String zsetKey = getDoorbellZSet(key);
 				Long doorbellResult = zsetKey == null ? null : zaddDoorbell(zsetKey, key, isSubmitMq);
 				if (zsetKey == null || doorbellResult == null || doorbellResult.longValue() < 0L) {
@@ -238,6 +237,21 @@ public class StreamQueueManager {
 			logger.error("Produce to stream " + key + " failed", e);
 			incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_FAIL);
 			return false;
+		}
+	}
+
+	private void deleteStreamEntry(String key, String redisId, boolean isSubmitMq) {
+		if (isBlank(key) || isBlank(redisId)) {
+			return;
+		}
+		try {
+			StreamEntryID id = new StreamEntryID(redisId);
+			Long deleted = isSubmitMq ? redisClient.xdelSubmitMq(key, id) : redisClient.xdelReportMq(key, id);
+			logger.warn("Deleted stream entry after outbox register failure. streamKey={}, redisId={}, deleted={}",
+					key, redisId, deleted);
+		} catch (Exception e) {
+			logger.warn("Failed to delete stream entry after outbox register failure. streamKey={}, redisId={}",
+					key, redisId, e);
 		}
 	}
 
@@ -731,12 +745,11 @@ public class StreamQueueManager {
 			key = STR_MT_ROUTED_PREFIX + msg.getRSsID() + ":" + shardId;
 		}
 		boolean needOutbox = key.startsWith(STR_MT_ROUTED_PREFIX);
-		if (needOutbox && !CoreOutboundOutboxManager.getInstance().register(msg, key)) {
-			return false;
-		}
 		boolean produced = produce(key, msg, true);
-		if (!produced && needOutbox) {
-			CoreOutboundOutboxManager.getInstance().remove(msg);
+		if (produced && needOutbox
+				&& !CoreOutboundOutboxManager.getInstance().register(msg, key, msg.getRedisStreamID())) {
+			deleteStreamEntry(key, msg.getRedisStreamID(), true);
+			return false;
 		}
 		return produced;
 	}

@@ -17,9 +17,11 @@ import redis.clients.jedis.StreamEntryID;
 import redis.clients.jedis.params.XAddParams;
 import redis.clients.jedis.params.XAutoClaimParams;
 import redis.clients.jedis.params.XClaimParams;
+import redis.clients.jedis.params.XPendingParams;
 import redis.clients.jedis.params.XReadGroupParams;
 import redis.clients.jedis.params.ZRangeParams;
 import redis.clients.jedis.resps.StreamEntry;
+import redis.clients.jedis.resps.StreamPendingEntry;
 import redis.clients.jedis.resps.StreamPendingSummary;
 
 import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
@@ -252,6 +254,23 @@ public class RedisConnection {
 		} catch (Exception e) {
 			logger.error("consumePendingMessage failed. key={}, zsetKey={}", key, zsetKey, e);
 			return null;
+		}
+	}
+
+	public boolean requeuePendingMessageIfExists(String key, String value, int expireTime,
+			String zsetKey, double score) {
+		String script = "local v=redis.call('GET',KEYS[1]);"
+				+ "if not v then redis.call('ZREM',KEYS[2],KEYS[1]); return 0; end;"
+				+ "redis.call('SETEX',KEYS[1],ARGV[1],ARGV[2]);"
+				+ "redis.call('ZADD',KEYS[2],ARGV[3],KEYS[1]);"
+				+ "return 1";
+		try (Jedis jedis = pool.getResource()) {
+			Object result = jedis.eval(script, Arrays.asList(key, zsetKey),
+					Arrays.asList(String.valueOf(expireTime), value, String.valueOf(score)));
+			return result != null && Long.parseLong(result.toString()) == 1L;
+		} catch (Exception e) {
+			logger.error("requeuePendingMessageIfExists failed. key={}, zsetKey={}", key, zsetKey, e);
+			return false;
 		}
 	}
 
@@ -1026,6 +1045,33 @@ public class RedisConnection {
 		} catch (Exception e) {
 			logger.error("claimDueZSetMember failed. fromKey={}, toKey={}", fromKey, toKey, e);
 			return null;
+		}
+	}
+
+	public boolean streamEntryExists(String key, String id) {
+		if (key == null || id == null || id.trim().length() == 0) {
+			return false;
+		}
+		try (Jedis jedis = pool.getResource()) {
+			List<StreamEntry> entries = jedis.xrange(key, id, id, 1);
+			return entries != null && !entries.isEmpty();
+		} catch (Exception e) {
+			logger.warn("streamEntryExists failed. key={}, id={}", key, id, e);
+			return false;
+		}
+	}
+
+	public boolean streamPendingEntryExists(String key, String group, String id) {
+		if (key == null || group == null || id == null || id.trim().length() == 0) {
+			return false;
+		}
+		try (Jedis jedis = pool.getResource()) {
+			List<StreamPendingEntry> entries = jedis.xpending(key, group,
+					XPendingParams.xPendingParams(id, id, 1));
+			return entries != null && !entries.isEmpty();
+		} catch (Exception e) {
+			logger.warn("streamPendingEntryExists failed. key={}, group={}, id={}", key, group, id, e);
+			return false;
 		}
 	}
 

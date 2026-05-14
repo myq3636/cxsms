@@ -893,6 +893,9 @@ public class GmmsUtility {
 			"SMPPSubmitPendingRedisResultRetryMs", "SMPPSubmitPendingRedisRetryTTLSeconds",
 			"SMPPDRPendingRedisScanIntervalMs", "SMPPDRPendingRedisScanBatchSize",
 			"SMPPDRPendingRedisResultRetryMs", "SMPPDRPendingRedisRetryTTLSeconds",
+			"CoreOutboundOutboxEnable", "CoreOutboundOutboxRecheckMs",
+			"CoreOutboundOutboxHardTimeoutMs", "CoreOutboundOutboxPayloadTTLSeconds",
+			"CoreOutboundOutboxScanBatchSize", "CoreOutboundOutboxResultRetryMs",
 			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress", "DNSPort",
 			"DNSMaxFailedLimit", "DNSTestPeriod", "DNSTestNumber", "DNSBufferCapacity",
 			"DNSBufferTimeout", "NMGAddress", "NMGPort", "DefaultRetryPolicy",
@@ -947,6 +950,9 @@ public class GmmsUtility {
 				|| "MQM.StandbyCheckSeconds".equals(key) || "MQM.ActivePriorityDelayMs".equals(key)) {
 			return true;
 		}
+		if ("CoreOutboundOutboxScanBatchSize".equals(key)) {
+			return true;
+		}
 		return isDirectRuntimeKey(key) && !"ScreenedIPs".equals(key) && !"LoopbackAddresses".equals(key);
 	}
 
@@ -961,14 +967,19 @@ public class GmmsUtility {
 				|| "AutoInDR.DirectStreamEnable".equals(key)
 				|| "AutoInDR.DelayDispatcherEnable".equals(key)
 				|| "AutoInDR.FallbackToLegacyDelayDR".equals(key)
-				|| "MQM.ActiveStandbyEnable".equals(key);
+				|| "MQM.ActiveStandbyEnable".equals(key)
+				|| "CoreOutboundOutboxEnable".equals(key);
 	}
 
 	private boolean isLongRuntimeKey(String key) {
 		return "RedisStreamMaxLen".equals(key)
 				|| "AutoInDR.DelayClaimTimeoutMs".equals(key)
 				|| "AutoInDR.DelayRetryDelayMs".equals(key)
-				|| "AutoInDR.DispatcherIdleSleepMs".equals(key);
+				|| "AutoInDR.DispatcherIdleSleepMs".equals(key)
+				|| "CoreOutboundOutboxRecheckMs".equals(key)
+				|| "CoreOutboundOutboxHardTimeoutMs".equals(key)
+				|| "CoreOutboundOutboxPayloadTTLSeconds".equals(key)
+				|| "CoreOutboundOutboxResultRetryMs".equals(key);
 	}
 
 	private boolean isRedisStreamTuningKey(String key) {
@@ -1031,6 +1042,12 @@ public class GmmsUtility {
 		if ("AutoInDR.FallbackToLegacyDelayDR".equals(key)) return "true";
 		if ("AutoInDR.DelayPayloadTTLSeconds".equals(key)) return "172800";
 		if ("AutoInDR.DispatcherIdleSleepMs".equals(key)) return "200";
+		if ("CoreOutboundOutboxEnable".equals(key)) return "true";
+		if ("CoreOutboundOutboxRecheckMs".equals(key)) return "300000";
+		if ("CoreOutboundOutboxHardTimeoutMs".equals(key)) return "10800000";
+		if ("CoreOutboundOutboxPayloadTTLSeconds".equals(key)) return "14400";
+		if ("CoreOutboundOutboxScanBatchSize".equals(key)) return "100";
+		if ("CoreOutboundOutboxResultRetryMs".equals(key)) return "5000";
 		return "0";
 	}
 
@@ -1043,6 +1060,7 @@ public class GmmsUtility {
 				|| key.startsWith("DS_")
 				|| key.startsWith("Redis_") || key.startsWith("Redis.")
 				|| key.startsWith("RedisMonitor_")
+				|| "CoreOutboundOutboxScanIntervalMs".equals(key)
 				|| key.startsWith("Ssl.") || key.startsWith("ThreadPool.")
 				|| (module != null && key.startsWith(module + ".") && isModuleRestartRequiredKey(key.substring(module.length() + 1)))
 				|| key.contains(".MinMessageProcessorNumber") || key.contains(".MaxMessageProcessorNumber")
