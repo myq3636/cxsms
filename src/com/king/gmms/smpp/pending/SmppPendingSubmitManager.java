@@ -6,7 +6,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.DelayQueue;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Delayed;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
@@ -20,6 +20,8 @@ import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.messagequeue.StreamQueueManager;
+import com.king.gmms.metrics.MetricsCollector;
+import com.king.gmms.metrics.MetricsNames;
 import com.king.gmms.util.BufferTimeoutInterface;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
@@ -38,14 +40,9 @@ public class SmppPendingSubmitManager {
     private static final String REDIS_TIMEOUT_ZSET_PREFIX = "zset:smpp:pending:submit:timeout:";
     private static final String REDIS_TIMEOUT_ZSET_REGISTRY_PREFIX = "set:smpp:pending:submit:timeout:zsets:";
 
-    private static final ExecutorService SCANNER = Executors.newCachedThreadPool(new ThreadFactory() {
-        public Thread newThread(Runnable runnable) {
-            Thread thread = new Thread(A2PThreadGroup.getInstance(), runnable,
-                    "SmppPendingSubmitScanner-" + THREAD_ID.incrementAndGet());
-            thread.setDaemon(true);
-            return thread;
-        }
-    });
+    private static final DelayQueue<PendingSubmitTimeoutTask> GLOBAL_TIMEOUT_QUEUE =
+            new DelayQueue<PendingSubmitTimeoutTask>();
+    private static final AtomicInteger GLOBAL_TIMEOUT_WORKER_COUNT = new AtomicInteger(0);
 
     private static final ScheduledExecutorService REDIS_SCANNER = Executors.newScheduledThreadPool(1, new ThreadFactory() {
         public Thread newThread(Runnable runnable) {
@@ -65,9 +62,14 @@ public class SmppPendingSubmitManager {
     private final BufferTimeoutInterface timeoutListener;
     private final ConcurrentMap<String, PendingSubmitEntry> pendingMap;
     private final ConcurrentMap<String, String> redisKeyBySequence;
-    private final DelayQueue<PendingSubmitEntry> timeoutQueue;
     private final Semaphore permits;
     private final AtomicBoolean stopped = new AtomicBoolean(false);
+
+    public enum PutResult {
+        STORED,
+        WINDOW_FULL,
+        FAILED
+    }
 
     public SmppPendingSubmitManager(String sessionKey, int windowSize, long timeoutMs,
             BufferTimeoutInterface timeoutListener) {
@@ -79,14 +81,9 @@ public class SmppPendingSubmitManager {
         this.timeoutListener = timeoutListener;
         this.pendingMap = new ConcurrentHashMap<String, PendingSubmitEntry>();
         this.redisKeyBySequence = new ConcurrentHashMap<String, String>();
-        this.timeoutQueue = new DelayQueue<PendingSubmitEntry>();
         this.permits = windowSize > 0 ? new Semaphore(windowSize) : null;
         startRedisScanner();
-        SCANNER.execute(new Runnable() {
-            public void run() {
-                runTimeoutLoop();
-            }
-        });
+        startGlobalTimeoutWorkers();
         log.info("SMPP pending submit manager started. sessionKey={}, windowSize={}, timeoutMs={}",
                 this.sessionKey, this.windowSize, this.timeoutMs);
     }
@@ -125,7 +122,7 @@ public class SmppPendingSubmitManager {
 				log.warn(message, "Duplicate SMPP pending submit sequence. pendingKey={}", entry.getPendingKey());
 				return false;
 			}
-			timeoutQueue.offer(entry);
+			offerGlobalTimeout(entry);
 			return true;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -148,6 +145,58 @@ public class SmppPendingSubmitManager {
         }
     }
 
+    public boolean hasCapacity() {
+        return permits == null || permits.availablePermits() > 0;
+    }
+
+    public PutResult tryPut(String sequence, GmmsMessage message) {
+        if (stopped.get() || sequence == null || message == null) {
+            return PutResult.FAILED;
+        }
+        boolean acquired = false;
+        boolean redisStored = false;
+        try {
+            if (permits != null) {
+                acquired = permits.tryAcquire();
+                if (!acquired) {
+                    return PutResult.WINDOW_FULL;
+                }
+            }
+            long msgTimeoutMs = timeoutMsFor(message);
+            PendingSubmitEntry entry = new PendingSubmitEntry(buildPendingKey(sequence), sequence, message, msgTimeoutMs);
+            String mode = pendingMode(message);
+            boolean redisBacked = usesRedis(mode);
+            if (redisBacked) {
+                startRedisScanner();
+                redisStored = persistRedisPending(sequence, message, msgTimeoutMs);
+                if (!redisStored) {
+                    releasePermit();
+                    return PutResult.FAILED;
+                }
+            }
+            PendingSubmitEntry old = pendingMap.putIfAbsent(sequence, entry);
+            if (old != null) {
+                if (redisStored) {
+                    deleteRedisPending(sequence);
+                }
+                releasePermit();
+                log.warn(message, "Duplicate SMPP pending submit sequence. pendingKey={}", entry.getPendingKey());
+                return PutResult.FAILED;
+            }
+            offerGlobalTimeout(entry);
+            return PutResult.STORED;
+        } catch (Exception e) {
+            if (redisStored) {
+                deleteRedisPending(sequence);
+            }
+            if (acquired) {
+                releasePermit();
+            }
+            log.warn(message, "Failed to try put SMPP pending submit. sequence={}", sequence, e);
+            return PutResult.FAILED;
+        }
+    }
+
     public PendingSubmitEntry get(String sequence) {
         if (sequence == null) {
             return null;
@@ -156,7 +205,6 @@ public class SmppPendingSubmitManager {
         if (entry != null) {
             if (isRedisBacked(sequence, entry) && !redisPendingExists(sequence)) {
                 if (pendingMap.remove(sequence, entry)) {
-                    timeoutQueue.remove(entry);
                     redisKeyBySequence.remove(sequence);
                     releasePermit();
                 }
@@ -187,7 +235,6 @@ public class SmppPendingSubmitManager {
         }
         PendingSubmitEntry entry = pendingMap.remove(sequence);
         if (entry != null) {
-            timeoutQueue.remove(entry);
             releasePermit();
         }
         deleteRedisPending(sequence);
@@ -197,10 +244,9 @@ public class SmppPendingSubmitManager {
     public void markResultPending(String sequence, GmmsMessage message) {
         PendingSubmitEntry entry = get(sequence);
         if (entry != null) {
-            timeoutQueue.remove(entry);
             entry.markResultPending(message);
             entry.reschedule(resultRetryDelayMs);
-            timeoutQueue.offer(entry);
+            offerGlobalTimeout(entry);
             if (redisKeyBySequence.containsKey(sequence)) {
                 persistRedisPending(sequence, entry.getMessage(), resultRetryDelayMs);
             }
@@ -226,44 +272,37 @@ public class SmppPendingSubmitManager {
                 sessionKey, reason, pendingMap.size());
     }
 
-    private void runTimeoutLoop() {
-        while (!stopped.get()) {
-            try {
-                PendingSubmitEntry entry = timeoutQueue.poll(1L, TimeUnit.SECONDS);
-                if (entry == null) {
-                    continue;
-                }
-                String sequence = entry.getSequence();
-                if (pendingMap.get(sequence) != entry) {
-                    continue;
-                }
-				if (entry.isResultPending()) {
-					retryPendingResult(sequence, entry);
-				} else if (isRedisBacked(sequence, entry)) {
-					if (!redisPendingExists(sequence)) {
-						if (pendingMap.remove(sequence, entry)) {
-							timeoutQueue.remove(entry);
-							redisKeyBySequence.remove(sequence);
-							releasePermit();
-						}
-						log.info(entry.getMessage(), "Redis-backed SMPP pending already handled by Redis timeout scanner. pendingKey={}",
-								entry.getPendingKey());
-					} else {
-						entry.reschedule(resultRetryDelayMs);
-						timeoutQueue.offer(entry);
-						log.debug(entry.getMessage(), "Redis-backed SMPP pending waits for Redis timeout scanner. pendingKey={}",
-								entry.getPendingKey());
-					}
-				} else {
-					timeout(sequence, entry);
-				}
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            } catch (Exception e) {
-                log.warn("SMPP pending submit timeout loop failed. sessionKey=" + sessionKey, e);
-            }
+    private void processTimeoutTask(PendingSubmitTimeoutTask task) {
+        PendingSubmitEntry entry = task.getEntry();
+        String sequence = task.getSequence();
+        if (stopped.get() || pendingMap.get(sequence) != entry) {
+            recordTimeoutSkipped();
+            return;
         }
+        if (entry.getNextCheckAt() != task.getDueAt()) {
+            recordTimeoutSkipped();
+            return;
+        }
+        recordTimeoutProcessed(entry.getMessage());
+		if (entry.isResultPending()) {
+			retryPendingResult(sequence, entry);
+		} else if (isRedisBacked(sequence, entry)) {
+			if (!redisPendingExists(sequence)) {
+				if (pendingMap.remove(sequence, entry)) {
+					redisKeyBySequence.remove(sequence);
+					releasePermit();
+				}
+				log.info(entry.getMessage(), "Redis-backed SMPP pending already handled by Redis timeout scanner. pendingKey={}",
+						entry.getPendingKey());
+			} else {
+				entry.reschedule(resultRetryDelayMs);
+				offerGlobalTimeout(entry);
+				log.debug(entry.getMessage(), "Redis-backed SMPP pending waits for Redis timeout scanner. pendingKey={}",
+						entry.getPendingKey());
+			}
+		} else {
+			timeout(sequence, entry);
+		}
     }
 
     private void retryPendingResult(String sequence, PendingSubmitEntry entry) {
@@ -274,7 +313,6 @@ public class SmppPendingSubmitManager {
 		}
 		if (isRedisBacked(sequence, entry) && !redisPendingExists(sequence)) {
 			if (pendingMap.remove(sequence, entry)) {
-				timeoutQueue.remove(entry);
 				redisKeyBySequence.remove(sequence);
 				releasePermit();
 			}
@@ -288,7 +326,7 @@ public class SmppPendingSubmitManager {
                     entry.getPendingKey());
         } else {
             entry.reschedule(resultRetryDelayMs);
-            timeoutQueue.offer(entry);
+            offerGlobalTimeout(entry);
             if (redisKeyBySequence.containsKey(sequence)) {
                 persistRedisPending(sequence, message, resultRetryDelayMs);
             }
@@ -312,7 +350,7 @@ public class SmppPendingSubmitManager {
             } else {
                 entry.markResultPending(message);
                 entry.reschedule(resultRetryDelayMs);
-                timeoutQueue.offer(entry);
+                offerGlobalTimeout(entry);
                 if (redisKeyBySequence.containsKey(sequence)) {
                     persistRedisPending(sequence, message, resultRetryDelayMs);
                 }
@@ -376,7 +414,6 @@ public class SmppPendingSubmitManager {
     private void clear() {
         int size = pendingMap.size();
         pendingMap.clear();
-        timeoutQueue.clear();
         redisKeyBySequence.clear();
         if (permits != null && size > 0) {
             permits.release(size);
@@ -386,6 +423,13 @@ public class SmppPendingSubmitManager {
     private void releasePermit() {
         if (permits != null) {
             permits.release();
+        }
+    }
+
+    private void offerGlobalTimeout(PendingSubmitEntry entry) {
+        if (entry != null) {
+            GLOBAL_TIMEOUT_QUEUE.offer(new PendingSubmitTimeoutTask(this, entry));
+            recordGlobalTimeoutGauges();
         }
     }
 
@@ -517,6 +561,103 @@ public class SmppPendingSubmitManager {
             // ignore and use default
         }
         return 0;
+    }
+
+    private static void startGlobalTimeoutWorkers() {
+        int desiredWorkerCount = Math.max(1, Math.min(intProperty("SmppPendingSubmitTimeoutWorkerCount", 2), 4));
+        while (true) {
+            int current = GLOBAL_TIMEOUT_WORKER_COUNT.get();
+            if (current >= desiredWorkerCount) {
+                return;
+            }
+            if (!GLOBAL_TIMEOUT_WORKER_COUNT.compareAndSet(current, current + 1)) {
+                continue;
+            }
+            Thread thread = new Thread(A2PThreadGroup.getInstance(), new Runnable() {
+                public void run() {
+                    runGlobalTimeoutLoop();
+                }
+            }, "SmppPendingSubmitTimeoutWorker-" + THREAD_ID.incrementAndGet());
+            thread.setDaemon(true);
+            thread.start();
+            log.info("Global SMPP pending submit timeout worker started. count={}, desired={}",
+                    GLOBAL_TIMEOUT_WORKER_COUNT.get(), desiredWorkerCount);
+            recordGlobalTimeoutGauges();
+        }
+    }
+
+    private static void runGlobalTimeoutLoop() {
+        while (true) {
+            try {
+                PendingSubmitTimeoutTask task = GLOBAL_TIMEOUT_QUEUE.take();
+                recordGlobalTimeoutGauges();
+                task.getManager().processTimeoutTask(task);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (Exception e) {
+                log.warn("Global SMPP pending submit timeout worker failed.", e);
+            }
+        }
+    }
+
+    private static void recordGlobalTimeoutGauges() {
+        MetricsCollector.getInstance().setGauge(MetricsNames.gauge(
+                "smpp.pending.submit", "timeout_queue_size"), GLOBAL_TIMEOUT_QUEUE.size());
+        MetricsCollector.getInstance().setGauge(MetricsNames.gauge(
+                "smpp.pending.submit", "timeout_worker_count"), GLOBAL_TIMEOUT_WORKER_COUNT.get());
+    }
+
+    private static void recordTimeoutProcessed(GmmsMessage message) {
+        MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(
+                "smpp.pending.submit", "timeout", message, MetricsNames.ACTION_TIMEOUT_PROCESSED));
+    }
+
+    private static void recordTimeoutSkipped() {
+        MetricsCollector.getInstance().incrementCounter(MetricsNames.build(
+                "smpp.pending.submit", "timeout", "submit", MetricsNames.ACTION_TIMEOUT_SKIPPED));
+    }
+
+    private static class PendingSubmitTimeoutTask implements Delayed {
+        private final SmppPendingSubmitManager manager;
+        private final PendingSubmitEntry entry;
+        private final String sequence;
+        private final long dueAt;
+
+        PendingSubmitTimeoutTask(SmppPendingSubmitManager manager, PendingSubmitEntry entry) {
+            this.manager = manager;
+            this.entry = entry;
+            this.sequence = entry == null ? null : entry.getSequence();
+            this.dueAt = entry == null ? System.currentTimeMillis() : entry.getNextCheckAt();
+        }
+
+        public long getDelay(TimeUnit unit) {
+            return unit.convert(dueAt - System.currentTimeMillis(), TimeUnit.MILLISECONDS);
+        }
+
+        public int compareTo(Delayed other) {
+            if (other == this) {
+                return 0;
+            }
+            long diff = getDelay(TimeUnit.MILLISECONDS) - other.getDelay(TimeUnit.MILLISECONDS);
+            return diff == 0 ? 0 : (diff < 0 ? -1 : 1);
+        }
+
+        SmppPendingSubmitManager getManager() {
+            return manager;
+        }
+
+        PendingSubmitEntry getEntry() {
+            return entry;
+        }
+
+        String getSequence() {
+            return sequence;
+        }
+
+        long getDueAt() {
+            return dueAt;
+        }
     }
 
     private static void startRedisScanner() {

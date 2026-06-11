@@ -383,6 +383,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			.synchronizedMap(new HashMap<String, String>());
 	private Map<String, ArrayList<ConnectionInfo>> serverInfoMap = Collections
 			.synchronizedMap(new HashMap<String, ArrayList<ConnectionInfo>>());
+	private final Object serverInfoMapLock = new Object();
 	private String a2pIP = null;
 
 	private Set<Integer> partitionInfo = new HashSet<Integer>();
@@ -3010,6 +3011,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			writerCust2File(cmString.toString(), ssids, GmmsUtility
 					.getInstance().getCmTempFile());
 		}
+		logServerInfoMapSummary("reload");
 	}
 
 	private void clearCustomerInfo(A2PCustomerConfig block) {
@@ -3027,6 +3029,11 @@ public class A2PCustomerManager implements LifecycleListener {
 			cust = this.ssid_cust_map.get(ssid);
 			// clear ConnectionMap
 			clearConnectionMap(cust);
+			int removedServerInfo = clearServerInfoMapBySsid(cust.getSSID());
+			if (removedServerInfo > 0) {
+				log.info("clearCustomerInfo removed stale serverInfoMap entries. ssid={}, removed={}",
+						cust.getSSID(), removedServerInfo);
+			}
 			// at first to clear customer connection
 			breakCustomerSessions(cust);
 			// clear maps
@@ -3340,6 +3347,7 @@ public class A2PCustomerManager implements LifecycleListener {
 		for (A2PCustomerConfig block : customerBlockMap.values()) {
 			initCustomerInfo(block, false);
 		}
+		logServerInfoMapSummary("startup");
 		
 		for (A2PCustomerConfig block : customerBlockMap.values()) {
 			initConnectedRelayInfo(block);
@@ -6813,16 +6821,20 @@ public class A2PCustomerManager implements LifecycleListener {
 
 	// only used by addServerInfoMap()
 	private void add2ServerInfoMap(ConnectionInfo connInfo, String key) {
-		ArrayList list = null;
-		if (serverInfoMap.get(key) != null) {
-			list = serverInfoMap.get(key);
-			list.add(connInfo);
-		} else {
-			list = new ArrayList();
+		if (key == null) {
+			return;
+		}
+		synchronized (serverInfoMapLock) {
+			ArrayList<ConnectionInfo> list = serverInfoMap.get(key);
+			if (list == null) {
+				list = new ArrayList<ConnectionInfo>();
+				serverInfoMap.put(key, list);
+			}
+			if (containsServerInfo(list, connInfo)) {
+				return;
+			}
 			list.add(connInfo);
 		}
-
-		serverInfoMap.put(key, list);
 	}
 
 	public void clearServerInfoMap(ConnectionInfo connInfo) {
@@ -6837,13 +6849,162 @@ public class A2PCustomerManager implements LifecycleListener {
 
 	// only used by clearServerInfoMap()
 	private void clear4ServerInfoMap(ConnectionInfo connInfo, String key) {
-		if (serverInfoMap.get(key) != null) {
+		if (key == null) {
+			return;
+		}
+		synchronized (serverInfoMapLock) {
 			ArrayList<ConnectionInfo> list = serverInfoMap.get(key);
 			if (list == null) {
 				return;
 			}
-			list.remove(connInfo);
+			Iterator<ConnectionInfo> it = list.iterator();
+			while (it.hasNext()) {
+				ConnectionInfo existing = it.next();
+				if (existing == connInfo || sameServerInfo(existing, connInfo)) {
+					it.remove();
+				}
+			}
+			if (list.isEmpty()) {
+				serverInfoMap.remove(key);
+			}
 		}
+	}
+
+	public int clearServerInfoMapBySsid(int ssid) {
+		int removed = 0;
+		synchronized (serverInfoMapLock) {
+			Iterator<Entry<String, ArrayList<ConnectionInfo>>> mapIt = serverInfoMap.entrySet().iterator();
+			while (mapIt.hasNext()) {
+				Entry<String, ArrayList<ConnectionInfo>> entry = mapIt.next();
+				ArrayList<ConnectionInfo> list = entry.getValue();
+				if (list == null) {
+					mapIt.remove();
+					continue;
+				}
+				Iterator<ConnectionInfo> listIt = list.iterator();
+				while (listIt.hasNext()) {
+					ConnectionInfo connInfo = listIt.next();
+					if (connInfo != null && connInfo.getSsid() == ssid) {
+						listIt.remove();
+						removed++;
+					}
+				}
+				if (list.isEmpty()) {
+					mapIt.remove();
+				}
+			}
+		}
+		return removed;
+	}
+
+	private boolean containsServerInfo(ArrayList<ConnectionInfo> list, ConnectionInfo connInfo) {
+		for (ConnectionInfo existing : list) {
+			if (existing == connInfo || sameServerInfo(existing, connInfo)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean sameServerInfo(ConnectionInfo left, ConnectionInfo right) {
+		if (left == null || right == null) {
+			return false;
+		}
+		return left.getSsid() == right.getSsid()
+				&& safeEquals(left.getConnectionName(), right.getConnectionName())
+				&& safeEquals(left.getUserName(), right.getUserName())
+				&& safeEquals(left.getPassword(), right.getPassword())
+				&& safeEquals(left.getURL(), right.getURL())
+				&& left.getBindMode() == right.getBindMode();
+	}
+
+	private boolean safeEquals(Object left, Object right) {
+		if (left == right) {
+			return true;
+		}
+		if (left == null || right == null) {
+			return false;
+		}
+		return left.equals(right);
+	}
+
+	private void logServerInfoMapSummary(String reason) {
+		int keyCount = 0;
+		int entryCount = 0;
+		int duplicateUserKeys = 0;
+		int duplicateUserWithoutUrl = 0;
+		int duplicateUserWithUrl = 0;
+		StringBuilder detail = new StringBuilder(512);
+		synchronized (serverInfoMapLock) {
+			keyCount = serverInfoMap.size();
+			for (Entry<String, ArrayList<ConnectionInfo>> entry : serverInfoMap.entrySet()) {
+				String key = entry.getKey();
+				ArrayList<ConnectionInfo> list = entry.getValue();
+				int size = list == null ? 0 : list.size();
+				entryCount += size;
+				if (key == null || key.indexOf('|') >= 0 || size <= 1) {
+					continue;
+				}
+				duplicateUserKeys++;
+				if (allConnectionsHaveUrl(list)) {
+					duplicateUserWithUrl++;
+					continue;
+				}
+				duplicateUserWithoutUrl++;
+				appendDuplicateServerInfoDetail(detail, key, list);
+			}
+		}
+		log.info("serverInfoMap summary. reason={}, keys={}, entries={}, duplicateUserKeys={}, duplicateUserWithUrl={}, duplicateUserWithoutUrl={}",
+				new Object[] {reason, keyCount, entryCount, duplicateUserKeys, duplicateUserWithUrl, duplicateUserWithoutUrl});
+		if (duplicateUserWithoutUrl > 0) {
+			log.warn("serverInfoMap has duplicate username entries without URL. reason={}, duplicateUserWithoutUrl={}, samples={}",
+					new Object[] {reason, duplicateUserWithoutUrl, detail.toString()});
+		}
+	}
+
+	private boolean allConnectionsHaveUrl(ArrayList<ConnectionInfo> list) {
+		if (list == null || list.isEmpty()) {
+			return true;
+		}
+		for (ConnectionInfo connInfo : list) {
+			if (connInfo == null || isBlank(connInfo.getURL())) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private void appendDuplicateServerInfoDetail(StringBuilder detail, String username, ArrayList<ConnectionInfo> list) {
+		if (detail.length() > 1024) {
+			return;
+		}
+		if (detail.length() > 0) {
+			detail.append(";");
+		}
+		detail.append("user=").append(username).append(",candidates=[");
+		int count = 0;
+		for (ConnectionInfo connInfo : list) {
+			if (connInfo == null) {
+				continue;
+			}
+			if (count > 0) {
+				detail.append("|");
+			}
+			detail.append("{ssid=").append(connInfo.getSsid())
+					.append(",conn=").append(connInfo.getConnectionName())
+					.append(",url=").append(connInfo.getURL())
+					.append(",bind=").append(connInfo.getBindMode())
+					.append("}");
+			count++;
+			if (count >= 5) {
+				break;
+			}
+		}
+		detail.append("]");
+	}
+
+	private boolean isBlank(String value) {
+		return value == null || value.trim().length() == 0;
 	}
 
 	// Need implements in cm.cfg, currently not implement it.
@@ -7135,19 +7296,41 @@ public class A2PCustomerManager implements LifecycleListener {
 
 	public ArrayList getConnectionInfobyServerInfo(String username,
 			String password, String ip) {
-		ArrayList resultList = new ArrayList();
 		if (username == null) {
 			return null;
 		}
 
+		ArrayList<ConnectionInfo> resultList = null;
 		if (password != null) {
 			String temp = username + "|" + password;
-			resultList = serverInfoMap.get(temp);
+			resultList = snapshotServerInfoList(temp);
 		} else {
-			resultList = serverInfoMap.get(username);
+			resultList = snapshotServerInfoList(username);
 		}
 
 		return checkIPAddress(resultList, ip);
+	}
+
+	public int getServerInfoMapSize(String username, String password) {
+		if (username == null) {
+			return 0;
+		}
+		String key = password == null ? username : username + "|" + password;
+		ArrayList<ConnectionInfo> snapshot = snapshotServerInfoList(key);
+		return snapshot == null ? 0 : snapshot.size();
+	}
+
+	private ArrayList<ConnectionInfo> snapshotServerInfoList(String key) {
+		if (key == null) {
+			return null;
+		}
+		synchronized (serverInfoMapLock) {
+			ArrayList<ConnectionInfo> list = serverInfoMap.get(key);
+			if (list == null || list.isEmpty()) {
+				return null;
+			}
+			return new ArrayList<ConnectionInfo>(list);
+		}
 	}
 
 	// check the IP address of incoming connections.
@@ -7156,7 +7339,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			return null;
 		}
 		if ((list != null && list.size() == 1) || (ip == null)) {
-			return list;
+			return new ArrayList(list);
 		}
 		ArrayList connList = new ArrayList();
 		for (ConnectionInfo connInfo : list) {

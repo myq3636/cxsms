@@ -1585,21 +1585,43 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 				if(isRedisEnable){
 					String object = redis.getString(finalMsg.getOutMsgID());
 					if(object != null){
+						log.debug(finalMsg,
+								"TMP-DRLOOKUP inbound DR redis hit. msgId={}, in={}, out={}, rsid={}, status={}/{}, sender={}, recipient={}",
+								finalMsg.getMsgID(), finalMsg.getInMsgID(), finalMsg.getOutMsgID(),
+								finalMsg.getRSsID(), finalMsg.getStatusCode(), finalMsg.getStatusText(),
+								finalMsg.getSenderAddress(), finalMsg.getRecipientAddress());
 						message = SerializableHandler.convertRedisMssage2GmmsMessage(object);
 						if(message!=null){
+							log.debug(finalMsg,
+									"TMP-DRLOOKUP inbound DR original decoded. originalMsgId={}, originalIn={}, originalOut={}, originalOs={}, originalRs={}, originalDateIn={}, originalExpire={}",
+									message.getMsgID(), message.getInMsgID(), message.getOutMsgID(),
+									message.getOSsID(), message.getRSsID(), message.getDateIn(),
+									message.getExpiryDate());
 							if (GmmsStatus.ACCEPT.getCode() ==finalMsg.getStatus().getCode()) {
 								//didn't do anything							
 							}else {
 								String dateKey  = gmmsUtility.getRedisDateIn(message);
 								if(dateKey!=null){
+									log.debug(finalMsg,
+											"TMP-DRLOOKUP inbound DR delete redis key with hash. out={}, hashKey={}",
+											finalMsg.getOutMsgID(), dateKey);
 									redis.delPipeline(finalMsg.getOutMsgID(),dateKey);
 								}else{
+									log.debug(finalMsg,
+											"TMP-DRLOOKUP inbound DR delete redis key. out={}",
+											finalMsg.getOutMsgID());
 									redis.del(finalMsg.getOutMsgID());
 								}
 							}
 							
 						}			
 					}else{
+						log.warn(finalMsg,
+								"TMP-DRLOOKUP inbound DR redis miss. msgId={}, in={}, out={}, os={}, rs={}, status={}/{}, sender={}, recipient={}, text={}",
+								finalMsg.getMsgID(), finalMsg.getInMsgID(), finalMsg.getOutMsgID(),
+								finalMsg.getOSsID(), finalMsg.getRSsID(), finalMsg.getStatusCode(),
+								finalMsg.getStatusText(), finalMsg.getSenderAddress(),
+								finalMsg.getRecipientAddress(), finalMsg.getTextContent());
 						if(log.isInfoEnabled()){
 							log.info("Can not find the message in redis, and out msg id is {}"
 									, finalMsg.getOutMsgID());	

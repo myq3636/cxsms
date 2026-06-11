@@ -379,6 +379,20 @@ public class SerializableHandler {
 					    				msg.setUdh(SerializableHandler.hexStringToBytes(parameters[52]));
 									}
 				    				break;
+						    	case 53:
+						    		msg.setRetriedNumber(Integer.parseInt(parameters[53]));
+									break;
+						    	case 54:
+					    			if (StringUtility.stringIsNotEmpty(parameters[54])) {
+					    				msg.setNextRetryTime(dateFormat.parse(parameters[54]));
+									}
+									break;
+						    	case 55:
+						    		msg.setOriginalQueue(parameters[55]);
+									break;
+						    	case 56:
+						    		msg.setRowId(Integer.parseInt(parameters[56]));
+									break;
 								default:
 									if(log.isInfoEnabled()){
 										log.info("Unknown parameter in Redis String, and Redis String is {}", message);
@@ -861,6 +875,14 @@ public class SerializableHandler {
 					} else {
 						sb.append(separator);
 					}
+					sb.append(separator).append(msg.getRetriedNumber());
+					if(msg.getNextRetryTime()!=null){
+						sb.append(separator).append(dateFormat.format(msg.getNextRetryTime()));
+					}else{
+						sb.append(separator);
+					}
+					sb.append(separator).append(msg.getOriginalQueue());
+					sb.append(separator).append(msg.getRowId());
 					
 				} catch (Exception e) {
 					if(log.isInfoEnabled()){

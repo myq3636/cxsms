@@ -160,7 +160,17 @@ public abstract class AbstractCommonSession extends AbstractSession {
 		if (list != null && list.size() > 0) {
 			for (Object obj : list) {
 				try {
-					receiverThreadPool.execute(new ReceiverThread(obj));
+					SmppServerInboundQueueManager.SubmitResult submitResult =
+							SmppServerInboundQueueManager.getInstance().submit(this, obj);
+					if (submitResult != SmppServerInboundQueueManager.SubmitResult.DISABLED) {
+						lastActivity = System.currentTimeMillis();
+						continue;
+					}
+					if (receiverThreadPool != null) {
+						receiverThreadPool.execute(new ReceiverThread(obj));
+					} else {
+						receive(obj);
+					}
 				} catch (Exception e) {
 					// if thread pool has been shutdown, 
 					// will throw exception due to KingCallerRunsPolicy
@@ -221,6 +231,13 @@ public abstract class AbstractCommonSession extends AbstractSession {
 
 	@Override
 	public void initReceivers() {
+		if (isServer && SmppServerInboundQueueManager.getInstance().isEnabled()) {
+			if (log.isInfoEnabled()) {
+				log.info("Skip per-session SMPP server receiver pool because shared inbound queue is enabled. session={}", sessionName);
+			}
+			receiverThreadPool = null;
+			return;
+		}
 		if (connectionInfo != null) {
 			ThreadPoolProfile profile = new ThreadPoolProfileBuilder("CustReceiver_" + connectionInfo.getSsid() + "_" + sessionName).poolSize(connectionInfo.getMinReceiverNum())
 					.maxPoolSize(connectionInfo.getMaxReceiverNum()).build();
@@ -234,6 +251,13 @@ public abstract class AbstractCommonSession extends AbstractSession {
 	
 	@Override
 	public void updateReceivers() {
+		if (isServer && SmppServerInboundQueueManager.getInstance().isEnabled()) {
+			if (receiverThreadPool != null) {
+				executorServiceManager.shutdown(receiverThreadPool);
+				receiverThreadPool = null;
+			}
+			return;
+		}
 		if (connectionInfo != null) {
 			ThreadPoolProfile profile = new ThreadPoolProfileBuilder("CustReceiver_" + connectionInfo.getSsid()).poolSize(connectionInfo.getMinReceiverNum())
 					.maxPoolSize(connectionInfo.getMaxReceiverNum()).build();

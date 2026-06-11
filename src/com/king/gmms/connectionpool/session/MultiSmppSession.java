@@ -62,6 +62,7 @@ import com.king.gmms.util.SystemConstants;
 import com.king.gmms.smpp.pending.PendingDrTimeoutHandler;
 import com.king.gmms.smpp.pending.PendingSubmitEntry;
 import com.king.gmms.smpp.pending.SmppPendingSubmitManager;
+import com.king.gmms.smpp.pending.SmppPendingSubmitManager.PutResult;
 import com.king.gmms.smpp.pending.SmppPendingDrManager;
 import com.king.gmms.smpp.pending.PendingSubmitTimeoutHandler;
 import com.king.message.gmms.ExceptionMessageManager;
@@ -109,18 +110,19 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
     public MultiSmppSession(Socket socket) {
         super();
         
-        // create a single thread pool first, then update after binded
+        isServer = true;
+        // create a single thread pool first, then update after binded, or use
+        // the shared server inbound queue when enabled.
         super.initReceivers();
         
-        isServer = true;
         smpp = new Smpp();
         processor = new MultiSmppPduProcessor();
         transaction = new TransactionURI();
         try {
             if (socket != null) {
+                ip = socket.getInetAddress().getHostAddress();
                 createConnection(socket);
             }
-            ip = socket.getInetAddress().getHostAddress();
         }
         catch (Exception ex) {
             log.error(ex, ex);
@@ -608,15 +610,12 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                     MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
                             MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_ACCEPTED_TO_REDIS));
                         // V4.0 异步化：入队成功后立即向 ESME 确认
-                        Response response = request.getResponse();
                         try {
-                            if (response instanceof SubmitSMResp) {
-                                ((SubmitSMResp) response).setMessageId(msg.getMsgID());
-                            }
+                            Response response = smpp.createSmppSubmitSMResp(msg, customerInfo);
                             response.setCommandStatus(com.king.gmms.protocol.smpp.util.Data.ESME_ROK);
                             connection.send(response.getData().getBuffer());
                             if(log.isInfoEnabled()){
-                                log.info(msg, "SUBMIT_SM accepted asynchronously, MsgID: {}", msg.getMsgID());
+                                log.info(msg, "SUBMIT_SM accepted asynchronously, InMsgID: {}", msg.getInMsgID());
                             }
                         } catch (Exception e) {
                             log.warn(msg, "Fail to send success response");
@@ -624,12 +623,6 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                     }
                 }
                 else if (commandId == Data.DELIVER_SM) {
-                	if(checkThrottlingControl(request)){
-                		if(log.isInfoEnabled()){
-                			log.info("Request PDU is blocked by throttling control, and sequence number is {}", request.getSequenceNumber());
-                		}
-                        return;
-                	}
                 	msg = processor.handleDeliverSM(request);
 
                     tagServerInboundContext(msg);
@@ -643,6 +636,13 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                             MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_RECEIVED));
                 	
                 	String msgType = msg.getMessageType();
+                    if (checkThrottlingControl(request, msg)) {
+                        if(log.isInfoEnabled()){
+                            log.info(msg, "Request PDU is blocked by throttling control, commandId={}, messageType={}, sequence number is {}",
+                                    commandId, msgType, request.getSequenceNumber());
+                        }
+                        return;
+                    }
 
                 	if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(msgType) ||
                             GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(msgType)) {
@@ -885,10 +885,21 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         }
         catch (Exception e) {
             log.warn(
-                "when processing throttling control with SubmitSM occur error",
+                "when processing throttling control with SMPP request occur error",
                 e);
         }
         return false;
+    }
+
+    private boolean checkThrottlingControl(Request request, GmmsMessage msg) {
+        if (isDeliveryReportMessage(msg)) {
+            return false;
+        }
+        return checkThrottlingControl(request);
+    }
+
+    private boolean isDeliveryReportMessage(GmmsMessage msg) {
+        return msg != null && GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(msg.getMessageType());
     }
 
     private void serverRequest(Request request) {
@@ -961,8 +972,8 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         int status = smpp.checkBindRequest( (BindRequest) request);
         if (status != Data.ESME_ROK) {
             // if have invalid fields
-        	log.warn("SystemId or Password is absent in BindRequest,Sequence={}",
-                        request.getSequenceNumber());
+            log.warn("SMPP server bind request invalid fields. sysid={}, ip={}, sequence={}, status={}",
+                    new Object[] {sysid, ip, request.getSequenceNumber(), status});
             bindResponse = (BindResponse) ( (BindRequest) request).getResponse();
             bindResponse.setCommandStatus(status);
             try {
@@ -980,13 +991,14 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             String passwd = ( (BindRequest) request).getPassword();
             //add by bruce for check version
 
+            int rawInfoSize = customerInfoManager.getServerInfoMapSize(sysid, null);
             ArrayList infos = customerInfoManager.getConnectionInfobyServerInfo(
                 sysid, null, ip);
             if (infos != null && infos.size() > 0) {
-        		if(log.isDebugEnabled()){
-        			log.debug("Get Connection info list and list size is {}" ,
-                            infos.size());
-        		}
+                if(log.isDebugEnabled()){
+                    log.debug("SMPP server bind lookup matched. sysid={}, ip={}, rawInfoSize={}, filteredInfoSize={}, sequence={}",
+                            new Object[] {sysid, ip, rawInfoSize, infos.size(), request.getSequenceNumber()});
+                }
                 try {
                     int i = 0;
                     for (; i < infos.size(); i++) {
@@ -995,24 +1007,30 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                         cusInfo = (A2PMultiConnectionInfo) customerInfoManager.
                             getCustomerBySSID(connInfo.getSsid());
                         if (cusInfo == null){
+                            log.warn("SMPP server bind lookup found connection but customer missing. sysid={}, ip={}, ssid={}, connName={}, sequence={}",
+                                    new Object[] {sysid, ip, connInfo.getSsid(), connInfo.getConnectionName(), request.getSequenceNumber()});
                             continue;
                         }
                         //if the customerInfo is SingleConnection then do not check password,version and conninfo
                         if (!connInfo.getPassword().equals(passwd)) {
                             bindResponse.setCommandStatus(Data.ESME_RINVPASWD);
+                            log.warn("SMPP server bind rejected by password mismatch. sysid={}, ip={}, ssid={}, connName={}, sequence={}",
+                                    new Object[] {sysid, ip, connInfo.getSsid(), connInfo.getConnectionName(), request.getSequenceNumber()});
                             continue;
                         }
 
                         if (!checkVersion(btVer, connInfo)) {
                             bindResponse.setCommandStatus(Data.ESME_RBINDFAIL);
-                            log.warn("The Bind({}) version is not consistent with customer configuration, and Bind unsuccessfully!", sysid);
+                            log.warn("SMPP server bind rejected by version mismatch. sysid={}, ip={}, ssid={}, connName={}, bindVersion={}, sequence={}",
+                                    new Object[] {sysid, ip, connInfo.getSsid(), connInfo.getConnectionName(), btVer, request.getSequenceNumber()});
                             continue;
                         }
 
                         if (cusInfo.getConnectionType() != 1) {
                             if (!checkConnInfo(connInfo)) {
                                 bindResponse.setCommandStatus(Data.ESME_RBINDFAIL);
-                                log.warn("The Bind({}) mode is not consistent with customer configuration, and Bind unsuccessfully!", sysid);
+                                log.warn("SMPP server bind rejected by bind mode mismatch. sysid={}, ip={}, ssid={}, connName={}, bindOption={}, configuredBindMode={}, sequence={}",
+                                        new Object[] {sysid, ip, connInfo.getSsid(), connInfo.getConnectionName(), bindOption, connInfo.getBindMode(), request.getSequenceNumber()});
                                 continue;
                             }
                         }
@@ -1034,20 +1052,15 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                                 name);
                         }
                         else {
-                            log.warn(
-                                "Do not get the node name by " + connInfo.
-                                getConnectionName() +
-                                ", and Bind unsuccessfully!");
+                            log.warn("SMPP server bind rejected because node name is missing. sysid={}, ip={}, ssid={}, connName={}, sequence={}",
+                                    new Object[] {sysid, ip, connInfo.getSsid(), connInfo.getConnectionName(), request.getSequenceNumber()});
                             bindResponse.setCommandStatus(Data.ESME_RBINDFAIL);
                             break;
 
                         }
                         if (connectionManager == null) {
-                            log.warn(
-                                "Do not get the connection manager by " +
-                                connInfo.
-                                getSsid() + "_" + name +
-                                ", and Bind unsuccessfully!");
+                            log.warn("SMPP server bind rejected because connection manager is missing. sysid={}, ip={}, ssid={}, managerKey={}, connName={}, sequence={}",
+                                    new Object[] {sysid, ip, connInfo.getSsid(), connInfo.getSsid() + "_" + name, connInfo.getConnectionName(), request.getSequenceNumber()});
                             bindResponse.setCommandStatus(Data.ESME_RBINDFAIL);
                             break;
                         }
@@ -1082,8 +1095,9 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                             getConnectionName(), this)) {
                             bindResponse.setCommandStatus(Data.ESME_RBINDFAIL);
                             setStatus(ConnectionStatus.DISCONNECT);
-                            log.warn("Server refuses the connection[{}] and now there are {} sessions in connection pool!",this.connectionInfo.
-                                    getConnectionName(), connectionManager.getSessionNum());
+                            log.warn("SMPP server bind rejected because connection pool refused session. sysid={}, ip={}, ssid={}, connName={}, currentSessions={}, sequence={}",
+                                    new Object[] {sysid, ip, this.connectionInfo.getSsid(), this.connectionInfo.getConnectionName(),
+                                            connectionManager.getSessionNum(), request.getSequenceNumber()});
                             break;
                         }
                         else {
@@ -1127,6 +1141,8 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             }//end of if has conninfo
             else {
                 bindResponse.setCommandStatus(Data.ESME_RINVSYSID);
+                log.warn("SMPP server bind rejected because serverInfoMap lookup is empty. sysid={}, ip={}, rawInfoSize={}, filteredInfoSize=0, sequence={}",
+                        new Object[] {sysid, ip, rawInfoSize, request.getSequenceNumber()});
             }
         }//end of else
 
@@ -1139,6 +1155,11 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         }
         catch (WrongLengthOfStringException e) {
             log.warn("King System ID Length is invalid.", e);
+        }
+        if (!result) {
+            int commandStatus = bindResponse == null ? -1 : bindResponse.getCommandStatus();
+            log.warn("SMPP server bind failed. sysid={}, ip={}, sequence={}, status={}, bindOption={}, session={}",
+                    new Object[] {sysid, ip, request.getSequenceNumber(), commandStatus, bindOption, getSessionName()});
         }
         this.respond4Bind(bindResponse);
         return result;
@@ -1268,12 +1289,6 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             handleEnquire_Link(request);
         }
         else if (commandId == Data.DELIVER_SM) {
-        	if(checkThrottlingControl(request)){
-        		if(log.isInfoEnabled()){
-					log.info("Request PDU is blocked by throttling control, and sequence number is {}", request.getSequenceNumber());
-        		}
-        		return;
-        	}
         	if(log.isTraceEnabled()){
         		log.trace("processClientRequest request:{};transaction={}",request.debugString(),transaction);
         	}
@@ -1626,6 +1641,39 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
 
     }
 
+    public SmppDrSubmitResult submitServerDr(GmmsMessage msg) throws IOException {
+        if (!this.isServer || msg == null) {
+            return SmppDrSubmitResult.FAILED;
+        }
+        String msgType = msg.getMessageType();
+        if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(msgType) ||
+            GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(msgType)) {
+            return serverSubmit(msg) ? SmppDrSubmitResult.SENT : SmppDrSubmitResult.FAILED;
+        }
+        msg.setProtocolVersion(Integer.toString(smppVersion.getVersionID()));
+        return sendDeliveryDRResult(msg, smppVersion);
+    }
+
+    public boolean hasServerDrWindow() {
+        return pendingDrManager == null || pendingDrManager.hasCapacity();
+    }
+
+    public SmppSubmitResult submitClientOutbound(GmmsMessage msg) throws IOException {
+        if (this.isServer || msg == null) {
+            return SmppSubmitResult.FAILED;
+        }
+        String messageType = msg.getMessageType();
+        if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(messageType) ||
+            GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(messageType)) {
+            return clientSendSubmitSMWindowAware(msg);
+        }
+        return clientSubmit(msg) ? SmppSubmitResult.SENT : SmppSubmitResult.FAILED;
+    }
+
+    public boolean hasClientSubmitWindow() {
+        return pendingSubmitManager == null || pendingSubmitManager.hasCapacity();
+    }
+
     private boolean clientSubmit(GmmsMessage msg)throws IOException{
         if (msg == null) { //message is null
             return false;
@@ -1780,6 +1828,79 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         return result;
     }
 
+    private SmppSubmitResult clientSendSubmitSMWindowAware(GmmsMessage msg)throws IOException{
+
+        boolean result = false;
+        String key = null;
+        try {
+            SubmitSM request = smpp.createSmppSubmitSM(msg, this.customerInfo);
+
+            if (request == null) {
+                return SmppSubmitResult.FAILED;
+            }
+
+            if (gmmsUtility.getCustomerManager().getTransparency(msg.getRSsID()) > 0) {
+                smpp.addMncMccForRequest(msg, request);
+            }
+
+            request.assignSequenceNumber();
+
+            key = Integer.toString(request.getSequenceNumber());
+            msg.setOutTransID(key);
+            if (pendingSubmitManager == null) {
+                pendingSubmitManager = new SmppPendingSubmitManager(buildPendingSubmitSessionKey(),
+                        customerInfo.getWindowSize(), customerInfo.getBufferTimeout(), this);
+            }
+            PutResult putResult = pendingSubmitManager.tryPut(key, msg);
+            if (putResult == PutResult.WINDOW_FULL) {
+                if(log.isDebugEnabled()){
+                    log.debug(msg, "SMPP client submit window full. session={}, sequence={}", sessionName, key);
+                }
+                return SmppSubmitResult.WINDOW_FULL;
+            }
+            if (putResult != PutResult.STORED) {
+                return SmppSubmitResult.FAILED;
+            }
+
+            if(isKeepRunning()){
+                connection.send(request.getData().getBuffer());
+                pduLogger.logSent(isServer ? "server" : "client", sessionName, request);
+                msg.setOutTransID(key);
+                result = true;
+                return SmppSubmitResult.SENT;
+
+            }else{
+                log.warn(msg,"The session is broken, send unsuccessfully!");
+                return SmppSubmitResult.FAILED;
+            }
+
+        }
+        catch (IOException e) {
+            log.error(msg, e, e);
+            if (pendingSubmitManager != null) {
+                pendingSubmitManager.remove(key);
+            }
+            stop();
+            throw e;
+        }
+        catch (Exception e) {
+            log.error(msg, e, e);
+            return SmppSubmitResult.FAILED;
+
+        }finally{
+            if(!result){
+                try {
+                    if (pendingSubmitManager != null && key != null) {
+                        pendingSubmitManager.remove(key);
+                    }
+                }
+                catch (Exception ex) {
+
+                }
+            }
+        }
+    }
+
     /**
      * send submit response
      * @param respMsg
@@ -1928,12 +2049,17 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
     }
 
     private boolean sendDeliveryDR(GmmsMessage deliverMsg, SMPPVersion ver) {
+        return sendDeliveryDRResult(deliverMsg, ver) == SmppDrSubmitResult.SENT;
+    }
+
+    private SmppDrSubmitResult sendDeliveryDRResult(GmmsMessage deliverMsg, SMPPVersion ver) {
         boolean result = false;
+        boolean pendingStored = false;
         String key = null;
         deliverMsg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
         DeliverSM delivSm = smpp.createSmppDeliverSM4dr(deliverMsg,this.customerInfo);
         if(delivSm == null){
-        	return false;
+            return SmppDrSubmitResult.FAILED;
         }
         try {
         	if (gmmsUtility.getCustomerManager().getTransparency(deliverMsg.getOSsID()) > 0) {
@@ -1943,14 +2069,21 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             delivSm.assignSequenceNumber();
             key = Integer.toString(delivSm.getSequenceNumber());
             deliverMsg.setInTransID(key);
-            boolean isPutBuffer = false;
-            while (isKeepRunning() && !isPutBuffer) {
-                if (pendingDrManager == null) {
-                    pendingDrManager = new SmppPendingDrManager(buildPendingDrSessionKey(),
-                            customerInfo.getWindowSize(), customerInfo.getBufferTimeout(), this);
-                }
-                isPutBuffer = pendingDrManager.put(key, deliverMsg);
+            if (pendingDrManager == null) {
+                pendingDrManager = new SmppPendingDrManager(buildPendingDrSessionKey(),
+                        customerInfo.getWindowSize(), customerInfo.getBufferTimeout(), this);
             }
+            SmppPendingDrManager.PutResult putResult = pendingDrManager.tryPut(key, deliverMsg);
+            if (putResult == SmppPendingDrManager.PutResult.WINDOW_FULL) {
+                if(log.isDebugEnabled()){
+                    log.debug(deliverMsg,"SMPP server DR window full. session={}, sequence={}", sessionName, key);
+                }
+                return SmppDrSubmitResult.WINDOW_FULL;
+            }
+            if (putResult != SmppPendingDrManager.PutResult.STORED) {
+                return SmppDrSubmitResult.FAILED;
+            }
+            pendingStored = true;
             if(log.isDebugEnabled()){
                 log.debug(deliverMsg,"pendingDrManager put deliverMsg with SequenceNumber = {}", key);
             }
@@ -1961,30 +2094,27 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 if(log.isInfoEnabled()){
 					log.info(deliverMsg,"send dr, inTransID {}", key);
                 }
+                deliverMsg.setActionCode( -1);
                 result = true;
+                return SmppDrSubmitResult.SENT;
             }
-            else {
-                log.warn(deliverMsg,"The session is broken, send unsuccessfully!");
-                result = false;
-            }
-            // For all the messages will be inserted into messagesore,
-            // we will remove the 00 if it is existed.
-            deliverMsg.setActionCode( -1);
+            log.warn(deliverMsg,"The session is broken, send unsuccessfully!");
+            return SmppDrSubmitResult.FAILED;
         }
         catch (IOException ex) {
             log.error(deliverMsg, ex, ex);
-            result = false;
             stop();
+            return SmppDrSubmitResult.FAILED;
         }
         catch (Exception ex) {
             log.error(deliverMsg, ex, ex);
-            result = false;
             stop();
+            return SmppDrSubmitResult.FAILED;
         }
         finally {
             if (!result) {
                 try {
-                    if (pendingDrManager != null) {
+                    if (pendingStored && pendingDrManager != null && key != null) {
                         pendingDrManager.remove(key);
                     }
                 }
@@ -1994,7 +2124,6 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             }
 
         }
-        return result;
     }
 
 

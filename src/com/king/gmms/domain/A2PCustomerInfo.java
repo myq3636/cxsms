@@ -48,6 +48,7 @@ public abstract class A2PCustomerInfo {
 	protected String shortName = null;
 
 	protected String serverID = null;
+	protected String smppServerModules = null;
 	protected String a2pPlayerType = null;
 	protected String receiverQueue;
 	protected String chlQueue = null;
@@ -805,6 +806,10 @@ public abstract class A2PCustomerInfo {
 		return serverID;
 	}
 
+	public String getSmppServerModules() {
+		return smppServerModules;
+	}
+
 	public Hashtable getShortCodes() {
 		return shortCodes;
 	}
@@ -974,6 +979,10 @@ public abstract class A2PCustomerInfo {
 
 	public void setServerID(String serverID) {
 		this.serverID = serverID;
+	}
+
+	public void setSmppServerModules(String smppServerModules) {
+		this.smppServerModules = smppServerModules;
 	}
 
 	public void setShortCodes(Hashtable shortCodes) {
@@ -1347,6 +1356,7 @@ public abstract class A2PCustomerInfo {
 		senderId = cfg.getString("SenderID");
 		// added for Spring by Will--end
 		serverID = cfg.getString("ServerID");
+		smppServerModules = cfg.getString("SmppServerModules");
 		a2pPlayerType = cfg.getString("A2PPlayerType");
 		receiverQueue = cfg.getString("ReceiverQueue");
 		chlQueue = cfg.getString("ChlQueue");
@@ -2863,6 +2873,7 @@ public abstract class A2PCustomerInfo {
 		.append(prefix).append("SenderRiseRatio:").append(this.senderRiseRatio)
 		.append(prefix).append("SenderThroughput:").append(this.senderThroughput)
 		.append(prefix).append("ServerID:").append(this.serverID)
+		.append(prefix).append("SmppServerModules:").append(this.smppServerModules)
 		.append(prefix).append("Service:").append(this.service)
 		.append(prefix).append("ServiceType:").append(this.serviceType)
 		.append(prefix).append("ShortCodeIfExpand:").append(this.shortCodeIfExpand)

@@ -39,6 +39,7 @@ public class MTStreamConsumer {
     private volatile long lastPoolConfigRefreshMs = 0L;
     
     private ExecutorService dispatcherThread;
+    private ExecutorService recoveryThread;
     private ThreadPoolExecutor workerPool;
     private final ConcurrentHashMap<String, Boolean> processingMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> pendingDoorbellMap = new ConcurrentHashMap<>();
@@ -66,6 +67,14 @@ public class MTStreamConsumer {
 
         dispatcherThread = Executors.newSingleThreadExecutor();
         dispatcherThread.execute(this::dispatcherLoop);
+        recoveryThread = Executors.newSingleThreadExecutor();
+        recoveryThread.execute(new RedisStreamAutoClaimRunner("Core MT-router",
+                StreamQueueManager.STR_MT_PENDING_PREFIX + "*", groupName, consumerName, true, queueManager,
+                new RedisStreamAutoClaimRunner.MessageProcessor() {
+                    public void process(String streamKey, GmmsMessage msg) {
+                        processMessage(streamKey, msg);
+                    }
+                }));
 
         logger.info("Core MT-router consumer started. Consumer: {}, Shards: {}, Config: {}",
             consumerName, GmmsUtility.getInstance().getMyShards(), consumerConfig.summary());
@@ -74,6 +83,7 @@ public class MTStreamConsumer {
     public synchronized void stop() {
         running = false;
         if (dispatcherThread != null) dispatcherThread.shutdownNow();
+        if (recoveryThread != null) recoveryThread.shutdownNow();
         if (workerPool != null) workerPool.shutdown();
         logger.info("Core MT-router consumer stopped. Consumer: {}", consumerName);
     }
@@ -114,8 +124,6 @@ public class MTStreamConsumer {
                 queueManager.createGroup(streamKey, groupName, true);
 
                 while (running) {
-                    processAutoClaim(streamKey);
-
                     Map<String, StreamEntryID> query = new HashMap<>();
                     query.put(streamKey, StreamEntryID.UNRECEIVED_ENTRY);
                     
@@ -148,17 +156,6 @@ public class MTStreamConsumer {
         }
         lastPoolConfigRefreshMs = now;
         consumerConfig.applyWorkerPool(workerPool);
-    }
-
-    private void processAutoClaim(String streamKey) {
-        List<GmmsMessage> orphans = queueManager.autoClaimBatch(streamKey, groupName, consumerName,
-                queueManager.getAutoClaimIdleMs(), queueManager.getAutoClaimBatchSize(), true);
-        if (orphans == null || orphans.isEmpty()) {
-            return;
-        }
-        for (GmmsMessage msg : orphans) {
-            processMessage(streamKey, msg);
-        }
     }
 
     private void processMessage(String streamKey, GmmsMessage msg) {

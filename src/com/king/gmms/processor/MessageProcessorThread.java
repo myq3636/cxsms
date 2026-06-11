@@ -899,12 +899,17 @@ public class MessageProcessorThread extends RunnableMsgTask{
 
 			// V4.1 High-Reliability Decentralized DR Push
 			boolean success = false;
+			String streamKey = null;
+			com.king.gmms.messagequeue.StreamQueueManager streamQueueManager =
+					com.king.gmms.messagequeue.StreamQueueManager.getInstance();
 			if (server != null && "HTTP".equalsIgnoreCase(server.getProtocol())) {
 				message.setDeliveryChannel(moduleName);
-				success = com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceHttpDeliveryReport(message);
+				success = streamQueueManager.produceHttpDeliveryReport(message);
 			} else {
 				// Old logic for Carrier DR ingestion or Sticky routing
-				success = com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceDeliveryReport(message);
+				streamKey = streamQueueManager.getDrPendingQueue(message);
+				preserveDrTargetModule(message, streamKey);
+				success = streamQueueManager.produceDeliveryReportToQueue(message, streamKey);
 			}
 
 			if (!success) {
@@ -920,18 +925,15 @@ public class MessageProcessorThread extends RunnableMsgTask{
 				MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
 						MetricsNames.STAGE_OUT_DR, message, false, MetricsNames.ACTION_ROUTED_TO_REDIS));
 				if(log.isDebugEnabled()){
-					log.debug(message, "Success to produce DR message to Redis Stream");
+					log.debug(message, "Success to produce DR message to Redis Stream. stream={}", streamKey);
 				}
-			}
-		    if(log.isInfoEnabled()){
-						log.info(message, "Send {} to {}",message.getMessageType(), moduleName);
-			} else {
 				if(log.isInfoEnabled()){
-					log.info(message, "Can not find sender queue");
+			    	if (streamKey != null) {
+						log.info(message, "Send {} to stream={}",message.getMessageType(), streamKey);
+			    	} else {
+						log.info(message, "Send {} to {}",message.getMessageType(), moduleName);
+			    	}
 				}
-				message.setStatusCode(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT
-						.getCode());
-				dbHandler.putMsg(message);
 			}
 		} else if (ctm.isA2P(oA2P) || ctm.isPartition(oA2P)) {
 			ModuleManager moduleManager = ModuleManager.getInstance();
@@ -962,6 +964,55 @@ public class MessageProcessorThread extends RunnableMsgTask{
 				}
 			}
 		}
+	}
+
+	private void preserveDrTargetModule(GmmsMessage message, String streamKey) {
+		if (message == null || streamKey == null) {
+			return;
+		}
+		String targetModule = extractDrTargetModule(streamKey);
+		if (targetModule == null || targetModule.trim().length() == 0) {
+			return;
+		}
+		String current = message.getDeliveryChannel();
+		String currentModule = extractModuleName(current);
+		String localModule = System.getProperty("module");
+		if (currentModule == null || currentModule.trim().length() == 0
+				|| localModule != null && localModule.equalsIgnoreCase(currentModule)) {
+			message.setDeliveryChannel(targetModule);
+		}
+	}
+
+	private String extractDrTargetModule(String streamKey) {
+		if (streamKey == null) {
+			return null;
+		}
+		String prefix = "stream:dr:pending:";
+		if (!streamKey.startsWith(prefix)) {
+			return null;
+		}
+		String rest = streamKey.substring(prefix.length());
+		int firstColon = rest.indexOf(':');
+		if (firstColon < 0 || firstColon + 1 >= rest.length()) {
+			return null;
+		}
+		String moduleAndShard = rest.substring(firstColon + 1);
+		int lastColon = moduleAndShard.lastIndexOf(':');
+		if (lastColon > 0) {
+			return moduleAndShard.substring(0, lastColon);
+		}
+		return moduleAndShard;
+	}
+
+	private String extractModuleName(String deliveryChannel) {
+		if (deliveryChannel == null || deliveryChannel.trim().length() == 0) {
+			return null;
+		}
+		int idx = deliveryChannel.lastIndexOf(':');
+		if (idx >= 0 && idx + 1 < deliveryChannel.length()) {
+			return deliveryChannel.substring(idx + 1);
+		}
+		return deliveryChannel;
 	}
 
 	private void transactDRQuery(GmmsMessage message) {

@@ -2,7 +2,6 @@ package com.king.gmms.messagequeue;
 
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ThreadPoolExecutor;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
@@ -26,24 +25,35 @@ public class LongConnectionCustomerMessageQueue extends CustomerMessageQueue{
 	private ExecutorService priorityThreadPool;
 	private GmmsUtility gmmsUtility;
 	private String moduleName;
+	private boolean sharedServerQueueEnabled;
 
 	public LongConnectionCustomerMessageQueue(A2PCustomerInfo cst, ConnectionManager connectionManager, 
 			                                  int minSenderNum, int maxSenderNum,boolean isServer){
-		super(cst, minSenderNum, maxSenderNum, isServer, "LongConnectionCustomerMessageQueue_" + cst.getSSID());
+		super(cst, minSenderNum, maxSenderNum, isServer, "LongConnectionCustomerMessageQueue_" + cst.getSSID(),
+				!isSharedServerQueueEnabled(isServer));
 		this.connectionManager = connectionManager;
-		// response sender thread pool
-        ThreadPoolProfile profile = new ThreadPoolProfileBuilder(this.queueName + "_Resp")
-                .poolSize(minSenderNum).maxPoolSize(maxSenderNum).build();
-        respSenderThreadPool = executorServiceManager.newExpiredThreadPool(this, "CustRespSender_" + cst.getSSID(), profile, this, queueTimeout);
         gmmsUtility = GmmsUtility.getInstance();
-        int processNum = cst.getPrioritryHanderNumber();
-        priorityThreadPool = executorServiceManager.newFixedThreadPool(this, "CustPriority_" + queueName, processNum);
         moduleName = System.getProperty("module");
+        sharedServerQueueEnabled = isSharedServerQueueEnabled(isServer);
+        if (sharedServerQueueEnabled) {
+        	log.info("Skip per-SSID LongConnectionCustomerMessageQueue pools because MultiSmppServer shared customer queue is enabled. ssid={}",
+        			cst.getSSID());
+        } else {
+    		// response sender thread pool
+            ThreadPoolProfile profile = new ThreadPoolProfileBuilder(this.queueName + "_Resp")
+                    .poolSize(minSenderNum).maxPoolSize(maxSenderNum).build();
+            respSenderThreadPool = executorServiceManager.newExpiredThreadPool(this, "CustRespSender_" + cst.getSSID(), profile, this, queueTimeout);
+            int processNum = cst.getPrioritryHanderNumber();
+            priorityThreadPool = executorServiceManager.newFixedThreadPool(this, "CustPriority_" + queueName, processNum);
+        }
 	}
 	
 	public boolean putMsg(GmmsMessage msg) {
 		if(msg == null){
 			return false;
+		}
+		if (sharedServerQueueEnabled) {
+			return LongConnectionCustomerSharedQueueManager.getInstance().submit(this, msg, connectionManager, cst);
 		}
 		if (log.isTraceEnabled()) {
 			log.trace(msg, "submit to CustomerMessageSender thread pool");
@@ -132,9 +142,34 @@ public class LongConnectionCustomerMessageQueue extends CustomerMessageQueue{
     public void stopMessageQueue() {
 	    super.stopMessageQueue();
     	if (executorServiceManager != null) {
-    		executorServiceManager.shutdown(respSenderThreadPool);
-    		executorServiceManager.shutdown(priorityThreadPool);
+    		if (respSenderThreadPool != null) {
+    			executorServiceManager.shutdown(respSenderThreadPool);
+    		}
+    		if (priorityThreadPool != null) {
+    			executorServiceManager.shutdown(priorityThreadPool);
+    		}
     	}
      }
+
+	private static boolean isSharedServerQueueEnabled(boolean isServer) {
+		if (!isServer) {
+			return false;
+		}
+		String module = System.getProperty("module");
+		if (module == null || !module.startsWith("MultiSmppServer")) {
+			return false;
+		}
+		try {
+			String moduleKey = module + ".LongConnectionCustomerSharedQueueEnable";
+			String moduleValue = GmmsUtility.getInstance().getCommonProperty(moduleKey);
+			if (moduleValue != null) {
+				return Boolean.parseBoolean(moduleValue.trim());
+			}
+			return Boolean.parseBoolean(GmmsUtility.getInstance()
+					.getCommonProperty("MultiSmppServer.LongConnectionCustomerSharedQueueEnable", "false").trim());
+		} catch (Exception e) {
+			return false;
+		}
+	}
 
 }

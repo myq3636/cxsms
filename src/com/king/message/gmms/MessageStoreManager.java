@@ -33,6 +33,7 @@ import com.king.gmms.processor.CsmKeyInfo;
 import com.king.gmms.processor.CsmUtility;
 import com.king.gmms.processor.CsmValueInfo;
 import com.king.gmms.processor.CsmValueInfoMark;
+import com.king.gmms.processor.DirectInDRDispatchService;
 import com.king.gmms.processor.MessageProcessorHandler;
 import com.king.gmms.protocol.commonhttp.HttpUtils;
 import com.king.gmms.routing.IOSMSRerouteDispatcher;
@@ -76,10 +77,18 @@ public class MessageStoreManager extends DataManager {
 	private RedisClient redis = null;
 	private String module = null;
 	private IOSMSRerouteDispatcher rerouteDispatcher = null;
-	private static final int SQL_BATCH_SIZE = 500;
-	private static final long SQL_MAX_WAIT_MS = 200L;
-	private final java.util.concurrent.BlockingQueue<String> asyncSqlQueue = new java.util.concurrent.LinkedBlockingQueue<String>(50000);
-	private volatile boolean runAsyncWriter = false;
+	private static final int DEFAULT_ASYNC_SQL_BATCH_SIZE = 500;
+	private static final long DEFAULT_ASYNC_SQL_MAX_WAIT_MS = 200L;
+	private static final int DEFAULT_ASYNC_SQL_QUEUE_SIZE = 50000;
+	private static final int DEFAULT_ASYNC_SQL_WRITER_THREADS = 1;
+	private static final int MAX_ASYNC_SQL_WRITER_THREADS = 4;
+	private static final Object ASYNC_SQL_LOCK = new Object();
+	private static volatile java.util.concurrent.BlockingQueue<String> asyncSqlQueue = null;
+	private static volatile boolean runAsyncWriter = false;
+	private static volatile boolean asyncSqlWriterStarted = false;
+	private static volatile boolean asyncSqlWriterDisabled = false;
+	private static volatile int asyncSqlBatchSize = DEFAULT_ASYNC_SQL_BATCH_SIZE;
+	private static volatile long asyncSqlMaxWaitMs = DEFAULT_ASYNC_SQL_MAX_WAIT_MS;
 
 	/**
 	 * Creates a new gmmsUtility of MessageQueueManager
@@ -114,8 +123,78 @@ public class MessageStoreManager extends DataManager {
 		}
 		module = System.getProperty("module");
 		rerouteDispatcher = new IOSMSRerouteDispatcher();
-		runAsyncWriter = true;
-		new AsyncSqlWriterThread().start();
+		startAsyncSqlWriterOnce();
+	}
+
+	private void startAsyncSqlWriterOnce() {
+		boolean enabled = Boolean.parseBoolean(gmmsUtility.getCommonProperty("AsyncSqlWriterEnable", "true"));
+		if (!enabled) {
+			if (!asyncSqlWriterDisabled) {
+				asyncSqlWriterDisabled = true;
+				log.info("AsyncSqlWriter disabled. module={}", System.getProperty("module"));
+			}
+			return;
+		}
+		if (asyncSqlWriterStarted) {
+			log.debug("AsyncSqlWriter already started, skip. module={}", System.getProperty("module"));
+			return;
+		}
+		synchronized (ASYNC_SQL_LOCK) {
+			if (asyncSqlWriterStarted) {
+				log.debug("AsyncSqlWriter already started, skip. module={}", System.getProperty("module"));
+				return;
+			}
+			int queueSize = positiveIntProperty("AsyncSqlQueueSize", DEFAULT_ASYNC_SQL_QUEUE_SIZE);
+			asyncSqlBatchSize = positiveIntProperty("AsyncSqlBatchSize", DEFAULT_ASYNC_SQL_BATCH_SIZE);
+			asyncSqlMaxWaitMs = positiveLongProperty("AsyncSqlMaxWaitMs", DEFAULT_ASYNC_SQL_MAX_WAIT_MS);
+			int writerThreads = positiveIntProperty("AsyncSqlWriterThreads", DEFAULT_ASYNC_SQL_WRITER_THREADS);
+			if (writerThreads > MAX_ASYNC_SQL_WRITER_THREADS) {
+				log.warn("AsyncSqlWriterThreads too large, capped. configured={}, max={}",
+						writerThreads, MAX_ASYNC_SQL_WRITER_THREADS);
+				writerThreads = MAX_ASYNC_SQL_WRITER_THREADS;
+			}
+			if (asyncSqlQueue == null) {
+				asyncSqlQueue = new java.util.concurrent.LinkedBlockingQueue<String>(queueSize);
+			}
+			runAsyncWriter = true;
+			for (int i = 0; i < writerThreads; i++) {
+				new AsyncSqlWriterThread(i + 1).start();
+			}
+			asyncSqlWriterStarted = true;
+			log.info("AsyncSqlWriter global started. threads={}, queueSize={}, batchSize={}, maxWaitMs={}",
+					writerThreads, queueSize, asyncSqlBatchSize, asyncSqlMaxWaitMs);
+		}
+	}
+
+	private int positiveIntProperty(String key, int defaultValue) {
+		try {
+			int value = Integer.parseInt(gmmsUtility.getCommonProperty(key, String.valueOf(defaultValue)).trim());
+			return value > 0 ? value : defaultValue;
+		} catch (Exception e) {
+			log.warn("Invalid integer property {}, use default {}.", key, defaultValue, e);
+			return defaultValue;
+		}
+	}
+
+	private long positiveLongProperty(String key, long defaultValue) {
+		try {
+			long value = Long.parseLong(gmmsUtility.getCommonProperty(key, String.valueOf(defaultValue)).trim());
+			return value > 0 ? value : defaultValue;
+		} catch (Exception e) {
+			log.warn("Invalid long property {}, use default {}.", key, defaultValue, e);
+			return defaultValue;
+		}
+	}
+
+	private boolean enqueueAsyncSql(String sql) {
+		if (asyncSqlWriterDisabled) {
+			return false;
+		}
+		if (!asyncSqlWriterStarted) {
+			startAsyncSqlWriterOnce();
+		}
+		java.util.concurrent.BlockingQueue<String> queue = asyncSqlQueue;
+		return queue != null && queue.offer(sql);
 	}
 
 	/**
@@ -294,24 +373,36 @@ public class MessageStoreManager extends DataManager {
 	}
 
 	class AsyncSqlWriterThread extends Thread {
+		private int writerIndex;
+
+		public AsyncSqlWriterThread(int writerIndex) {
+			this.writerIndex = writerIndex;
+		}
+
 		public void start() {
-			Thread thread = new Thread(A2PThreadGroup.getInstance(), this, "AsyncSqlWriterThread");
+			String threadName = writerIndex <= 1 ? "AsyncSqlWriterThread" : "AsyncSqlWriterThread-" + writerIndex;
+			Thread thread = new Thread(A2PThreadGroup.getInstance(), this, threadName);
 			thread.start();
-			log.info("AsyncSqlWriterThread Thread start.");
+			log.info("{} Thread start.", threadName);
 		}
 
 		public void run() {
 			java.util.List<String> batch = new java.util.ArrayList<String>();
 			long lastExecuteTime = System.currentTimeMillis();
-			while (runAsyncWriter || !asyncSqlQueue.isEmpty()) {
+			while (runAsyncWriter || (asyncSqlQueue != null && !asyncSqlQueue.isEmpty())) {
 				try {
-					String sql = asyncSqlQueue.poll(10, java.util.concurrent.TimeUnit.MILLISECONDS);
+					java.util.concurrent.BlockingQueue<String> queue = asyncSqlQueue;
+					if (queue == null) {
+						Thread.sleep(10L);
+						continue;
+					}
+					String sql = queue.poll(10, java.util.concurrent.TimeUnit.MILLISECONDS);
 					if (sql != null) {
 						batch.add(sql);
 					}
 					
 					long now = System.currentTimeMillis();
-					if (batch.size() >= SQL_BATCH_SIZE || (batch.size() > 0 && (now - lastExecuteTime) >= SQL_MAX_WAIT_MS)) {
+					if (batch.size() >= asyncSqlBatchSize || (batch.size() > 0 && (now - lastExecuteTime) >= asyncSqlMaxWaitMs)) {
 						executeBatch(batch);
 						batch.clear();
 						lastExecuteTime = now;
@@ -509,8 +600,13 @@ public class MessageStoreManager extends DataManager {
 			}
 			A2PCustomerInfo customerInfo = ctm.getCustomerBySSID(message
 					.getRSsID());
-			message.setOutClientPull(customerInfo.getOutClientPull()
-					.equalsIgnoreCase("1") ? true : false);
+			if (customerInfo == null) {
+				message.setOutClientPull(false);
+				log.warn(message, "R customer not found when handling out submit result, rssid={}", message.getRSsID());
+			} else {
+				message.setOutClientPull(customerInfo.getOutClientPull()
+						.equalsIgnoreCase("1") ? true : false);
+			}
 			message.setRetriedNumber(0);
 			message.setNextRetryTime(null);
 			message.setDateIn(new Date());
@@ -546,7 +642,7 @@ public class MessageStoreManager extends DataManager {
 								!message.hasDRFailedReroute() &&
 								message.getSplitStatus() <= 1 && 
 							    (!oInfo.isSmsOptionSendDRByInSubmitInCU()&&!oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())) && 								
-								customerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress())) {						
+								customerInfo != null && customerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress())) {
 							GmmsMessage acceptMsg = new GmmsMessage(message);
 							acceptMsg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 							if (GmmsUtility.isModifySuccessDR(oInfo.getSSID(), oInfo.getDrSucRatio(), oInfo.getDrBiasRatio())) {
@@ -592,14 +688,31 @@ public class MessageStoreManager extends DataManager {
 							}
 							
 							if (temp == null || expireThrottle<600000) {
+								log.warn(message,
+										"TMP-DRLOOKUP submit cache fallback to WDQ. reason={}, msgId={}, in={}, out={}, rsid={}, supportDR={}, outClientPull={}, expireThrottleMs={}, expireDate={}",
+										temp == null ? "redis_body_null" : "expire_too_close",
+										message.getMsgID(), message.getInMsgID(), omsgid,
+										message.getRSsID(), supportDR, message.outClientPull(),
+										expireThrottle, expireDate);
 								insertMessageToDB(message, WDQ);
 							} else {
 								int expirTime = gmmsUtility
 										.getRedisExpireTime(message);
 								String hashKey = gmmsUtility
 										.getRedisDateIn(message);
-								if (!redis.setPipeline(omsgid, temp, expirTime,
-										hashKey)) {
+								log.debug(message,
+										"TMP-DRLOOKUP submit cache redis set begin. msgId={}, in={}, out={}, rsid={}, supportDR={}, outClientPull={}, ttlSeconds={}, hashKey={}, expireDate={}",
+										message.getMsgID(), message.getInMsgID(), omsgid,
+										message.getRSsID(), supportDR, message.outClientPull(),
+										expirTime, hashKey, expireDate);
+								boolean redisSetOk = redis.setPipeline(omsgid, temp, expirTime,
+										hashKey);
+								log.debug(message,
+										"TMP-DRLOOKUP submit cache redis set done. msgId={}, in={}, out={}, rsid={}, supportDR={}, outClientPull={}, ttlSeconds={}, hashKey={}, result={}",
+										message.getMsgID(), message.getInMsgID(), omsgid,
+										message.getRSsID(), supportDR, message.outClientPull(),
+										expirTime, hashKey, redisSetOk);
+								if (!redisSetOk) {
 									insertMessageToDB(message, WDQ);
 									if (log.isInfoEnabled()) {
 										log.info(
@@ -626,6 +739,10 @@ public class MessageStoreManager extends DataManager {
 							String temp = SerializableHandler
 									.convertGmmsMessage2RedisMessage(message);
 							if (temp == null) {
+								log.warn(message,
+										"TMP-DRLOOKUP submit cache fallback to WDQ. reason=redis_body_null_no_support_dr, msgId={}, in={}, out={}, rsid={}, supportDR={}, outClientPull={}",
+										message.getMsgID(), message.getInMsgID(), omsgid,
+										message.getRSsID(), supportDR, message.outClientPull());
 								insertMessageToDB(message, WDQ);
 							} else {
 								int expirTime = gmmsUtility
@@ -633,8 +750,19 @@ public class MessageStoreManager extends DataManager {
 
 								String hashKey = gmmsUtility
 										.getRedisDateIn(message);
-								if (!redis.setPipeline(omsgid, temp, expirTime,
-										hashKey)) {
+								log.debug(message,
+										"TMP-DRLOOKUP submit cache redis set begin. reason=no_support_dr_cross_a2p, msgId={}, in={}, out={}, rsid={}, supportDR={}, outClientPull={}, ttlSeconds={}, hashKey={}",
+										message.getMsgID(), message.getInMsgID(), omsgid,
+										message.getRSsID(), supportDR, message.outClientPull(),
+										expirTime, hashKey);
+								boolean redisSetOk = redis.setPipeline(omsgid, temp, expirTime,
+										hashKey);
+								log.debug(message,
+										"TMP-DRLOOKUP submit cache redis set done. reason=no_support_dr_cross_a2p, msgId={}, in={}, out={}, rsid={}, supportDR={}, outClientPull={}, ttlSeconds={}, hashKey={}, result={}",
+										message.getMsgID(), message.getInMsgID(), omsgid,
+										message.getRSsID(), supportDR, message.outClientPull(),
+										expirTime, hashKey, redisSetOk);
+								if (!redisSetOk) {
 									insertMessageToDB(message, WDQ);
 									if (log.isInfoEnabled()) {
 										log.info(
@@ -840,8 +968,13 @@ public class MessageStoreManager extends DataManager {
 			}
 			A2PCustomerInfo customerInfo = ctm.getCustomerBySSID(message
 					.getRSsID());
-			message.setOutClientPull(customerInfo.getOutClientPull()
-					.equalsIgnoreCase("1") ? true : false);
+			if (customerInfo == null) {
+				message.setOutClientPull(false);
+				log.warn(message, "R customer not found when handling innack out submit result, rssid={}", message.getRSsID());
+			} else {
+				message.setOutClientPull(customerInfo.getOutClientPull()
+						.equalsIgnoreCase("1") ? true : false);
+			}
 			message.setRetriedNumber(0);
 			message.setNextRetryTime(null);
 			message.setDateIn(new Date());
@@ -877,7 +1010,7 @@ public class MessageStoreManager extends DataManager {
 								!message.hasDRFailedReroute() &&
 								message.getSplitStatus() <= 1 && 
 							    (!oInfo.isSmsOptionSendDRByInSubmitInCU()&&!oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())) && 								
-								customerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress())) {						
+								customerInfo != null && customerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress())) {
 							GmmsMessage acceptMsg = new GmmsMessage(message);
 							acceptMsg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 							if (GmmsUtility.isModifySuccessDR(oInfo.getSSID(), oInfo.getDrSucRatio(), oInfo.getDrBiasRatio())) {
@@ -1076,9 +1209,18 @@ public class MessageStoreManager extends DataManager {
 	}
 	
 	public boolean needRetryForOutSubmitRes(GmmsMessage message) {
-		return gmmsUtility.getCustomerManager()
-		.getCustomerBySSID(message.getRSsID())
-		.getSmsOptionSubmitRetryCode().contains(message.getStatusCode());
+		if (message == null || message.getRSsID() <= 0) {
+			log.warn(message, "Skip submit retry because rssid is invalid, rssid={}",
+					message == null ? null : message.getRSsID());
+			return false;
+		}
+		A2PCustomerInfo customerInfo = gmmsUtility.getCustomerManager()
+				.getCustomerBySSID(message.getRSsID());
+		if (customerInfo == null) {
+			log.warn(message, "Skip submit retry because R customer not found, rssid={}", message.getRSsID());
+			return false;
+		}
+		return customerInfo.getSmsOptionSubmitRetryCode().contains(message.getStatusCode());
 	}
 
 	private boolean inRopBusyMode(int ssid) {
@@ -1108,8 +1250,10 @@ public class MessageStoreManager extends DataManager {
 				clearMessage(message, RDQ);
 			} else {
 				if (RDQ.equalsIgnoreCase(message.getOriginalQueue())) {
-					updateByInMsgId(message, RDQ);
+					updateRetryMessage(message, RDQ);
 				} else {
+					log.debug(message, "insert retry message into RDQ. originalQueue={}, rowId={}, retriedNumber={}, nextRetryTime={}",
+							message.getOriginalQueue(), message.getRowId(), message.getRetriedNumber(), message.getNextRetryTime());
 					insertMessageToDB(message, RDQ);
 				}
 			}
@@ -1844,7 +1988,7 @@ public class MessageStoreManager extends DataManager {
 		try {
 			if (message.getMimeMultiPartData() == null
 					&& message.getUdh() == null) {
-				if (!asyncSqlQueue.offer(strSQL)) {
+				if (!enqueueAsyncSql(strSQL)) {
 					doInsert(strSQL);
 				}
 			} else {
@@ -2001,7 +2145,9 @@ public class MessageStoreManager extends DataManager {
 	 */
 	public void clearMessage(GmmsMessage message, String table) {
 		String sqlStr = null;
-		if (message.getOutMsgID() != null
+		if (message.getRowId() > 0 && RDQ.equalsIgnoreCase(table)) {
+			sqlStr = "DELETE FROM " + table + " WHERE ID=" + message.getRowId();
+		} else if (message.getOutMsgID() != null
 				&& message.getOutMsgID().trim().length() > 0
 				&& table.equalsIgnoreCase(WDQ)) {
 			sqlStr = "DELETE FROM " + table + " WHERE OutMsgID="
@@ -3197,7 +3343,7 @@ public class MessageStoreManager extends DataManager {
 		}
 
 		try {
-			if (!asyncSqlQueue.offer(sqlStr)) {
+			if (!enqueueAsyncSql(sqlStr)) {
 				doUpdate(sqlStr);
 			}
 		} catch (Exception ex) {
@@ -3212,6 +3358,41 @@ public class MessageStoreManager extends DataManager {
 		} finally {
 			message.setContentIsChanged(false);
 			super.closeSession(); // add by Levens in Jan.20 2006
+		}
+	}
+
+	private void updateRetryMessage(GmmsMessage message, String table) {
+		if (message.getRowId() > 0) {
+			updateByRowId(message, table);
+		} else {
+			log.warn(message, "Retry message has no rowId, fallback to update by InMsgID. table={}, originalQueue={}, retriedNumber={}, nextRetryTime={}",
+					table, message.getOriginalQueue(), message.getRetriedNumber(), message.getNextRetryTime());
+			updateByInMsgId(message, table);
+		}
+	}
+
+	public void updateByRowId(GmmsMessage message, String table) {
+		String sqlStr = "UPDATE " + table + " SET " + makeUpdateAllStmt(message)
+				+ " WHERE ID=" + message.getRowId();
+
+		try {
+			log.debug(message, "update retry message by rowId. table={}, rowId={}, retriedNumber={}, nextRetryTime={}",
+					table, message.getRowId(), message.getRetriedNumber(), message.getNextRetryTime());
+			if (!enqueueAsyncSql(sqlStr)) {
+				doUpdate(sqlStr);
+			}
+		} catch (Exception ex) {
+			log.error(message, "Error in executing:" + sqlStr, ex);
+			if (!ex.getMessage().contains("Data truncated")
+					&& !ex.getMessage().contains("SQL syntax")) {
+
+				MailSender.getInstance().sendAlertMail(
+						"A2P alert mail from " + ModuleURI.self().getAddress()
+								+ " for DB Exception", ex);
+			}
+		} finally {
+			message.setContentIsChanged(false);
+			super.closeSession();
 		}
 	}
 
@@ -3984,11 +4165,35 @@ public class MessageStoreManager extends DataManager {
 			List<GmmsMessage> msgList = new ArrayList<GmmsMessage>();
 			CsmUtility.splitCsmDr(message, msgList);
 			for (GmmsMessage msg : msgList) {
-				doInsertMsgForDRDelay(msg, delayTime);
+				insertSingleMsgForDRDelay(msg, delayTime);
 			}
 		} else {
-			doInsertMsgForDRDelay(message, delayTime);
+			insertSingleMsgForDRDelay(message, delayTime);
 		}
+	}
+
+	private void insertSingleMsgForDRDelay(GmmsMessage message, int delayTime) {
+		if (tryDirectInDRDispatch(message, delayTime)) {
+			return;
+		}
+		doInsertMsgForDRDelay(message, delayTime);
+	}
+
+	private boolean tryDirectInDRDispatch(GmmsMessage message, int delayTime) {
+		DirectInDRDispatchService service = DirectInDRDispatchService.getInstance();
+		if (!service.isEnabled()) {
+			return false;
+		}
+		boolean success = service.dispatchSingleOrDelay(message, delayTime);
+		if (success) {
+			return true;
+		}
+		if (!Boolean.parseBoolean(gmmsUtility.getCommonProperty("AutoInDR.FallbackToLegacyDelayDR", "true"))) {
+			log.warn(message, "Auto IN_DR direct dispatch failed and legacy fallback disabled. delaySeconds={}", delayTime);
+			return true;
+		}
+		log.warn(message, "Auto IN_DR direct dispatch failed, fallback to legacy delayDR. delaySeconds={}", delayTime);
+		return false;
 	}
 
 	public void updateMsgForDRQuery(GmmsMessage message) {

@@ -14,6 +14,8 @@ import com.king.gmms.domain.A2PMultiConnectionInfo;
 import com.king.gmms.domain.ConnectionInfo;
 import com.king.redis.RedisClient;
 
+import redis.clients.jedis.resps.ScanResult;
+
 /**
  * Tracks active SMPP server bind sessions in state Redis.
  *
@@ -32,6 +34,8 @@ public class SmppServerSessionRegistry {
 	private static final String MODULE_PREFIX = "smpp:server:module:";
 
 	private final GmmsUtility gmmsUtility = GmmsUtility.getInstance();
+	private volatile String moduleCleanupCursor = "0";
+	private volatile long lastLegacyCleanupMs = 0L;
 
 	private SmppServerSessionRegistry() {
 	}
@@ -46,6 +50,14 @@ public class SmppServerSessionRegistry {
 
 	public int refreshIntervalMs() {
 		return intProperty("SmppServerSessionRegistryRefreshIntervalMs", 30000);
+	}
+
+	public int reconcileIntervalMs() {
+		return intProperty("SmppServerSessionRegistryReconcileIntervalMs", 60000);
+	}
+
+	public int legacyCleanupIntervalMs() {
+		return intProperty("SmppServerRegistryLegacyCleanupIntervalMs", 300000);
 	}
 
 	public String register(MultiSmppSession session) {
@@ -69,12 +81,8 @@ public class SmppServerSessionRegistry {
 			if (redis == null) {
 				return;
 			}
-			String detailKey = detailKey(snapshot.ossid, snapshot.sessionKey);
-			redis.del(detailKey);
-			redis.zrem(activeKey(snapshot.ossid), new String[] { snapshot.sessionKey });
-			redis.zrem(activeModuleKey(snapshot.ossid, snapshot.module), new String[] { snapshot.sessionKey });
-			redis.zrem(connKey(snapshot.ossid, snapshot.module, snapshot.connectionName), new String[] { snapshot.sessionKey });
-			redis.zrem(nodeKey(snapshot.ossid, snapshot.module, snapshot.nodeName), new String[] { snapshot.sessionKey });
+			removeSessionKey(redis, snapshot.ossid, snapshot.sessionKey, snapshot);
+			removeSlotIfMatches(redis, snapshot);
 			if (!hasActiveSessionInModule(snapshot.ossid, snapshot.module)) {
 				redis.zrem(moduleKey(snapshot.ossid), new String[] { snapshot.module });
 			}
@@ -82,6 +90,89 @@ public class SmppServerSessionRegistry {
 					snapshot.ossid, snapshot.module, snapshot.connectionName, snapshot.sessionKey);
 		} catch (Exception e) {
 			log.warn("Failed to unregister SMPP server bind registry.", e);
+		}
+	}
+
+	public String sessionKey(MultiSmppSession session) {
+		SessionSnapshot snapshot = snapshot(session, null);
+		return snapshot == null ? null : snapshot.sessionKey;
+	}
+
+	public void cleanupCurrentModule(Set<String> liveSessionKeys) {
+		if (!isEnabled()) {
+			return;
+		}
+		RedisClient redis = redis();
+		if (redis == null || redis.getStateRedis() == null) {
+			return;
+		}
+		String module = safe(System.getProperty("module", ""));
+		if (isBlank(module)) {
+			return;
+		}
+		try {
+			String pattern = DETAIL_PREFIX + "*:" + safePart(module) + "|*";
+			int scanCount = Math.max(10, intProperty("SmppServerRegistryLegacyCleanupScanCount", 200));
+			int maxKeys = Math.max(1, intProperty("SmppServerRegistryLegacyCleanupMaxKeysPerRun", 2000));
+			boolean legacyCleanupEnabled = booleanProperty("SmppServerRegistryLegacyCleanupEnable", true);
+			long now = System.currentTimeMillis();
+			boolean allowLegacyCleanup = legacyCleanupEnabled && now - lastLegacyCleanupMs >= legacyCleanupIntervalMs();
+			int removed = 0;
+			int scanned = 0;
+			String cursor = isBlank(moduleCleanupCursor) ? "0" : moduleCleanupCursor;
+			while (scanned < maxKeys) {
+				ScanResult<String> result = redis.getStateRedis().scanKeys(cursor, pattern, scanCount);
+				if (result == null) {
+					break;
+				}
+				cursor = result.getCursor();
+				List<String> keys = result.getResult();
+				if (keys != null) {
+					for (String key : keys) {
+						if (scanned >= maxKeys) {
+							break;
+						}
+						scanned++;
+						ParsedDetailKey parsedKey = parseDetailKey(key);
+						if (parsedKey == null) {
+							continue;
+						}
+						boolean live = liveSessionKeys != null && liveSessionKeys.contains(parsedKey.sessionKey);
+						if (live && !allowLegacyCleanup) {
+							continue;
+						}
+						String detail = redis.getString(key);
+						Map<String, String> detailMap = parse(detail);
+						String detailModule = detailMap.get("module");
+						if (!isBlank(detailModule) && !module.equalsIgnoreCase(detailModule)) {
+							continue;
+						}
+						SessionSnapshot snapshot = snapshotFromDetail(parsedKey.ossid, parsedKey.sessionKey, detailMap);
+						boolean stale = !live;
+						boolean legacy = allowLegacyCleanup && snapshot != null
+								&& !parsedKey.sessionKey.equals(snapshot.slotKey);
+						if (!stale && !legacy) {
+							continue;
+						}
+						removeSessionKey(redis, parsedKey.ossid, parsedKey.sessionKey, snapshot);
+						removed++;
+					}
+				}
+				if ("0".equals(cursor)) {
+					break;
+				}
+			}
+			moduleCleanupCursor = cursor == null ? "0" : cursor;
+			if (allowLegacyCleanup) {
+				lastLegacyCleanupMs = now;
+			}
+			if (removed > 0) {
+				log.info("SMPP server bind registry reconciled. module={}, live={}, scanned={}, removed={}, cursor={}, legacyCleanup={}",
+						module, liveSessionKeys == null ? 0 : liveSessionKeys.size(), scanned, removed,
+						moduleCleanupCursor, allowLegacyCleanup);
+			}
+		} catch (Exception e) {
+			log.warn("Failed to reconcile SMPP server bind registry.", e);
 		}
 	}
 
@@ -165,9 +256,18 @@ public class SmppServerSessionRegistry {
 			}
 			long now = System.currentTimeMillis();
 			int ttlSeconds = ttlSeconds();
+			String previousSessionKey = redis.getString(slotKey(snapshot));
+			if (!isBlank(previousSessionKey) && !previousSessionKey.equals(snapshot.sessionKey)) {
+				removeSessionKey(redis, snapshot.ossid, previousSessionKey, snapshot);
+			}
 			String detailKey = detailKey(snapshot.ossid, snapshot.sessionKey);
 			String detail = detail(snapshot, now, ttlSeconds);
-			redis.setString(detailKey, detail, ttlSeconds);
+			boolean detailOk = redis.setString(detailKey, detail, ttlSeconds);
+			boolean slotOk = redis.setString(slotKey(snapshot), snapshot.sessionKey, ttlSeconds);
+			if (!detailOk || !slotOk) {
+				throw new IllegalStateException("registry redis set failed. detailOk=" + detailOk + ", slotOk=" + slotOk
+						+ ", detailKey=" + detailKey + ", slotKey=" + slotKey(snapshot));
+			}
 			redis.zadd(activeKey(snapshot.ossid), now, snapshot.sessionKey);
 			redis.zadd(activeModuleKey(snapshot.ossid, snapshot.module), now, snapshot.sessionKey);
 			redis.zadd(connKey(snapshot.ossid, snapshot.module, snapshot.connectionName), now, snapshot.sessionKey);
@@ -180,8 +280,15 @@ public class SmppServerSessionRegistry {
 			}
 			return snapshot.sessionKey;
 		} catch (Exception e) {
-			log.warn("Failed to register SMPP server bind registry.", e);
-			return null;
+			SessionSnapshot snapshot = snapshot(session, null);
+			if (snapshot != null) {
+				log.warn("Failed to register SMPP server bind registry. Local SMPP session remains connected and reconcile will retry. ossid={}, module={}, node={}, connection={}, session={}, slotKey={}, sessionKey={}",
+						snapshot.ossid, snapshot.module, snapshot.nodeName, snapshot.connectionName,
+						snapshot.sessionName, snapshot.slotKey, snapshot.sessionKey, e);
+			} else {
+				log.warn("Failed to register SMPP server bind registry. Local SMPP session remains connected and reconcile will retry.", e);
+			}
+			return snapshot == null ? null : snapshot.sessionKey;
 		}
 	}
 
@@ -224,8 +331,9 @@ public class SmppServerSessionRegistry {
 				? Integer.toString(session.getSessionNum())
 				: session.getTransactionURI().getId().toString();
 		snapshot.nodeName = resolveNodeName(customerInfo, connectionInfo);
+		snapshot.slotKey = buildSlotKey(snapshot);
 		snapshot.sessionKey = isBlank(existingSessionKey)
-				? buildSessionKey(snapshot)
+				? snapshot.slotKey
 				: existingSessionKey;
 		return snapshot;
 	}
@@ -245,9 +353,67 @@ public class SmppServerSessionRegistry {
 	}
 
 	private String buildSessionKey(SessionSnapshot snapshot) {
+		return buildSlotKey(snapshot);
+	}
+
+	private String buildSlotKey(SessionSnapshot snapshot) {
 		return safePart(snapshot.module) + "|" + safePart(snapshot.nodeId) + "|" + safePart(snapshot.nodeName)
-				+ "|" + safePart(snapshot.connectionName) + "|" + safePart(snapshot.sessionName)
-				+ "|" + safePart(snapshot.sessionUuid);
+				+ "|" + safePart(snapshot.connectionName) + "|" + safePart(snapshot.sessionName);
+	}
+
+	private void removeSessionKey(RedisClient redis, int ossid, String sessionKey, SessionSnapshot fallback) {
+		if (redis == null || isBlank(sessionKey)) {
+			return;
+		}
+		String detailKey = detailKey(ossid, sessionKey);
+		SessionSnapshot snapshot = fallback;
+		try {
+			String detail = redis.getString(detailKey);
+			Map<String, String> detailMap = parse(detail);
+			if (!detailMap.isEmpty()) {
+				snapshot = snapshotFromDetail(ossid, sessionKey, detailMap);
+			}
+		} catch (Exception ignored) {
+		}
+		redis.del(detailKey);
+		redis.zrem(activeKey(ossid), new String[] { sessionKey });
+		if (snapshot != null) {
+			redis.zrem(activeModuleKey(ossid, snapshot.module), new String[] { sessionKey });
+			redis.zrem(connKey(ossid, snapshot.module, snapshot.connectionName), new String[] { sessionKey });
+			redis.zrem(nodeKey(ossid, snapshot.module, snapshot.nodeName), new String[] { sessionKey });
+			removeSlotIfMatches(redis, snapshot);
+		}
+	}
+
+	private void removeSlotIfMatches(RedisClient redis, SessionSnapshot snapshot) {
+		if (redis == null || snapshot == null || isBlank(snapshot.slotKey)) {
+			return;
+		}
+		String key = slotKey(snapshot);
+		String value = redis.getString(key);
+		if (snapshot.sessionKey.equals(value)) {
+			redis.del(key);
+		}
+	}
+
+	private SessionSnapshot snapshotFromDetail(int ossid, String sessionKey, Map<String, String> detailMap) {
+		SessionSnapshot snapshot = new SessionSnapshot();
+		snapshot.ossid = ossid;
+		snapshot.sessionKey = sessionKey;
+		snapshot.module = safe(detailMap.get("module"));
+		snapshot.nodeId = safe(detailMap.get("nodeId"));
+		snapshot.nodeName = safe(detailMap.get("nodeName"));
+		snapshot.connectionName = safe(detailMap.get("connectionName"));
+		snapshot.sessionName = safe(detailMap.get("sessionName"));
+		snapshot.sessionUuid = safe(detailMap.get("sessionUuid"));
+		snapshot.systemId = safe(detailMap.get("systemId"));
+		snapshot.bindType = safe(detailMap.get("bindType"));
+		snapshot.status = safe(detailMap.get("status"));
+		snapshot.remoteIp = safe(detailMap.get("remoteIp"));
+		snapshot.localIp = safe(detailMap.get("localIp"));
+		snapshot.transactionUri = safe(detailMap.get("transactionUri"));
+		snapshot.slotKey = buildSlotKey(snapshot);
+		return snapshot;
 	}
 
 	private String detail(SessionSnapshot snapshot, long now, int ttlSeconds) {
@@ -350,6 +516,29 @@ public class SmppServerSessionRegistry {
 		return MODULE_PREFIX + ossid;
 	}
 
+	private String slotKey(SessionSnapshot snapshot) {
+		return "smpp:server:slot:" + snapshot.ossid + ":" + snapshot.slotKey;
+	}
+
+	private ParsedDetailKey parseDetailKey(String key) {
+		if (isBlank(key) || !key.startsWith(DETAIL_PREFIX)) {
+			return null;
+		}
+		String rest = key.substring(DETAIL_PREFIX.length());
+		int idx = rest.indexOf(':');
+		if (idx <= 0 || idx >= rest.length() - 1) {
+			return null;
+		}
+		try {
+			ParsedDetailKey parsed = new ParsedDetailKey();
+			parsed.ossid = Integer.parseInt(rest.substring(0, idx));
+			parsed.sessionKey = rest.substring(idx + 1);
+			return parsed;
+		} catch (Exception e) {
+			return null;
+		}
+	}
+
 	private String safePart(String value) {
 		return safe(value).replace(':', '_').replace('|', '_').replace(';', '_');
 	}
@@ -376,6 +565,12 @@ public class SmppServerSessionRegistry {
 		private String remoteIp;
 		private String localIp;
 		private String transactionUri;
+		private String sessionKey;
+		private String slotKey;
+	}
+
+	private static class ParsedDetailKey {
+		private int ossid;
 		private String sessionKey;
 	}
 }

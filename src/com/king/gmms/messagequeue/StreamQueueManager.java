@@ -161,6 +161,20 @@ public class StreamQueueManager {
 		return (hashKey.hashCode() & Integer.MAX_VALUE) % totalShards;
 	}
 
+	private int calculateDrShardId(GmmsMessage msg, int targetSsid) {
+		int totalShards = GmmsUtility.getInstance().getTotalShards();
+		if (totalShards <= 1 || msg == null) return 0;
+		String hashKey;
+		if (!isBlank(msg.getMsgID())) {
+			hashKey = targetSsid + "_" + msg.getMsgID();
+		} else if (!isBlank(msg.getInMsgID()) || !isBlank(msg.getOutMsgID())) {
+			hashKey = targetSsid + "_" + msg.getInMsgID() + "_" + msg.getOutMsgID();
+		} else {
+			hashKey = targetSsid + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
+		}
+		return (hashKey.hashCode() & Integer.MAX_VALUE) % totalShards;
+	}
+
 	public boolean produceDeliveryReport(GmmsMessage msg) {
 		String key = getDrPendingQueue(msg);
 		if (isBlank(key)) {
@@ -170,10 +184,20 @@ public class StreamQueueManager {
 		return produce(key, msg, false);
 	}
 
+	public boolean produceDeliveryReportToQueue(GmmsMessage msg, String key) {
+		if (isBlank(key)) {
+			logger.warn(msg, "Can not resolve SMPP server DR stream key.");
+			return false;
+		}
+		return produce(key, msg, false);
+	}
+
 	public boolean produceDeliveryReportToModule(GmmsMessage msg, String moduleName) {
-		String key = STR_DR_PENDING_PREFIX + msg.getOSsID();
+		int targetSsid = msg == null ? -1 : msg.getOSsID();
+		String key = STR_DR_PENDING_PREFIX + targetSsid;
 		if (!isBlank(moduleName)) {
 			key += ":" + moduleName;
+			key += ":" + calculateDrShardId(msg, targetSsid);
 		}
 		return produce(key, msg, false);
 	}
@@ -410,8 +434,12 @@ public class StreamQueueManager {
 			String[] parts = streamKey.split(":");
 			if (parts.length >= 5) {
 				String moduleName = System.getProperty("module", "");
-				return parts[4] == null || parts[4].length() == 0
+				boolean moduleMatched = parts[4] == null || parts[4].length() == 0
 						|| parts[4].equalsIgnoreCase(moduleName);
+				if (!moduleMatched) {
+					return false;
+				}
+				return true;
 			}
 		}
 		return true;
@@ -452,7 +480,7 @@ public class StreamQueueManager {
 		if (isBlank(moduleName)) {
 			return null;
 		}
-		return key + ":" + moduleName;
+		return key + ":" + moduleName + ":" + calculateDrShardId(msg, msg.getOSsID());
 	}
 
 	public String getServerDeliveryQueue(GmmsMessage msg) {
@@ -476,6 +504,7 @@ public class StreamQueueManager {
 		}
 		if (!isBlank(moduleName)) {
 			key += ":" + moduleName;
+			key += ":" + calculateDrShardId(msg, targetSsid);
 		}
 		return key;
 	}
@@ -494,8 +523,12 @@ public class StreamQueueManager {
 	}
 
 	public void ack(String key, String groupName, GmmsMessage msg, boolean isSubmitMq) {
-		String rid = msg.getRedisStreamID();
-		if (rid != null) {
+		ackById(key, groupName, msg == null ? null : msg.getRedisStreamID(), msg, isSubmitMq);
+	}
+
+	public boolean ackById(String key, String groupName, String redisStreamId, GmmsMessage msg, boolean isSubmitMq) {
+		String rid = redisStreamId;
+		if (!isBlank(rid)) {
 			StreamEntryID id = new StreamEntryID(rid);
 			Long acked;
 			if (isSubmitMq) {
@@ -513,7 +546,12 @@ public class StreamQueueManager {
 				logStreamTrace("STREAM-ACK", key, groupName, null, rid, msg, isSubmitMq,
 						"acked=" + acked + " result=fail reason=ack_returned_zero");
 			}
+			return acked != null && acked.longValue() > 0;
 		}
+		incrementStreamCounter(MetricsNames.FLOW_IN, key, msg, MetricsNames.ACTION_ACK_FAIL);
+		logStreamTrace("STREAM-ACK", key, groupName, null, rid, msg, isSubmitMq,
+				"acked=0 result=fail reason=blank_redis_id");
+		return false;
 	}
 
 	/**
@@ -687,10 +725,13 @@ public class StreamQueueManager {
 
 	private void incrementStreamCounter(String flow, String streamKey, GmmsMessage msg, String action) {
 		MetricsCollector.getInstance().incrementCounter(
-				MetricsNames.build(MetricsNames.COMPONENT_STREAM, flow, metricMessageType(streamKey, msg), action));
+				MetricsNames.build(MetricsNames.COMPONENT_STREAM, flow, metricMessageType(flow, streamKey, msg), action));
 	}
 
-	private String metricMessageType(String streamKey, GmmsMessage msg) {
+	private String metricMessageType(String flow, String streamKey, GmmsMessage msg) {
+		if (MetricsNames.FLOW_OUT.equals(flow)) {
+			return MetricsNames.msgType(msg);
+		}
 		if (streamKey != null) {
 			if (streamKey.startsWith(STR_MT_PENDING_PREFIX) || streamKey.startsWith(STR_MT_ROUTED_PREFIX)
 					|| streamKey.startsWith(STR_HTTP_SUBMIT_PREFIX) || streamKey.startsWith(STR_MQM_SUBMIT_PREFIX)
@@ -769,6 +810,34 @@ public class StreamQueueManager {
 
 	public int getAutoClaimBatchSize() {
 		return intProperty("RedisStreamAutoClaimBatchSize", 100);
+	}
+
+	public boolean isAutoClaimEnabled() {
+		return Boolean.parseBoolean(GmmsUtility.getInstance().getCommonProperty("RedisStreamAutoClaimEnable", "true"));
+	}
+
+	public long getAutoClaimIntervalMs() {
+		long interval = longProperty("RedisStreamAutoClaimIntervalMs", 300000L);
+		return interval <= 0 ? 300000L : interval;
+	}
+
+	public int getAutoClaimMaxMessagesPerRun() {
+		int max = intProperty("RedisStreamAutoClaimMaxMessagesPerRun", 1000);
+		return max <= 0 ? 1000 : max;
+	}
+
+	public List<String> listResponsibleStreams(String pattern, boolean isSubmitMq) {
+		List<String> result = new ArrayList<String>();
+		Set<String> streams = isSubmitMq ? redisClient.keysSubmitMq(pattern) : redisClient.keysReportMq(pattern);
+		if (streams == null || streams.isEmpty()) {
+			return result;
+		}
+		for (String streamKey : streams) {
+			if (isResponsibleForStream(streamKey)) {
+				result.add(streamKey);
+			}
+		}
+		return result;
 	}
 
 	private long getStreamMaxLen() {
@@ -1014,6 +1083,9 @@ public class StreamQueueManager {
 
 	public List<GmmsMessage> autoClaimBatch(String streamKey, String groupName, String consumerName, 
 			long minIdleMs, int count, boolean isSubmitMq) {
+		if (count <= 0) {
+			return new ArrayList<GmmsMessage>();
+		}
 		
 		Map.Entry<StreamEntryID, List<StreamEntry>> result = isSubmitMq
 			? redisClient.xautoclaimSubmitMq(streamKey, groupName, consumerName, minIdleMs, 

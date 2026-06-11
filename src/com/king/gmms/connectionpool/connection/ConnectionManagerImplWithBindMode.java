@@ -124,6 +124,10 @@ public class ConnectionManagerImplWithBindMode
         	return null;
         }
     }
+
+    public List<Connection> getAvailableConnectionsSnapshot() {
+        return connectionPool.getAvailableConnectionsSnapshot();
+    }
     
     public boolean insertConnection(Connection connection) {
         boolean result = false;

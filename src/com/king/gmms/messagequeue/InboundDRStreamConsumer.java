@@ -33,6 +33,7 @@ public class InboundDRStreamConsumer {
     private volatile long lastPoolConfigRefreshMs = 0L;
 
     private ExecutorService dispatcherThread;
+    private ExecutorService recoveryThread;
     private ThreadPoolExecutor workerPool;
     private final ConcurrentHashMap<String, Boolean> processingMap = new ConcurrentHashMap<String, Boolean>();
     private final ConcurrentHashMap<String, Boolean> pendingDoorbellMap = new ConcurrentHashMap<String, Boolean>();
@@ -68,6 +69,14 @@ public class InboundDRStreamConsumer {
                 dispatcherLoop();
             }
         });
+        recoveryThread = Executors.newSingleThreadExecutor();
+        recoveryThread.execute(new RedisStreamAutoClaimRunner("Core inbound-DR",
+                StreamQueueManager.STR_INBOUND_DR_PREFIX + "*", groupName, consumerName, false, queueManager,
+                new RedisStreamAutoClaimRunner.MessageProcessor() {
+                    public void process(String streamKey, GmmsMessage msg) {
+                        processMessage(streamKey, msg);
+                    }
+                }));
 
         logger.info("Core inbound-DR consumer started. Group: {}, Consumer: {}, Config: {}",
                 groupName, consumerName, consumerConfig.summary());
@@ -77,6 +86,9 @@ public class InboundDRStreamConsumer {
         running = false;
         if (dispatcherThread != null) {
             dispatcherThread.shutdownNow();
+        }
+        if (recoveryThread != null) {
+            recoveryThread.shutdownNow();
         }
         if (workerPool != null) {
             workerPool.shutdown();
@@ -117,7 +129,6 @@ public class InboundDRStreamConsumer {
         public void run() {
             try {
                 queueManager.createGroup(streamKey, groupName, false);
-                processAutoClaim(streamKey);
 
                 while (running) {
                     Map<String, StreamEntryID> query = new HashMap<String, StreamEntryID>();
@@ -150,17 +161,6 @@ public class InboundDRStreamConsumer {
         }
         lastPoolConfigRefreshMs = now;
         consumerConfig.applyWorkerPool(workerPool);
-    }
-
-    private void processAutoClaim(String streamKey) {
-        List<GmmsMessage> orphans = queueManager.autoClaimBatch(streamKey, groupName, consumerName,
-            queueManager.getAutoClaimIdleMs(), queueManager.getAutoClaimBatchSize(), false);
-        if (orphans == null || orphans.isEmpty()) {
-            return;
-        }
-        for (GmmsMessage msg : orphans) {
-            processMessage(streamKey, msg);
-        }
     }
 
     private void processMessage(String streamKey, GmmsMessage msg) {

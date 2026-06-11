@@ -65,6 +65,7 @@ public class HttpClientStreamConsumer {
 		private volatile boolean running = false;
 		private volatile long lastPoolConfigRefreshMs = 0L;
 		private ExecutorService dispatcherThread;
+		private ExecutorService recoveryThread;
 		private ThreadPoolExecutor workerPool;
 
 		private HttpFlowConsumer(String configPrefix, String groupName, String consumerBaseName,
@@ -96,6 +97,14 @@ public class HttpClientStreamConsumer {
 					dispatcherLoop();
 				}
 			});
+			recoveryThread = Executors.newSingleThreadExecutor();
+			recoveryThread.execute(new RedisStreamAutoClaimRunner(configPrefix,
+					streamPrefix + "*", groupName, consumerName, submitMq, queueManager,
+					new RedisStreamAutoClaimRunner.MessageProcessor() {
+						public void process(String streamKey, GmmsMessage msg) {
+							processMessage(streamKey, msg);
+						}
+					}));
 			queueManager.reRingExistingStreams(streamPrefix + "*", submitMq);
 			logger.info("{} consumer started. Group: {}, Consumer: {}, Config: {}",
 					configPrefix, groupName, consumerName, consumerConfig.summary());
@@ -105,6 +114,9 @@ public class HttpClientStreamConsumer {
 			running = false;
 			if (dispatcherThread != null) {
 				dispatcherThread.shutdownNow();
+			}
+			if (recoveryThread != null) {
+				recoveryThread.shutdownNow();
 			}
 			if (workerPool != null) {
 				workerPool.shutdown();
@@ -150,7 +162,6 @@ public class HttpClientStreamConsumer {
 				try {
 					queueManager.createGroup(streamKey, groupName, submitMq);
 					while (running) {
-						processAutoClaim(streamKey);
 						Map<String, StreamEntryID> query = new HashMap<String, StreamEntryID>();
 						query.put(streamKey, StreamEntryID.UNRECEIVED_ENTRY);
 						List<GmmsMessage> messages = queueManager.consumeBatch(groupName, consumerName,
@@ -183,21 +194,11 @@ public class HttpClientStreamConsumer {
 			consumerConfig.applyWorkerPool(workerPool);
 		}
 
-		private void processAutoClaim(String streamKey) {
-			List<GmmsMessage> messages = queueManager.autoClaimBatch(streamKey, groupName, consumerName,
-					queueManager.getAutoClaimIdleMs(), queueManager.getAutoClaimBatchSize(), submitMq);
-			if (messages == null || messages.isEmpty()) {
-				return;
-			}
-			for (GmmsMessage msg : messages) {
-				processMessage(streamKey, msg);
-			}
-		}
-
 		private void processMessage(String streamKey, GmmsMessage msg) {
 			long start = System.nanoTime();
 			String processMessageType = submitMq ? "submit" : "dr";
 			int targetSsid = -1;
+			String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
 			try {
 				targetSsid = resolveTargetSsid(msg);
 				incrementReceivedFromStreamMetric(targetSsid);
@@ -209,7 +210,12 @@ public class HttpClientStreamConsumer {
 				boolean success = session.submit(msg);
 				if (success) {
 					incrementSuccessMetric(targetSsid);
-					queueManager.ack(streamKey, groupName, msg, submitMq);
+					boolean acked = queueManager.ackById(streamKey, groupName, sourceRedisId, msg, submitMq);
+					if (!acked) {
+						logger.warn(msg,
+								"HTTP client stream ack failed after send success. streamKey={}, sourceRedisId={}, currentRedisId={}",
+								streamKey, sourceRedisId, msg == null ? null : msg.getRedisStreamID());
+					}
 					return;
 				}
 				failToCoreAndAck(streamKey, msg, targetSsid, "http submit returned false, ssid=" + targetSsid);
@@ -272,6 +278,7 @@ public class HttpClientStreamConsumer {
 
 		private void failToCoreAndAck(String streamKey, GmmsMessage msg, int targetSsid, String reason) {
 			boolean resultProduced = false;
+			String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
 			boolean alreadyResponse = isResponseMessage(msg);
 			try {
 				logger.warn(msg, "{} failed before HTTP response result. streamKey={}, reason={}",
@@ -300,8 +307,11 @@ public class HttpClientStreamConsumer {
 				logger.error(msg, "Failed to produce HTTP failure result", e);
 			} finally {
 				if (resultProduced) {
-					queueManager.ack(streamKey, groupName, msg, submitMq);
+					queueManager.ackById(streamKey, groupName, sourceRedisId, msg, submitMq);
 				} else {
+					if (msg != null) {
+						msg.setRedisStreamID(sourceRedisId);
+					}
 					queueManager.logNack(streamKey, groupName, consumerName, msg, submitMq,
 							"failure_result_not_produced:" + reason);
 				}

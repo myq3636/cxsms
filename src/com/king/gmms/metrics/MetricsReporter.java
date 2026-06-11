@@ -1,5 +1,7 @@
 package com.king.gmms.metrics;
 
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -30,6 +32,7 @@ public class MetricsReporter {
     private static final MetricsReporter INSTANCE = new MetricsReporter();
 
     private final MetricsCollector collector = MetricsCollector.getInstance();
+    private final ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
     private ScheduledExecutorService scheduler;
     private volatile boolean running = false;
     private volatile String logLevel = "DEBUG";
@@ -170,6 +173,7 @@ public class MetricsReporter {
      */
     private void report() {
         long now = System.currentTimeMillis();
+        updateJvmThreadGauges();
         Map<String, Long> currentCounters = collector.snapshotCounters();
         Map<String, Long> currentGauges = collector.snapshotGauges();
         Map<String, Long> currentTimerCounts = collector.snapshotTimerCounts();
@@ -289,6 +293,13 @@ public class MetricsReporter {
             buckets.append(bucket).append("=").append(current - previous);
         }
         return buckets.toString();
+    }
+
+    private void updateJvmThreadGauges() {
+        collector.setGauge(MetricsNames.gauge("jvm.thread", "count"), threadMXBean.getThreadCount());
+        collector.setGauge(MetricsNames.gauge("jvm.thread", "daemon_count"), threadMXBean.getDaemonThreadCount());
+        collector.setGauge(MetricsNames.gauge("jvm.thread", "peak_count"), threadMXBean.getPeakThreadCount());
+        collector.setGauge(MetricsNames.gauge("jvm.thread", "total_started"), threadMXBean.getTotalStartedThreadCount());
     }
 
     private void logByConfiguredLevel(String line) {

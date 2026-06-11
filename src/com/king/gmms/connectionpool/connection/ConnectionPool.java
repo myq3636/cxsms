@@ -194,6 +194,12 @@ public class ConnectionPool {
         }
     }
 
+    public List<Connection> getAvailableConnectionsSnapshot() {
+        synchronized (mutex) {
+            return new ArrayList<Connection>(connectedPool.values());
+        }
+    }
+
     public int getAvailableSize(){
         return connectedPool.size();
     }

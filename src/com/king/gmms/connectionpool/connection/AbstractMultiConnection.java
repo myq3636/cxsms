@@ -188,6 +188,23 @@ public abstract class AbstractMultiConnection
 
     public abstract boolean deleteSession(Session session);
 
+	public List<Session> getConnectedSessionsSnapshot() {
+		List<Session> sessions = new ArrayList<Session>();
+		synchronized (mutex) {
+			if (connectedSessions == null || connectedSessions.isEmpty()) {
+				return sessions;
+			}
+			Iterator iterator = connectedSessions.values().iterator();
+			while (iterator.hasNext()) {
+				Object obj = iterator.next();
+				if (obj instanceof Session) {
+					sessions.add((Session) obj);
+				}
+			}
+		}
+		return sessions;
+	}
+
 	public Map<TransactionURI, Session> getTransactionURI2Connections() {
 		return transactionURI2Connections;
 	}

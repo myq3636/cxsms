@@ -7,12 +7,17 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import com.king.framework.SystemLogger;
+import com.king.gmms.GmmsUtility;
 import com.king.gmms.connectionpool.ConnectionStatus;
+import com.king.gmms.connectionpool.session.MultiSmppSession;
 import com.king.gmms.connectionpool.session.Session;
+import com.king.gmms.connectionpool.session.SmppDrSubmitResult;
 import com.king.gmms.customerconnectionfactory.MultiSmppServerFactory;
 import com.king.gmms.ha.SmppServerDrRouteResolver;
 import com.king.gmms.metrics.MetricsCollector;
@@ -41,12 +46,22 @@ public class DRStreamConsumer {
     private volatile long lastPoolConfigRefreshMs = 0L;
     
     private ExecutorService dispatcherThread;
+    private ExecutorService recoveryThread;
+    private ScheduledExecutorService windowRetryThread;
     private ThreadPoolExecutor workerPool;
     private final ConcurrentHashMap<String, Boolean> processingMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> pendingDoorbellMap = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Boolean> windowRetryMap = new ConcurrentHashMap<String, Boolean>();
+    private final ConcurrentHashMap<String, AtomicLong> windowFullCountMap = new ConcurrentHashMap<String, AtomicLong>();
+    private final ConcurrentHashMap<String, AtomicLong> windowFullLastWarnMsMap = new ConcurrentHashMap<String, AtomicLong>();
 
     private final StreamQueueManager queueManager;
     private final RedisStreamConsumerConfig consumerConfig;
+
+    private enum ProcessResult {
+        DONE,
+        WINDOW_FULL
+    }
 
     private DRStreamConsumer() {
         String nodeId = System.getProperty("NodeID", "0");
@@ -70,6 +85,17 @@ public class DRStreamConsumer {
 
         dispatcherThread = Executors.newSingleThreadExecutor();
         dispatcherThread.execute(this::dispatcherLoop);
+        windowRetryThread = Executors.newSingleThreadScheduledExecutor();
+        recoveryThread = Executors.newSingleThreadExecutor();
+        recoveryThread.execute(new RedisStreamAutoClaimRunner("Server DR-to-customer",
+                StreamQueueManager.STR_DR_PENDING_PREFIX + "*", groupName, consumerName, false, queueManager,
+                new RedisStreamAutoClaimRunner.MessageProcessor() {
+                    public void process(String streamKey, GmmsMessage msg) {
+                        if (sendDeliveryReport(streamKey, msg) == ProcessResult.WINDOW_FULL) {
+                            scheduleWindowRetry(streamKey);
+                        }
+                    }
+                }));
 
         logger.info("Server DR-to-customer consumer started. Group: {}, Consumer: {}, Config: {}",
             groupName, consumerName, consumerConfig.summary());
@@ -79,6 +105,8 @@ public class DRStreamConsumer {
     public synchronized void stop() {
         running = false;
         if (dispatcherThread != null) dispatcherThread.shutdownNow();
+        if (recoveryThread != null) recoveryThread.shutdownNow();
+        if (windowRetryThread != null) windowRetryThread.shutdownNow();
         if (workerPool != null) workerPool.shutdown();
         logger.info("Server DR-to-customer consumer stopped. Consumer: {}", consumerName);
     }
@@ -124,8 +152,6 @@ public class DRStreamConsumer {
                     streamKey, groupName, consumerName);
 
                 while (running) {
-                    processAutoClaim(streamKey);
-
                     Map<String, StreamEntryID> query = new HashMap<>();
                     query.put(streamKey, StreamEntryID.UNRECEIVED_ENTRY);
                     
@@ -141,7 +167,10 @@ public class DRStreamConsumer {
 
                     for (GmmsMessage msg : messages) {
                         // 【业务集成】：将 DR 发送回 SmppServer 的客户端
-                        sendDeliveryReport(streamKey, msg);
+                        if (sendDeliveryReport(streamKey, msg) == ProcessResult.WINDOW_FULL) {
+                            scheduleWindowRetry(streamKey);
+                            break;
+                        }
                         // 确认消费
                     }
                 }
@@ -164,38 +193,54 @@ public class DRStreamConsumer {
         lastPoolConfigRefreshMs = now;
         consumerConfig.applyWorkerPool(workerPool);
     }
-    
-    private void processAutoClaim(String streamKey) {
-        List<GmmsMessage> orphans = queueManager.autoClaimBatch(streamKey, groupName, consumerName,
-                queueManager.getAutoClaimIdleMs(), queueManager.getAutoClaimBatchSize(), false);
-        if (orphans == null || orphans.isEmpty()) {
-            return;
-        }
-        for (GmmsMessage msg : orphans) {
-            sendDeliveryReport(streamKey, msg);
-        }
-    }
 
-    private void sendDeliveryReport(String streamKey, GmmsMessage msg) {
+    private ProcessResult sendDeliveryReport(String streamKey, GmmsMessage msg) {
         long start = System.nanoTime();
+        String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
         try {
             Session session = resolveServerSession(msg);
             if (session == null) {
                 logger.warn(msg, "Server DR-to-customer session not found. streamKey={}", streamKey);
                 failToCoreAndAck(streamKey, msg, "session not found");
-                return;
+                return ProcessResult.DONE;
             }
             logger.info(msg, "Server DR-to-customer resolved session. streamKey={}, session={}, status={}",
                 streamKey, session.getSessionName(), session.getStatus());
-            if (session != null && isConnected(session) && session.submit(msg)) {
+            SmppDrSubmitResult submitResult = SmppDrSubmitResult.FAILED;
+            if (session != null && isConnected(session)) {
+                if (session instanceof MultiSmppSession) {
+                    MultiSmppSession smppSession = (MultiSmppSession) session;
+                    if (!smppSession.hasServerDrWindow()) {
+                        recordWindowFull(streamKey, msg, session.getSessionName(), "precheck");
+                        queueManager.logNack(streamKey, groupName, consumerName, msg, false, "server_dr_window_full");
+                        return ProcessResult.WINDOW_FULL;
+                    }
+                    submitResult = smppSession.submitServerDr(msg);
+                } else {
+                    submitResult = session.submit(msg) ? SmppDrSubmitResult.SENT : SmppDrSubmitResult.FAILED;
+                }
+            }
+            if (submitResult == SmppDrSubmitResult.WINDOW_FULL) {
+                recordWindowFull(streamKey, msg, session.getSessionName(), "submit");
+                queueManager.logNack(streamKey, groupName, consumerName, msg, false, "server_dr_window_full");
+                return ProcessResult.WINDOW_FULL;
+            }
+            if (submitResult == SmppDrSubmitResult.SENT) {
+                clearWindowFullState(streamKey);
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
                         MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_SENT_TO_CUSTOMER));
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
                         MetricsNames.STAGE_OUT_DR, msg, false, MetricsNames.ACTION_SENT_TO_CUSTOMER));
-                queueManager.ack(streamKey, groupName, msg, false);
-                logger.debug(msg, "Server DR-to-customer sent and acked. streamKey={}, session={}",
-                    streamKey, session.getSessionName());
-                return;
+                boolean acked = queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);
+                if (acked) {
+                    logger.debug(msg, "Server DR-to-customer sent and acked. streamKey={}, session={}, sourceRedisId={}",
+                        streamKey, session.getSessionName(), sourceRedisId);
+                } else {
+                    logger.warn(msg, "Server DR-to-customer sent but ack failed. streamKey={}, session={}, sourceRedisId={}, currentRedisId={}",
+                        streamKey, session.getSessionName(), sourceRedisId,
+                        msg == null ? null : msg.getRedisStreamID());
+                }
+                return ProcessResult.DONE;
             }
             logger.warn(msg, "Server DR-to-customer submit failed or session unavailable. streamKey={}, session={}, status={}",
                 streamKey, session.getSessionName(), session.getStatus());
@@ -208,6 +253,111 @@ public class DRStreamConsumer {
             MetricsCollector.getInstance().recordTime(MetricsNames.timer(MetricsNames.COMPONENT_CONSUMER,
                     MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_LATENCY),
                     System.nanoTime() - start);
+        }
+        return ProcessResult.DONE;
+    }
+
+    private void scheduleWindowRetry(final String streamKey) {
+        if (streamKey == null || windowRetryThread == null) {
+            return;
+        }
+        if (windowRetryMap.putIfAbsent(streamKey, Boolean.TRUE) != null) {
+            return;
+        }
+        final long retryMs = getWindowFullRetryMs();
+        windowRetryThread.schedule(new Runnable() {
+            public void run() {
+                boolean retryAgain = false;
+                try {
+                    List<GmmsMessage> claimed = queueManager.autoClaimBatch(streamKey, groupName, consumerName,
+                            retryMs, getWindowFullRetryBatchSize(), false);
+                    if (claimed != null && !claimed.isEmpty()) {
+                        MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(
+                                MetricsNames.COMPONENT_STREAM, MetricsNames.FLOW_PROCESS,
+                                null, MetricsNames.ACTION_RETRY_CLAIM), claimed.size());
+                        MetricsCollector.getInstance().setGauge(MetricsNames.gauge(
+                                "stream.server.dr.window_retry", "last_claim_count"), claimed.size());
+                        for (GmmsMessage msg : claimed) {
+                            if (sendDeliveryReport(streamKey, msg) == ProcessResult.WINDOW_FULL) {
+                                retryAgain = true;
+                                return;
+                            }
+                        }
+                    } else {
+                        queueManager.triggerDoorbell(streamKey, false);
+                    }
+                } catch (Exception e) {
+                    logger.warn("Server DR-to-customer window retry failed. streamKey={}", streamKey, e);
+                    queueManager.triggerDoorbell(streamKey, false);
+                } finally {
+                    windowRetryMap.remove(streamKey);
+                    if (retryAgain) {
+                        scheduleWindowRetry(streamKey);
+                    }
+                }
+            }
+        }, retryMs, TimeUnit.MILLISECONDS);
+    }
+
+    private long getWindowFullRetryMs() {
+        try {
+            long value = Long.parseLong(GmmsUtility.getInstance()
+                    .getCommonProperty("ServerDrWindowFullRetryMs", "100").trim());
+            return Math.max(10L, Math.min(value, 60000L));
+        } catch (Exception e) {
+            return 100L;
+        }
+    }
+
+    private void recordWindowFull(String streamKey, GmmsMessage msg, String sessionName, String phase) {
+        MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_WINDOW_FULL));
+        MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                MetricsNames.STAGE_OUT_DR, msg, false, MetricsNames.ACTION_WINDOW_FULL));
+        MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(
+                MetricsNames.COMPONENT_CONSUMER, MetricsNames.FLOW_PROCESS, msg,
+                MetricsNames.ACTION_WINDOW_FULL));
+        AtomicLong count = getAtomic(windowFullCountMap, streamKey);
+        long currentCount = count.incrementAndGet();
+        MetricsCollector.getInstance().setGauge(MetricsNames.gauge(
+                "stream.server.dr.window_full", "consecutive"), currentCount);
+        maybeLogWindowFull(streamKey, msg, sessionName, phase, currentCount);
+    }
+
+    private void maybeLogWindowFull(String streamKey, GmmsMessage msg, String sessionName, String phase, long count) {
+        long now = System.currentTimeMillis();
+        AtomicLong lastWarnMs = getAtomic(windowFullLastWarnMsMap, streamKey);
+        long last = lastWarnMs.get();
+        boolean shouldLog = count == 1 || count % 1000 == 0 || now - last >= 30000L;
+        if (!shouldLog || !lastWarnMs.compareAndSet(last, now)) {
+            return;
+        }
+        logger.warn(msg, "Server DR-to-customer window full. streamKey={}, session={}, phase={}, consecutive={}, retryMs={}, retryBatch={}",
+                streamKey, sessionName, phase, count, getWindowFullRetryMs(), getWindowFullRetryBatchSize());
+    }
+
+    private void clearWindowFullState(String streamKey) {
+        windowFullCountMap.remove(streamKey);
+        windowFullLastWarnMsMap.remove(streamKey);
+    }
+
+    private AtomicLong getAtomic(ConcurrentHashMap<String, AtomicLong> map, String key) {
+        String safeKey = key == null ? "unknown" : key;
+        AtomicLong value = map.get(safeKey);
+        if (value == null) {
+            map.putIfAbsent(safeKey, new AtomicLong(0));
+            value = map.get(safeKey);
+        }
+        return value;
+    }
+
+    private int getWindowFullRetryBatchSize() {
+        try {
+            int value = Integer.parseInt(GmmsUtility.getInstance()
+                    .getCommonProperty("ServerDrWindowFullRetryBatchSize", "100").trim());
+            return Math.max(1, Math.min(value, 10000));
+        } catch (Exception e) {
+            return 100;
         }
     }
 
@@ -236,6 +386,7 @@ public class DRStreamConsumer {
     }
     
     private void failToCoreAndAck(String streamKey, GmmsMessage msg, String reason) {
+        String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
         MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(MetricsNames.COMPONENT_CONSUMER,
                 MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_FAIL));
         MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
@@ -251,10 +402,13 @@ public class DRStreamConsumer {
         }
 
         if (queueManager.produceResult(msg)) {
-            queueManager.ack(streamKey, groupName, msg, false);
+            queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);
             logger.warn(msg, "Server DR-to-customer failed, reported 11005 to core and acked. streamKey={}, reason={}",
                 streamKey, reason);
             return;
+        }
+        if (msg != null) {
+            msg.setRedisStreamID(sourceRedisId);
         }
 
         logger.error(msg, "Server DR-to-customer failed and could not report 11005 to core. "

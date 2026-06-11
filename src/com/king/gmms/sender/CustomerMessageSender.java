@@ -34,11 +34,17 @@ public class CustomerMessageSender extends Sender {
 	protected boolean isEnableSysMgt = false;
 	protected boolean isRespFirst = false;
 	protected GmmsUtility gmmsUtility = null;
+	private boolean skipLegacyOutgoingThrottle = false;
 	
 	public CustomerMessageSender(GmmsMessage msg, ConnectionManager connManager, A2PCustomerInfo cst) {
+		this(msg, connManager, cst, false);
+	}
+
+	public CustomerMessageSender(GmmsMessage msg, ConnectionManager connManager, A2PCustomerInfo cst, boolean skipLegacyOutgoingThrottle) {
 		super.message = msg;
 //		this.connManager = connManager;
 		this.ssid = cst.getSSID();
+		this.skipLegacyOutgoingThrottle = skipLegacyOutgoingThrottle;
 		processor = new Processor();
 		gmmsUtility = GmmsUtility.getInstance();
 		
@@ -67,9 +73,10 @@ public class CustomerMessageSender extends Sender {
 	
 	public void deliver(GmmsMessage msg) {
 		// Outgoing throttling control
-		if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(msg.getMessageType())
+		if (!skipLegacyOutgoingThrottle
+				&& (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(msg.getMessageType())
 				|| GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(msg.getMessageType()) 
-				|| GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(msg.getMessageType())) {
+				|| GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(msg.getMessageType()))) {
 			while (cInfo.getOutgoingThrottlingNum() > 0 
 					&& cInfo.getPriorityPercentMap().isEmpty()
 					&& !ThrottlingControl.getInstance().isAllowedToSend(ssid)) {

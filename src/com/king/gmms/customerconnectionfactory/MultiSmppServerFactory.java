@@ -1,14 +1,24 @@
 package com.king.gmms.customerconnectionfactory;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Iterator;
+import java.util.Set;
 
 import com.king.framework.SystemLogger;
+import com.king.gmms.connectionpool.ConnectionStatus;
 import com.king.gmms.connectionpool.connection.*;
+import com.king.gmms.connectionpool.session.MultiSmppSession;
 import com.king.gmms.connectionpool.session.Session;
 import com.king.gmms.connectionpool.systemmanagement.strategy.CustomerNodeStrategy;
 import com.king.gmms.connectionpool.systemmanagement.strategy.CustomerStrategy;
 import com.king.gmms.connectionpool.systemmanagement.strategy.SessionStrategyInterface;
+import com.king.gmms.ha.SmppServerSessionRegistry;
+import com.king.gmms.ha.SmppServerAssignmentResolver;
 import com.king.gmms.connectionpool.node.Node;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.ConnectionInfo;
@@ -76,6 +86,12 @@ public class MultiSmppServerFactory extends AbstractConnectionFactory {
 			log.info("initConnectionFactory for ssid:{},type:{}", ssid, type);
 		}
 		try {
+			A2PCustomerInfo customer = cim.getCustomerBySSID(ssid);
+			if (!SmppServerAssignmentResolver.getInstance().shouldLoadOnCurrentModule(customer)) {
+				log.info("Skip SMPP server initConnectionFactory by assignment. module={}, ssid={}, assigned={}",
+						moduleName, ssid, SmppServerAssignmentResolver.getInstance().assignedModules(customer));
+				return;
+			}
 			switch (type) {
 			case 1: {
 				this.initSingleConnection(ssid);
@@ -133,6 +149,19 @@ public class MultiSmppServerFactory extends AbstractConnectionFactory {
 		} finally {
 			ssid2SessionStrategies.remove(ssid);
 		}
+	}
+
+	public boolean hasConnectionFactory(int ssid) {
+		if (ssid2SessionStrategies.containsKey(ssid) || ssid2messageQueues.containsKey(ssid)) {
+			return true;
+		}
+		String prefix = ssid + "_";
+		for (String key : ssid2connectionManagers.keySet()) {
+			if (key != null && key.startsWith(prefix)) {
+				return true;
+			}
+		}
+		return false;
 	}
 	/**
 	 * initMultiConnection
@@ -282,6 +311,7 @@ public class MultiSmppServerFactory extends AbstractConnectionFactory {
 		int ssid = GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(msg.getMessageType())
 				? msg.getRSsID() : msg.getOSsID();
 		String prefix = ssid + "_";
+		StringBuilder detail = new StringBuilder();
 		Iterator<Map.Entry<String, ConnectionManager>> it = ssid2connectionManagers.entrySet().iterator();
 		while (it.hasNext()) {
 			Map.Entry<String, ConnectionManager> entry = it.next();
@@ -294,13 +324,77 @@ public class MultiSmppServerFactory extends AbstractConnectionFactory {
 			}
 			Session session = manager.getSession();
 			if (session != null) {
-				log.info(msg, "Fallback SMPP server session selected. ssid={}, managerKey={}, session={}",
-						ssid, entry.getKey(), session.getSessionName());
+				log.info(msg, "Fallback SMPP server session selected. ssid={}, managerKey={}, session={}, status={}",
+						ssid, entry.getKey(), session.getSessionName(), session.getStatus());
 				return session;
 			}
+			detail.append("{managerKey=").append(entry.getKey())
+					.append(",connNum=").append(manager.getConnectionNum())
+					.append(",sessionNum=").append(manager.getSessionNum())
+					.append("}");
 		}
-		log.warn(msg, "No fallback SMPP server session for ssid {}", ssid);
+		log.warn(msg, "No fallback SMPP server session for ssid {}. managers={}", ssid, detail.toString());
 		return null;
+	}
+
+	public void reconcileServerSessionRegistry() {
+		SmppServerSessionRegistry registry = SmppServerSessionRegistry.getInstance();
+		if (!registry.isEnabled()) {
+			return;
+		}
+		Set<String> liveKeys = new HashSet<String>();
+		List<MultiSmppSession> sessions = getLiveServerSessionsSnapshot();
+		for (MultiSmppSession session : sessions) {
+			String key = registry.refresh(session);
+			if (key != null) {
+				liveKeys.add(key);
+			}
+		}
+		registry.cleanupCurrentModule(liveKeys);
+	}
+
+	private List<MultiSmppSession> getLiveServerSessionsSnapshot() {
+		List<MultiSmppSession> sessions = new ArrayList<MultiSmppSession>();
+		Set<ConnectionManager> seenManagers = Collections.newSetFromMap(new IdentityHashMap<ConnectionManager, Boolean>());
+		Iterator<ConnectionManager> it = ssid2connectionManagers.values().iterator();
+		while (it.hasNext()) {
+			ConnectionManager manager = it.next();
+			if (manager == null || seenManagers.contains(manager)) {
+				continue;
+			}
+			seenManagers.add(manager);
+			List<Connection> connections = getAvailableConnections(manager);
+			for (Connection connection : connections) {
+				if (!(connection instanceof AbstractMultiConnection)) {
+					continue;
+				}
+				List<Session> connectionSessions = ((AbstractMultiConnection) connection).getConnectedSessionsSnapshot();
+				for (Session session : connectionSessions) {
+					if (session instanceof MultiSmppSession && session.isServer() && isConnected(session)) {
+						sessions.add((MultiSmppSession) session);
+					}
+				}
+			}
+		}
+		return sessions;
+	}
+
+	private List<Connection> getAvailableConnections(ConnectionManager manager) {
+		if (manager instanceof ConnectionManagerImplWithBindMode) {
+			return ((ConnectionManagerImplWithBindMode) manager).getAvailableConnectionsSnapshot();
+		}
+		if (manager instanceof ConnectionManagerImpl) {
+			return ((ConnectionManagerImpl) manager).getAvailableConnectionsSnapshot();
+		}
+		if (manager instanceof NodeConnectionManagerWithBindMode) {
+			return ((NodeConnectionManagerWithBindMode) manager).getAvailableConnectionsSnapshot();
+		}
+		return Collections.emptyList();
+	}
+
+	private boolean isConnected(Session session) {
+		ConnectionStatus status = session.getStatus();
+		return ConnectionStatus.CONNECT.equals(status) || ConnectionStatus.RECOVER.equals(status);
 	}
 
 }

@@ -1,5 +1,4 @@
 package com.king.gmms.ha;
-
 import java.text.SimpleDateFormat;
 import java.util.Date;
 

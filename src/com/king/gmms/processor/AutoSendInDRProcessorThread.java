@@ -74,19 +74,8 @@ public class AutoSendInDRProcessorThread extends RunnableMsgTask{
 		String delayTimeInterval = oInfo.getDrDelayTimeInSec();
 		int delayTime = GmmsUtility.getRandomValueByDelayTimeInterval(delayTimeInterval);
 		GmmsMessage drMsg = DirectInDRDispatchService.getInstance().buildAutoInDR(message);
-		if (DirectInDRDispatchService.getInstance().isEnabled()) {
-			boolean success = DirectInDRDispatchService.getInstance().dispatchOrDelay(drMsg, delayTime);
-			if (success) {
-				message.setFakeDR(false);
-				return;
-			}
-			if (!Boolean.parseBoolean(gmmsUtility.getCommonProperty("AutoInDR.FallbackToLegacyDelayDR", "true"))) {
-				log.warn(drMsg, "Auto IN_DR direct dispatch failed and legacy fallback disabled.");
-				return;
-			}
-			log.warn(drMsg, "Auto IN_DR direct dispatch failed, fallback to legacy delayDR.");
-		}
 		msm.insertMsgForDRDelay(drMsg, delayTime);
+		message.setFakeDR(false);
 	}
 	
 	private boolean isBlackholed(GmmsMessage message) {

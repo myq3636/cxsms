@@ -40,6 +40,10 @@ public class PendingSubmitEntry implements Delayed {
         return expireAt;
     }
 
+    public long getNextCheckAt() {
+        return nextCheckAt;
+    }
+
     public GmmsMessage getMessage() {
         return message;
     }

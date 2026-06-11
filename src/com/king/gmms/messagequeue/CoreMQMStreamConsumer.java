@@ -74,6 +74,7 @@ public class CoreMQMStreamConsumer {
         private volatile boolean running = false;
         private volatile long lastPoolConfigRefreshMs = 0L;
         private ExecutorService dispatcherThread;
+        private ExecutorService recoveryThread;
         private ThreadPoolExecutor workerPool;
         private final ConcurrentHashMap<String, Boolean> processingMap = new ConcurrentHashMap<String, Boolean>();
         private final ConcurrentHashMap<String, Boolean> pendingDoorbellMap = new ConcurrentHashMap<String, Boolean>();
@@ -107,6 +108,14 @@ public class CoreMQMStreamConsumer {
                     dispatcherLoop();
                 }
             });
+            recoveryThread = Executors.newSingleThreadExecutor();
+            recoveryThread.execute(new RedisStreamAutoClaimRunner("Core " + functionName,
+                    streamPattern, groupName, consumerName, submitMq, queueManager,
+                    new RedisStreamAutoClaimRunner.MessageProcessor() {
+                        public void process(String streamKey, GmmsMessage msg) {
+                            processMessage(streamKey, msg);
+                        }
+                    }));
 
             queueManager.reRingExistingStreams(streamPattern, submitMq);
             logger.info("Core MQM stream consumer started. Function: {}, Group: {}, Consumer: {}, Shards: {}, Config: {}",
@@ -117,6 +126,9 @@ public class CoreMQMStreamConsumer {
             running = false;
             if (dispatcherThread != null) {
                 dispatcherThread.shutdownNow();
+            }
+            if (recoveryThread != null) {
+                recoveryThread.shutdownNow();
             }
             if (workerPool != null) {
                 workerPool.shutdown();
@@ -161,7 +173,6 @@ public class CoreMQMStreamConsumer {
             public void run() {
                 try {
                     queueManager.createGroup(streamKey, groupName, submitMq);
-                    processAutoClaim(streamKey);
 
                     while (running) {
                         Map<String, StreamEntryID> query = new HashMap<String, StreamEntryID>();
@@ -181,8 +192,14 @@ public class CoreMQMStreamConsumer {
                     logger.error("Error processing MQM stream: " + streamKey, e);
                 } finally {
                     processingMap.remove(streamKey);
-                    if (pendingDoorbellMap.remove(streamKey) != null && queueManager.streamLength(streamKey, submitMq) > 0) {
+                    boolean hadPendingDoorbell = pendingDoorbellMap.remove(streamKey) != null;
+                    long remaining = queueManager.streamLength(streamKey, submitMq);
+                    if (remaining > 0) {
                         queueManager.triggerDoorbell(streamKey, submitMq);
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Core MQM stream re-ring after worker exit. function={}, streamKey={}, remaining={}, hadPendingDoorbell={}",
+                                    functionName, streamKey, remaining, hadPendingDoorbell);
+                        }
                     }
                 }
             }
@@ -195,17 +212,6 @@ public class CoreMQMStreamConsumer {
             }
             lastPoolConfigRefreshMs = now;
             consumerConfig.applyWorkerPool(workerPool);
-        }
-
-        private void processAutoClaim(String streamKey) {
-            List<GmmsMessage> orphans = queueManager.autoClaimBatch(streamKey, groupName, consumerName,
-                    queueManager.getAutoClaimIdleMs(), queueManager.getAutoClaimBatchSize(), submitMq);
-            if (orphans == null || orphans.isEmpty()) {
-                return;
-            }
-            for (GmmsMessage msg : orphans) {
-                processMessage(streamKey, msg);
-            }
         }
 
         private void processMessage(String streamKey, GmmsMessage msg) {

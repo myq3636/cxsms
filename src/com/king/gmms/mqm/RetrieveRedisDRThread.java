@@ -105,20 +105,31 @@ public class RetrieveRedisDRThread extends Thread {
 				for(String outmsgid : set){
 					if(outmsgid != null){
 						String temp = redis.getString(outmsgid);
+						log.warn("TMP-DRLOOKUP redis retrieve candidate. hashKey=DR{}, out={}, exists={}",
+								i, outmsgid, temp != null);
 		        		if(log.isDebugEnabled()){
 		        			log.debug("temp: {}",temp);
 		        		}
 					    if(temp != null){
 					    	GmmsMessage message = SerializableHandler.convertRedisMssage2GmmsMessage(temp);
 					    	if(message != null){
+					    		log.warn(message,
+					    				"TMP-DRLOOKUP redis retrieve decoded. hashKey=DR{}, out={}, msgId={}, in={}, rsid={}, dateIn={}, expire={}",
+					    				i, outmsgid, message.getMsgID(), message.getInMsgID(),
+					    				message.getRSsID(), message.getDateIn(), message.getExpiryDate());
 					    		list.add(message);
 					    	}
 					    }
+					    log.warn("TMP-DRLOOKUP redis retrieve delete key. hashKey=DR{}, out={}",
+					    		i, outmsgid);
 					    redis.del(outmsgid);
 					}
 				}
 				
 				for(GmmsMessage msg : list){
+					log.warn(msg,
+							"TMP-DRLOOKUP redis retrieve insert WDQ. msgId={}, in={}, out={}, rsid={}",
+							msg.getMsgID(), msg.getInMsgID(), msg.getOutMsgID(), msg.getRSsID());
 					msm.insertMessageToDB(msg, table);
 				}
 				list.clear();

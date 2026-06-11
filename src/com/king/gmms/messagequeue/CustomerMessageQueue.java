@@ -43,6 +43,11 @@ public abstract class CustomerMessageQueue implements OperatorMessageQueue,Queue
 
     public CustomerMessageQueue(A2PCustomerInfo cst, int minSenderNum, int maxSenderNum,
     		                    boolean isServer, String queueName) {
+        this(cst, minSenderNum, maxSenderNum, isServer, queueName, true);
+    }
+
+    public CustomerMessageQueue(A2PCustomerInfo cst, int minSenderNum, int maxSenderNum,
+    		                    boolean isServer, String queueName, boolean createSenderThreadPool) {
         this.cst = cst;
         this.isServer = isServer;
         if(queueName != null){
@@ -55,9 +60,11 @@ public abstract class CustomerMessageQueue implements OperatorMessageQueue,Queue
         queueTimeout = gmmsUtility.getCacheMsgTimeout();
 		
 		// sender thread pool
-        ThreadPoolProfile profile = new ThreadPoolProfileBuilder(this.queueName)
-                .poolSize(minSenderNum).maxPoolSize(maxSenderNum).build();
-        senderThreadPool = executorServiceManager.newExpiredThreadPool(this, "CustSender_" + cst.getSSID(), profile, this, queueTimeout);
+        if (createSenderThreadPool) {
+            ThreadPoolProfile profile = new ThreadPoolProfileBuilder(this.queueName)
+                    .poolSize(minSenderNum).maxPoolSize(maxSenderNum).build();
+            senderThreadPool = executorServiceManager.newExpiredThreadPool(this, "CustSender_" + cst.getSSID(), profile, this, queueTimeout);
+        }
     }
     
     /**
@@ -68,7 +75,9 @@ public abstract class CustomerMessageQueue implements OperatorMessageQueue,Queue
     @Override
     public void stopMessageQueue() {
     	if (executorServiceManager != null) {
-    		executorServiceManager.shutdown(senderThreadPool);
+    		if (senderThreadPool != null) {
+    			executorServiceManager.shutdown(senderThreadPool);
+    		}
     	}
     }
 
@@ -79,5 +88,9 @@ public abstract class CustomerMessageQueue implements OperatorMessageQueue,Queue
 	public void setSenderThreadPool(ExecutorService senderThreadPool) {
 		this.senderThreadPool = senderThreadPool;
 	}    
+
+	public int getQueueTimeout() {
+		return queueTimeout;
+	}
 	
 }

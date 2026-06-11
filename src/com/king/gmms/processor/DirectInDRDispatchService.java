@@ -9,6 +9,8 @@ import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PCustomerManager;
 import com.king.gmms.domain.ModuleManager;
 import com.king.gmms.messagequeue.StreamQueueManager;
+import com.king.gmms.metrics.MetricsCollector;
+import com.king.gmms.metrics.MetricsNames;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
 import com.king.message.gmms.MessageStoreManager;
@@ -56,6 +58,10 @@ public class DirectInDRDispatchService {
 		return dispatchOneOrDelay(message, delaySeconds);
 	}
 
+	public boolean dispatchSingleOrDelay(GmmsMessage message, int delaySeconds) {
+		return dispatchOneOrDelay(message, delaySeconds);
+	}
+
 	private boolean dispatchOneOrDelay(GmmsMessage message, int delaySeconds) {
 		if (delaySeconds <= 0) {
 			return dispatchNow(message);
@@ -91,18 +97,32 @@ public class DirectInDRDispatchService {
 
 			restoreOriginalAddress(message);
 			String moduleName = resolveModuleName(message, server);
+			String streamKey = null;
 			boolean produced;
 			if ("HTTP".equalsIgnoreCase(server.getProtocol())) {
 				message.setDeliveryChannel(moduleName);
 				produced = StreamQueueManager.getInstance().produceHttpDeliveryReport(message);
 			} else {
-				produced = StreamQueueManager.getInstance().produceDeliveryReportToModule(message, moduleName);
+				streamKey = StreamQueueManager.getInstance().getDrPendingQueue(message);
+				if (isBlank(streamKey)) {
+					message.setStatusCode(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT.getCode());
+					MetricsCollector.getInstance().incrementCounter(MetricsNames.business(MetricsNames.FLOW_CORE,
+							message, MetricsNames.ACTION_RDQ_RETRY_POLICY));
+					log.warn(message, "Auto IN_DR direct dispatch has no SMPP server module, hand over to DR retry policy. reason=no_server_module, action=rdq_retry_policy, protocol={}, moduleName={}",
+							server.getProtocol(), moduleName);
+					msm.handleInDeliveryReportRes(message);
+					return true;
+				}
+				preserveDrTargetModule(message, streamKey);
+				produced = StreamQueueManager.getInstance().produceDeliveryReportToQueue(message, streamKey);
 			}
 			if (!produced) {
-				log.warn(message, "Auto IN_DR direct dispatch failed to produce stream. moduleName={}", moduleName);
+				log.warn(message, "Auto IN_DR direct dispatch failed to produce stream. protocol={}, moduleName={}, stream={}",
+						server.getProtocol(), moduleName, streamKey);
 				return false;
 			}
-			log.debug(message, "Auto IN_DR direct dispatch produced stream. moduleName={}", moduleName);
+			log.debug(message, "Auto IN_DR direct dispatch produced stream. protocol={}, moduleName={}, stream={}",
+					server.getProtocol(), moduleName, streamKey);
 			return true;
 		} catch (Exception e) {
 			log.warn(message, "Auto IN_DR direct dispatch error", e);
@@ -148,6 +168,42 @@ public class DirectInDRDispatchService {
 
 	private boolean isBlank(String value) {
 		return value == null || value.trim().length() == 0;
+	}
+
+	private void preserveDrTargetModule(GmmsMessage message, String streamKey) {
+		if (message == null || isBlank(streamKey)) {
+			return;
+		}
+		String targetModule = extractDrTargetModule(streamKey);
+		if (isBlank(targetModule)) {
+			return;
+		}
+		String currentModule = extractModuleName(message.getDeliveryChannel());
+		String localModule = System.getProperty("module");
+		if (isBlank(currentModule) || localModule != null && localModule.equalsIgnoreCase(currentModule)) {
+			message.setDeliveryChannel(targetModule);
+		}
+	}
+
+	private String extractDrTargetModule(String streamKey) {
+		if (isBlank(streamKey)) {
+			return null;
+		}
+		String prefix = "stream:dr:pending:";
+		if (!streamKey.startsWith(prefix)) {
+			return null;
+		}
+		String rest = streamKey.substring(prefix.length());
+		int firstColon = rest.indexOf(':');
+		if (firstColon < 0 || firstColon + 1 >= rest.length()) {
+			return null;
+		}
+		String moduleAndShard = rest.substring(firstColon + 1);
+		int lastColon = moduleAndShard.lastIndexOf(':');
+		if (lastColon > 0) {
+			return moduleAndShard.substring(0, lastColon);
+		}
+		return moduleAndShard;
 	}
 
 	public GmmsMessage buildAutoInDR(GmmsMessage source) {

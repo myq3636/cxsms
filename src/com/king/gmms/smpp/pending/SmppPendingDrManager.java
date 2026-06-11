@@ -6,8 +6,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.DelayQueue;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadFactory;
@@ -20,6 +20,8 @@ import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.messagequeue.StreamQueueManager;
+import com.king.gmms.metrics.MetricsCollector;
+import com.king.gmms.metrics.MetricsNames;
 import com.king.gmms.util.BufferTimeoutInterface;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
@@ -38,14 +40,15 @@ public class SmppPendingDrManager {
     private static final String REDIS_TIMEOUT_ZSET_PREFIX = "zset:smpp:pending:dr:timeout:";
     private static final String REDIS_TIMEOUT_ZSET_REGISTRY_PREFIX = "set:smpp:pending:dr:timeout:zsets:";
 
-    private static final ExecutorService SCANNER = Executors.newCachedThreadPool(new ThreadFactory() {
-        public Thread newThread(Runnable runnable) {
-            Thread thread = new Thread(A2PThreadGroup.getInstance(), runnable,
-                    "SmppPendingDrScanner-" + THREAD_ID.incrementAndGet());
-            thread.setDaemon(true);
-            return thread;
-        }
-    });
+    private static final DelayQueue<PendingDrTimeoutTask> GLOBAL_TIMEOUT_QUEUE =
+            new DelayQueue<PendingDrTimeoutTask>();
+    private static final AtomicInteger GLOBAL_TIMEOUT_WORKER_COUNT = new AtomicInteger(0);
+    private static final java.util.concurrent.atomic.AtomicLong GLOBAL_TIMEOUT_PROCESSED =
+            new java.util.concurrent.atomic.AtomicLong(0);
+    private static final java.util.concurrent.atomic.AtomicLong GLOBAL_TIMEOUT_SKIPPED =
+            new java.util.concurrent.atomic.AtomicLong(0);
+    private static final java.util.concurrent.atomic.AtomicLong LAST_STATE_LOG_MS =
+            new java.util.concurrent.atomic.AtomicLong(0);
 
     private static final ScheduledExecutorService REDIS_SCANNER = Executors.newScheduledThreadPool(1, new ThreadFactory() {
         public Thread newThread(Runnable runnable) {
@@ -65,9 +68,14 @@ public class SmppPendingDrManager {
     private final BufferTimeoutInterface timeoutListener;
     private final ConcurrentMap<String, PendingSubmitEntry> pendingMap;
     private final ConcurrentMap<String, String> redisKeyBySequence;
-    private final DelayQueue<PendingSubmitEntry> timeoutQueue;
     private final Semaphore permits;
     private final AtomicBoolean stopped = new AtomicBoolean(false);
+
+    public enum PutResult {
+        STORED,
+        WINDOW_FULL,
+        FAILED
+    }
 
     public SmppPendingDrManager(String sessionKey, int windowSize, long timeoutMs,
             BufferTimeoutInterface timeoutListener) {
@@ -79,29 +87,32 @@ public class SmppPendingDrManager {
         this.timeoutListener = timeoutListener;
         this.pendingMap = new ConcurrentHashMap<String, PendingSubmitEntry>();
         this.redisKeyBySequence = new ConcurrentHashMap<String, String>();
-        this.timeoutQueue = new DelayQueue<PendingSubmitEntry>();
         this.permits = windowSize > 0 ? new Semaphore(windowSize) : null;
         startRedisScanner();
-        SCANNER.execute(new Runnable() {
-            public void run() {
-                runTimeoutLoop();
-            }
-        });
+        startGlobalTimeoutWorkers();
         log.info("SMPP pending DR manager started. sessionKey={}, windowSize={}, timeoutMs={}",
                 this.sessionKey, this.windowSize, this.timeoutMs);
     }
 
     public boolean put(String sequence, GmmsMessage message) {
+        return tryPut(sequence, message) == PutResult.STORED;
+    }
+
+    public boolean hasCapacity() {
+        return permits == null || permits.availablePermits() > 0;
+    }
+
+    public PutResult tryPut(String sequence, GmmsMessage message) {
         if (stopped.get() || sequence == null || message == null) {
-            return false;
+            return PutResult.FAILED;
         }
         boolean acquired = false;
         boolean redisStored = false;
         try {
             if (permits != null) {
-                acquired = permits.tryAcquire(50L, TimeUnit.MILLISECONDS);
+                acquired = permits.tryAcquire();
                 if (!acquired) {
-                    return false;
+                    return PutResult.WINDOW_FULL;
                 }
             }
             long msgTimeoutMs = timeoutMsFor(message);
@@ -113,7 +124,7 @@ public class SmppPendingDrManager {
                 redisStored = persistRedisPending(sequence, message, msgTimeoutMs);
                 if (!redisStored) {
                     releasePermit();
-                    return false;
+                    return PutResult.FAILED;
                 }
             }
             PendingSubmitEntry old = pendingMap.putIfAbsent(sequence, entry);
@@ -123,19 +134,10 @@ public class SmppPendingDrManager {
                 }
                 releasePermit();
                 log.warn(message, "Duplicate SMPP pending DR sequence. pendingKey={}", entry.getPendingKey());
-                return false;
+                return PutResult.FAILED;
             }
-            timeoutQueue.offer(entry);
-            return true;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            if (redisStored) {
-                deleteRedisPending(sequence);
-            }
-            if (acquired) {
-                releasePermit();
-            }
-            return false;
+            offerGlobalTimeout(entry);
+            return PutResult.STORED;
         } catch (Exception e) {
             if (redisStored) {
                 deleteRedisPending(sequence);
@@ -144,7 +146,7 @@ public class SmppPendingDrManager {
                 releasePermit();
             }
             log.warn(message, "Failed to put SMPP pending DR. sequence={}", sequence, e);
-            return false;
+            return PutResult.FAILED;
         }
     }
 
@@ -156,7 +158,6 @@ public class SmppPendingDrManager {
         if (entry != null) {
             if (isRedisBacked(sequence, entry) && !redisPendingExists(sequence)) {
                 if (pendingMap.remove(sequence, entry)) {
-                    timeoutQueue.remove(entry);
                     redisKeyBySequence.remove(sequence);
                     releasePermit();
                 }
@@ -187,7 +188,6 @@ public class SmppPendingDrManager {
         }
         PendingSubmitEntry entry = pendingMap.remove(sequence);
         if (entry != null) {
-            timeoutQueue.remove(entry);
             releasePermit();
         }
         deleteRedisPending(sequence);
@@ -197,10 +197,9 @@ public class SmppPendingDrManager {
     public void markResultPending(String sequence, GmmsMessage message) {
         PendingSubmitEntry entry = get(sequence);
         if (entry != null) {
-            timeoutQueue.remove(entry);
             entry.markResultPending(message);
             entry.reschedule(resultRetryDelayMs);
-            timeoutQueue.offer(entry);
+            offerGlobalTimeout(entry);
             if (redisKeyBySequence.containsKey(sequence)) {
                 persistRedisPending(sequence, entry.getMessage(), resultRetryDelayMs);
             }
@@ -226,43 +225,36 @@ public class SmppPendingDrManager {
                 sessionKey, reason, pendingMap.size());
     }
 
-    private void runTimeoutLoop() {
-        while (!stopped.get()) {
-            try {
-                PendingSubmitEntry entry = timeoutQueue.poll(1L, TimeUnit.SECONDS);
-                if (entry == null) {
-                    continue;
+    private void processTimeoutTask(PendingDrTimeoutTask task) {
+        PendingSubmitEntry entry = task.getEntry();
+        String sequence = task.getSequence();
+        if (stopped.get() || pendingMap.get(sequence) != entry) {
+            recordTimeoutSkipped();
+            return;
+        }
+        if (entry.getNextCheckAt() != task.getDueAt()) {
+            recordTimeoutSkipped();
+            return;
+        }
+        recordTimeoutProcessed(entry.getMessage());
+        if (entry.isResultPending()) {
+            retryPendingResult(sequence, entry);
+        } else if (isRedisBacked(sequence, entry)) {
+            if (!redisPendingExists(sequence)) {
+                if (pendingMap.remove(sequence, entry)) {
+                    redisKeyBySequence.remove(sequence);
+                    releasePermit();
                 }
-                String sequence = entry.getSequence();
-                if (pendingMap.get(sequence) != entry) {
-                    continue;
-                }
-                if (entry.isResultPending()) {
-                    retryPendingResult(sequence, entry);
-                } else if (isRedisBacked(sequence, entry)) {
-                    if (!redisPendingExists(sequence)) {
-                        if (pendingMap.remove(sequence, entry)) {
-                            timeoutQueue.remove(entry);
-                            redisKeyBySequence.remove(sequence);
-                            releasePermit();
-                        }
-                        log.info(entry.getMessage(), "Redis-backed SMPP DR pending already handled by Redis timeout scanner. pendingKey={}",
-                                entry.getPendingKey());
-                    } else {
-                        entry.reschedule(resultRetryDelayMs);
-                        timeoutQueue.offer(entry);
-                        log.debug(entry.getMessage(), "Redis-backed SMPP DR pending waits for Redis timeout scanner. pendingKey={}",
-                                entry.getPendingKey());
-                    }
-                } else {
-                    timeout(sequence, entry);
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            } catch (Exception e) {
-                log.warn("SMPP pending DR timeout loop failed. sessionKey=" + sessionKey, e);
+                log.info(entry.getMessage(), "Redis-backed SMPP DR pending already handled by Redis timeout scanner. pendingKey={}",
+                        entry.getPendingKey());
+            } else {
+                entry.reschedule(resultRetryDelayMs);
+                offerGlobalTimeout(entry);
+                log.debug(entry.getMessage(), "Redis-backed SMPP DR pending waits for Redis timeout scanner. pendingKey={}",
+                        entry.getPendingKey());
             }
+        } else {
+            timeout(sequence, entry);
         }
     }
 
@@ -274,7 +266,6 @@ public class SmppPendingDrManager {
         }
         if (isRedisBacked(sequence, entry) && !redisPendingExists(sequence)) {
             if (pendingMap.remove(sequence, entry)) {
-                timeoutQueue.remove(entry);
                 redisKeyBySequence.remove(sequence);
                 releasePermit();
             }
@@ -288,7 +279,7 @@ public class SmppPendingDrManager {
                     entry.getPendingKey());
         } else {
             entry.reschedule(resultRetryDelayMs);
-            timeoutQueue.offer(entry);
+            offerGlobalTimeout(entry);
             if (redisKeyBySequence.containsKey(sequence)) {
                 persistRedisPending(sequence, message, resultRetryDelayMs);
             }
@@ -312,7 +303,7 @@ public class SmppPendingDrManager {
             } else {
                 entry.markResultPending(message);
                 entry.reschedule(resultRetryDelayMs);
-                timeoutQueue.offer(entry);
+                offerGlobalTimeout(entry);
                 if (redisKeyBySequence.containsKey(sequence)) {
                     persistRedisPending(sequence, message, resultRetryDelayMs);
                 }
@@ -376,10 +367,16 @@ public class SmppPendingDrManager {
     private void clear() {
         int size = pendingMap.size();
         pendingMap.clear();
-        timeoutQueue.clear();
         redisKeyBySequence.clear();
         if (permits != null && size > 0) {
             permits.release(size);
+        }
+    }
+
+    private void offerGlobalTimeout(PendingSubmitEntry entry) {
+        if (entry != null) {
+            GLOBAL_TIMEOUT_QUEUE.offer(new PendingDrTimeoutTask(this, entry));
+            recordGlobalTimeoutGauges();
         }
     }
 
@@ -517,6 +514,118 @@ public class SmppPendingDrManager {
             // ignore and use default
         }
         return 0;
+    }
+
+    private static void startGlobalTimeoutWorkers() {
+        int desiredWorkerCount = Math.max(1, Math.min(intProperty("SmppPendingDrTimeoutWorkerCount", 2), 4));
+        while (true) {
+            int current = GLOBAL_TIMEOUT_WORKER_COUNT.get();
+            if (current >= desiredWorkerCount) {
+                return;
+            }
+            if (!GLOBAL_TIMEOUT_WORKER_COUNT.compareAndSet(current, current + 1)) {
+                continue;
+            }
+            Thread thread = new Thread(A2PThreadGroup.getInstance(), new Runnable() {
+                public void run() {
+                    runGlobalTimeoutLoop();
+                }
+            }, "SmppPendingDrTimeoutWorker-" + THREAD_ID.incrementAndGet());
+            thread.setDaemon(true);
+            thread.start();
+            log.info("Global SMPP pending DR timeout worker started. count={}, desired={}",
+                    GLOBAL_TIMEOUT_WORKER_COUNT.get(), desiredWorkerCount);
+            recordGlobalTimeoutGauges();
+        }
+    }
+
+    private static void runGlobalTimeoutLoop() {
+        while (true) {
+            try {
+                PendingDrTimeoutTask task = GLOBAL_TIMEOUT_QUEUE.take();
+                recordGlobalTimeoutGauges();
+                task.getManager().processTimeoutTask(task);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (Exception e) {
+                log.warn("Global SMPP pending DR timeout worker failed.", e);
+            }
+        }
+    }
+
+    private static void recordGlobalTimeoutGauges() {
+        MetricsCollector.getInstance().setGauge(MetricsNames.gauge(
+                "smpp.pending.dr", "timeout_queue_size"), GLOBAL_TIMEOUT_QUEUE.size());
+        MetricsCollector.getInstance().setGauge(MetricsNames.gauge(
+                "smpp.pending.dr", "timeout_worker_count"), GLOBAL_TIMEOUT_WORKER_COUNT.get());
+        maybeLogGlobalTimeoutState();
+    }
+
+    private static void recordTimeoutProcessed(GmmsMessage message) {
+        GLOBAL_TIMEOUT_PROCESSED.incrementAndGet();
+        MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(
+                "smpp.pending.dr", "timeout", message, MetricsNames.ACTION_TIMEOUT_PROCESSED));
+    }
+
+    private static void recordTimeoutSkipped() {
+        GLOBAL_TIMEOUT_SKIPPED.incrementAndGet();
+        MetricsCollector.getInstance().incrementCounter(MetricsNames.build(
+                "smpp.pending.dr", "timeout", "dr", MetricsNames.ACTION_TIMEOUT_SKIPPED));
+    }
+
+    private static void maybeLogGlobalTimeoutState() {
+        long now = System.currentTimeMillis();
+        long intervalMs = Math.max(1000L, longProperty("SmppPendingDrTimeoutStateLogIntervalMs", 30000L));
+        long last = LAST_STATE_LOG_MS.get();
+        if (now - last < intervalMs || !LAST_STATE_LOG_MS.compareAndSet(last, now)) {
+            return;
+        }
+        log.info("Global SMPP pending DR timeout state. workers={}, queueSize={}, processed={}, skipped={}",
+                GLOBAL_TIMEOUT_WORKER_COUNT.get(), GLOBAL_TIMEOUT_QUEUE.size(),
+                GLOBAL_TIMEOUT_PROCESSED.get(), GLOBAL_TIMEOUT_SKIPPED.get());
+    }
+
+    private static class PendingDrTimeoutTask implements Delayed {
+        private final SmppPendingDrManager manager;
+        private final PendingSubmitEntry entry;
+        private final String sequence;
+        private final long dueAt;
+
+        PendingDrTimeoutTask(SmppPendingDrManager manager, PendingSubmitEntry entry) {
+            this.manager = manager;
+            this.entry = entry;
+            this.sequence = entry == null ? null : entry.getSequence();
+            this.dueAt = entry == null ? System.currentTimeMillis() : entry.getNextCheckAt();
+        }
+
+        public long getDelay(TimeUnit unit) {
+            return unit.convert(dueAt - System.currentTimeMillis(), TimeUnit.MILLISECONDS);
+        }
+
+        public int compareTo(Delayed other) {
+            if (other == this) {
+                return 0;
+            }
+            long diff = getDelay(TimeUnit.MILLISECONDS) - other.getDelay(TimeUnit.MILLISECONDS);
+            return diff == 0 ? 0 : (diff < 0 ? -1 : 1);
+        }
+
+        SmppPendingDrManager getManager() {
+            return manager;
+        }
+
+        PendingSubmitEntry getEntry() {
+            return entry;
+        }
+
+        String getSequence() {
+            return sequence;
+        }
+
+        long getDueAt() {
+            return dueAt;
+        }
     }
 
     private static void startRedisScanner() {

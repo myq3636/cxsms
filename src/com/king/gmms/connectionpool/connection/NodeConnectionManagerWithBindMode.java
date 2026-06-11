@@ -2,6 +2,7 @@ package com.king.gmms.connectionpool.connection;
 
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Observable;
 
 import com.king.gmms.connectionpool.BindMode;
@@ -147,6 +148,11 @@ public class NodeConnectionManagerWithBindMode
         	return null;
         }
     }
+
+    public List<Connection> getAvailableConnectionsSnapshot() {
+        return connectionPool.getAvailableConnectionsSnapshot();
+    }
+
     public boolean insertConnection(Connection connection) {
         boolean result = false;
         if (connection != null) {

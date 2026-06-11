@@ -33,6 +33,7 @@ public class ResultStreamConsumer {
     private volatile long lastPoolConfigRefreshMs = 0L;
 
     private ExecutorService dispatcherThread;
+    private ExecutorService recoveryThread;
     private ThreadPoolExecutor workerPool;
     private final ConcurrentHashMap<String, Boolean> processingMap = new ConcurrentHashMap<String, Boolean>();
     private final ConcurrentHashMap<String, Boolean> pendingDoorbellMap = new ConcurrentHashMap<String, Boolean>();
@@ -68,6 +69,14 @@ public class ResultStreamConsumer {
                 dispatcherLoop();
             }
         });
+        recoveryThread = Executors.newSingleThreadExecutor();
+        recoveryThread.execute(new RedisStreamAutoClaimRunner("Core outbound-result",
+                StreamQueueManager.STR_CORE_RESULTS, groupName, consumerName, false, queueManager,
+                new RedisStreamAutoClaimRunner.MessageProcessor() {
+                    public void process(String streamKey, GmmsMessage msg) {
+                        processResult(streamKey, msg);
+                    }
+                }));
 
         queueManager.triggerDoorbell(StreamQueueManager.STR_CORE_RESULTS, false);
         logger.info("Core outbound-result consumer started. Group: {}, Consumer: {}, Config: {}",
@@ -78,6 +87,9 @@ public class ResultStreamConsumer {
         running = false;
         if (dispatcherThread != null) {
             dispatcherThread.shutdownNow();
+        }
+        if (recoveryThread != null) {
+            recoveryThread.shutdownNow();
         }
         if (workerPool != null) {
             workerPool.shutdown();
@@ -118,7 +130,6 @@ public class ResultStreamConsumer {
         public void run() {
             try {
                 queueManager.createGroup(streamKey, groupName, false);
-                processAutoClaim(streamKey);
 
                 while (running) {
                     Map<String, StreamEntryID> query = new HashMap<String, StreamEntryID>();
@@ -137,8 +148,14 @@ public class ResultStreamConsumer {
                 logger.error("Error processing Result stream: " + streamKey, e);
             } finally {
                 processingMap.remove(streamKey);
-                if (pendingDoorbellMap.remove(streamKey) != null && queueManager.streamLength(streamKey, false) > 0) {
+                boolean hadPendingDoorbell = pendingDoorbellMap.remove(streamKey) != null;
+                long remaining = queueManager.streamLength(streamKey, false);
+                if (remaining > 0) {
                     queueManager.triggerDoorbell(streamKey, false);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Core result stream re-ring after worker exit. streamKey={}, remaining={}, hadPendingDoorbell={}",
+                                streamKey, remaining, hadPendingDoorbell);
+                    }
                 }
             }
         }
@@ -151,17 +168,6 @@ public class ResultStreamConsumer {
         }
         lastPoolConfigRefreshMs = now;
         consumerConfig.applyWorkerPool(workerPool);
-    }
-
-    private void processAutoClaim(String streamKey) {
-        List<GmmsMessage> orphans = queueManager.autoClaimBatch(streamKey, groupName, consumerName,
-            queueManager.getAutoClaimIdleMs(), queueManager.getAutoClaimBatchSize(), false);
-        if (orphans == null || orphans.isEmpty()) {
-            return;
-        }
-        for (GmmsMessage msg : orphans) {
-            processResult(streamKey, msg);
-        }
     }
 
     private void processResult(String streamKey, GmmsMessage msg) {

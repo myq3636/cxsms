@@ -855,7 +855,9 @@ public class GmmsUtility {
 
 	private boolean isRuntimeConfigKey(String key) {
 		return isDirectRuntimeKey(key) || isCommonRuntimeKey(key) || isModuleRuntimeKey(key)
-				|| isShardRuntimeKey(key) || isRedisStreamTuningKey(key) || isMqmRuntimeKey(key);
+				|| isShardRuntimeKey(key) || isRedisStreamTuningKey(key) || isMqmRuntimeKey(key)
+				|| key.startsWith("SmppServerInbound")
+				|| isLongConnectionCustomerRuntimeKey(key);
 	}
 
 	private boolean isDirectRuntimeKey(String key) {
@@ -887,15 +889,26 @@ public class GmmsUtility {
 	private boolean isCommonRuntimeKey(String key) {
 		String[] keys = new String[] {
 			"RedisStreamGlobalPELMonitorEnable", "RedisStreamDoorbellScanLimit",
-			"RedisStreamAutoClaimIdleMs", "RedisStreamAutoClaimBatchSize",
+			"RedisStreamAutoClaimEnable", "RedisStreamAutoClaimIdleMs",
+			"RedisStreamAutoClaimBatchSize", "RedisStreamAutoClaimIntervalMs",
+			"RedisStreamAutoClaimMaxMessagesPerRun",
 			"RedisStreamTraceLogEnable",
 			"SMPPSubmitPendingRedisScanIntervalMs", "SMPPSubmitPendingRedisScanBatchSize",
 			"SMPPSubmitPendingRedisResultRetryMs", "SMPPSubmitPendingRedisRetryTTLSeconds",
+			"SmppPendingSubmitTimeoutWorkerCount",
 			"SMPPDRPendingRedisScanIntervalMs", "SMPPDRPendingRedisScanBatchSize",
 			"SMPPDRPendingRedisResultRetryMs", "SMPPDRPendingRedisRetryTTLSeconds",
+			"SmppPendingDrTimeoutWorkerCount", "SmppPendingDrTimeoutStateLogIntervalMs",
+			"ServerDrWindowFullRetryMs",
+			"ServerDrWindowFullRetryBatchSize",
+			"SmppServerSessionRegistryEnable", "SmppServerSessionRegistryRefreshIntervalMs",
+			"SmppServerSessionRegistryReconcileIntervalMs", "SmppServerSessionRegistryTtlSeconds",
+			"SmppServerRegistryLegacyCleanupEnable", "SmppServerRegistryLegacyCleanupIntervalMs",
+			"SmppServerRegistryLegacyCleanupScanCount", "SmppServerRegistryLegacyCleanupMaxKeysPerRun",
 			"CoreOutboundOutboxEnable", "CoreOutboundOutboxRecheckMs",
 			"CoreOutboundOutboxHardTimeoutMs", "CoreOutboundOutboxPayloadTTLSeconds",
 			"CoreOutboundOutboxScanBatchSize", "CoreOutboundOutboxResultRetryMs",
+			"ClientOutboundWindowFullRetryMs",
 			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress", "DNSPort",
 			"DNSMaxFailedLimit", "DNSTestPeriod", "DNSTestNumber", "DNSBufferCapacity",
 			"DNSBufferTimeout", "NMGAddress", "NMGPort", "DefaultRetryPolicy",
@@ -953,11 +966,42 @@ public class GmmsUtility {
 		if ("CoreOutboundOutboxScanBatchSize".equals(key)) {
 			return true;
 		}
+		if ("ClientOutboundWindowFullRetryMs".equals(key)
+				|| "SmppPendingDrTimeoutWorkerCount".equals(key)
+				|| "SmppPendingSubmitTimeoutWorkerCount".equals(key)
+				|| "ServerDrWindowFullRetryBatchSize".equals(key)
+				|| "SmppServerSessionRegistryRefreshIntervalMs".equals(key)
+				|| "SmppServerSessionRegistryReconcileIntervalMs".equals(key)
+				|| "SmppServerSessionRegistryTtlSeconds".equals(key)
+				|| "SmppServerRegistryLegacyCleanupIntervalMs".equals(key)
+				|| "SmppServerRegistryLegacyCleanupScanCount".equals(key)
+				|| "SmppServerRegistryLegacyCleanupMaxKeysPerRun".equals(key)) {
+			return true;
+		}
+		if (key.startsWith("SmppServerInbound")
+				&& !"SmppServerInboundSharedPoolEnable".equals(key)
+				&& !"SmppServerInboundQueueFullCommandStatus".equals(key)) {
+			return true;
+		}
+		if (key.startsWith("MultiSmppServer.LongConnectionCustomer")
+				&& !"MultiSmppServer.LongConnectionCustomerSharedQueueEnable".equals(key)) {
+			return true;
+		}
+		if (isModuleLongConnectionCustomerKey(key)
+				&& !key.endsWith(".LongConnectionCustomerSharedQueueEnable")) {
+			return true;
+		}
+		if ("RedisStreamDoorbellScanLimit".equals(key)
+				|| "RedisStreamAutoClaimBatchSize".equals(key)
+				|| "RedisStreamAutoClaimMaxMessagesPerRun".equals(key)) {
+			return true;
+		}
 		return isDirectRuntimeKey(key) && !"ScreenedIPs".equals(key) && !"LoopbackAddresses".equals(key);
 	}
 
 	private boolean isBooleanRuntimeKey(String key) {
 		return "StoreDRModeEnable".equals(key) || "RedisStreamGlobalPELMonitorEnable".equals(key)
+				|| "RedisStreamAutoClaimEnable".equals(key)
 				|| "RedisStreamTraceLogEnable".equals(key)
 				|| "RedisStreamTrimApproximate".equals(key)
 				|| "RedisStreamBackPressureEnable".equals(key)
@@ -968,11 +1012,20 @@ public class GmmsUtility {
 				|| "AutoInDR.DelayDispatcherEnable".equals(key)
 				|| "AutoInDR.FallbackToLegacyDelayDR".equals(key)
 				|| "MQM.ActiveStandbyEnable".equals(key)
-				|| "CoreOutboundOutboxEnable".equals(key);
+				|| "CoreOutboundOutboxEnable".equals(key)
+				|| "SmppServerInboundSharedPoolEnable".equals(key)
+				|| "MultiSmppServer.LongConnectionCustomerSharedQueueEnable".equals(key)
+				|| (isModuleLongConnectionCustomerKey(key) && key.endsWith(".LongConnectionCustomerSharedQueueEnable"))
+				|| "SmppServerSessionRegistryEnable".equals(key)
+				|| "SmppServerRegistryLegacyCleanupEnable".equals(key);
 	}
 
 	private boolean isLongRuntimeKey(String key) {
 		return "RedisStreamMaxLen".equals(key)
+				|| "RedisStreamAutoClaimIdleMs".equals(key)
+				|| "RedisStreamAutoClaimIntervalMs".equals(key)
+				|| "SmppPendingDrTimeoutStateLogIntervalMs".equals(key)
+				|| "ServerDrWindowFullRetryMs".equals(key)
 				|| "AutoInDR.DelayClaimTimeoutMs".equals(key)
 				|| "AutoInDR.DelayRetryDelayMs".equals(key)
 				|| "AutoInDR.DispatcherIdleSleepMs".equals(key)
@@ -986,8 +1039,21 @@ public class GmmsUtility {
 		return "RedisStreamMaxLen".equals(key)
 				|| "RedisStreamTrimApproximate".equals(key)
 				|| "RedisStreamBackPressureEnable".equals(key)
+				|| key.startsWith("RedisStreamAutoClaim")
 				|| key.startsWith("RedisStreamConsumer.")
 				|| key.startsWith("RedisStreamMonitor.");
+	}
+
+	private boolean isLongConnectionCustomerRuntimeKey(String key) {
+		return key != null && (key.startsWith("MultiSmppServer.LongConnectionCustomer")
+				|| isModuleLongConnectionCustomerKey(key));
+	}
+
+	private boolean isModuleLongConnectionCustomerKey(String key) {
+		String module = System.getProperty("module");
+		return module != null && module.length() > 0
+				&& key != null
+				&& key.startsWith(module + ".LongConnectionCustomer");
 	}
 
 	private String getDefaultRuntimeValue(String key) {
@@ -1048,6 +1114,36 @@ public class GmmsUtility {
 		if ("CoreOutboundOutboxPayloadTTLSeconds".equals(key)) return "14400";
 		if ("CoreOutboundOutboxScanBatchSize".equals(key)) return "100";
 		if ("CoreOutboundOutboxResultRetryMs".equals(key)) return "5000";
+		if ("SmppServerSessionRegistryEnable".equals(key)) return "true";
+		if ("SmppServerSessionRegistryRefreshIntervalMs".equals(key)) return "30000";
+		if ("SmppServerSessionRegistryReconcileIntervalMs".equals(key)) return "60000";
+		if ("SmppServerSessionRegistryTtlSeconds".equals(key)) return "-1";
+		if ("SmppServerRegistryLegacyCleanupEnable".equals(key)) return "true";
+		if ("SmppServerRegistryLegacyCleanupIntervalMs".equals(key)) return "300000";
+		if ("SmppServerRegistryLegacyCleanupScanCount".equals(key)) return "200";
+		if ("SmppServerRegistryLegacyCleanupMaxKeysPerRun".equals(key)) return "2000";
+		if ("MultiSmppServer.LongConnectionCustomerSharedQueueEnable".equals(key)) return "false";
+		if ("MultiSmppServer.LongConnectionCustomerSenderWorkerThreads".equals(key)) return "64";
+		if ("MultiSmppServer.LongConnectionCustomerRespWorkerThreads".equals(key)) return "64";
+		if ("MultiSmppServer.LongConnectionCustomerDispatcherThreads".equals(key)) return "2";
+		if ("MultiSmppServer.LongConnectionCustomerWorkerQueueSize".equals(key)) return "1000";
+		if ("MultiSmppServer.LongConnectionCustomerPerSsidQueueSize".equals(key)) return "50000";
+		if ("MultiSmppServer.LongConnectionCustomerGlobalQueueLimit".equals(key)) return "2000000";
+		if ("MultiSmppServer.LongConnectionCustomerWarnQueueSize".equals(key)) return "30000";
+		if ("MultiSmppServer.LongConnectionCustomerWarnWaitMs".equals(key)) return "1000";
+		if ("MultiSmppServer.LongConnectionCustomerMaxInFlightPerSsid".equals(key)) return "50";
+		if ("MultiSmppServer.LongConnectionCustomerDispatchBatchPerSsid".equals(key)) return "10";
+		if (key.endsWith(".LongConnectionCustomerSharedQueueEnable")) return "false";
+		if (key.endsWith(".LongConnectionCustomerSenderWorkerThreads")) return "64";
+		if (key.endsWith(".LongConnectionCustomerRespWorkerThreads")) return "64";
+		if (key.endsWith(".LongConnectionCustomerDispatcherThreads")) return "2";
+		if (key.endsWith(".LongConnectionCustomerWorkerQueueSize")) return "1000";
+		if (key.endsWith(".LongConnectionCustomerPerSsidQueueSize")) return "50000";
+		if (key.endsWith(".LongConnectionCustomerGlobalQueueLimit")) return "2000000";
+		if (key.endsWith(".LongConnectionCustomerWarnQueueSize")) return "30000";
+		if (key.endsWith(".LongConnectionCustomerWarnWaitMs")) return "1000";
+		if (key.endsWith(".LongConnectionCustomerMaxInFlightPerSsid")) return "50";
+		if (key.endsWith(".LongConnectionCustomerDispatchBatchPerSsid")) return "10";
 		return "0";
 	}
 

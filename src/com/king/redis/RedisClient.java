@@ -173,6 +173,7 @@ public class RedisClient {
 	public boolean requeuePendingMessageIfExists(String key, String value, int expireTime, String zsetKey, double score) { return stateRedis.requeuePendingMessageIfExists(key, value, expireTime, zsetKey, score); }
 	public boolean setDelayDR(String key, String value, int expireTime, double score, int ossid) { return stateRedis.setDelayDR(key, value, expireTime, score, ossid); }
 	public Set<String> zrange(String key, long start, long end) { return stateRedis.zrange(key, start, end); }
+	public Set<String> zrangeByScore(String key, long minScore, long maxScore, int limit) { return stateRedis.zrangeByScore(key, minScore, maxScore, limit); }
 	public Set<String> zrangeByIndex(String key, long start, long end) { return stateRedis.zrangeByIndex(key, start, end); }
 	public boolean zrem(String key, String[] members) { return stateRedis.zrem(key, members); }
 	public List<redis.clients.jedis.resps.Tuple> zpopmin(String key) { return stateRedis.zpopmin(key); }

@@ -2,6 +2,7 @@ package com.king.redis;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -20,6 +21,8 @@ import redis.clients.jedis.params.XClaimParams;
 import redis.clients.jedis.params.XPendingParams;
 import redis.clients.jedis.params.XReadGroupParams;
 import redis.clients.jedis.params.ZRangeParams;
+import redis.clients.jedis.params.ScanParams;
+import redis.clients.jedis.resps.ScanResult;
 import redis.clients.jedis.resps.StreamEntry;
 import redis.clients.jedis.resps.StreamPendingEntry;
 import redis.clients.jedis.resps.StreamPendingSummary;
@@ -361,6 +364,22 @@ public class RedisConnection {
 		}
 	}
 
+	public ScanResult<String> scanKeys(String cursor, String pattern, int count) {
+		try (Jedis jedis = pool.getResource()) {
+			ScanParams params = new ScanParams();
+			if (pattern != null && pattern.length() > 0) {
+				params.match(pattern);
+			}
+			if (count > 0) {
+				params.count(count);
+			}
+			return jedis.scan(cursor, params);
+		} catch (Exception e) {
+			logger.error("scan failed. cursor={}, pattern={}, count={}", cursor, pattern, count, e);
+			return null;
+		}
+	}
+
 	public boolean setPipeline(String key, String value, int expireTime,
 			String hashKey) {
 		try (Jedis jedis = pool.getResource()) {
@@ -582,12 +601,30 @@ public class RedisConnection {
 
 	public Set<String> zrange(String key, long start, long end) {
 		try (Jedis jedis = pool.getResource()) {
-			// In Jedis 5, zrangeByScore is removed. Replacing with zrange(key, start, end).
-			// Adjust ZRangeParams as needed if this specific boundary doesn't match byScore accurately,
-			// but we use the unified zrange method for forward compatibility.
 			return new LinkedHashSet<>(jedis.zrange(key, start, end));
 		} catch (Exception e) {
 			logger.error("zrange failed. key={}", key, e);
+			return null;
+		}
+	}
+
+	public Set<String> zrangeByScore(String key, long minScore, long maxScore, int limit) {
+		String script = "return redis.call('ZRANGEBYSCORE', KEYS[1], ARGV[1], ARGV[2], 'LIMIT', 0, ARGV[3])";
+		try (Jedis jedis = pool.getResource()) {
+			Object result = jedis.eval(script, Arrays.asList(key),
+					Arrays.asList(String.valueOf(minScore), String.valueOf(maxScore),
+							String.valueOf(limit <= 0 ? 500 : limit)));
+			Set<String> set = new LinkedHashSet<>();
+			if (result instanceof List<?>) {
+				for (Object member : (List<?>) result) {
+					if (member != null) {
+						set.add(String.valueOf(member));
+					}
+				}
+			}
+			return set;
+		} catch (Exception e) {
+			logger.error("zrangeByScore failed. key={}", key, e);
 			return null;
 		}
 	}
@@ -904,8 +941,14 @@ public class RedisConnection {
 			String groupName, String consumerName, int count, int blockMillis,
 			Map<String, StreamEntryID> streams) {
 		try (Jedis jedis = pool.getResource()) {
-			XReadGroupParams params = new XReadGroupParams().count(count).block(blockMillis);
-			return jedis.xreadGroup(groupName, consumerName, params, streams);
+			XReadGroupParams params = new XReadGroupParams().count(count);
+			// Redis BLOCK 0 means wait forever. A non-positive value is used by stream consumers as a non-blocking poll.
+			if (blockMillis > 0) {
+				params.block(blockMillis);
+			}
+			java.util.List<java.util.Map.Entry<String, java.util.List<StreamEntry>>> result =
+					jedis.xreadGroup(groupName, consumerName, params, streams);
+			return result == null ? Collections.<java.util.Map.Entry<String, java.util.List<StreamEntry>>>emptyList() : result;
 		} catch (Exception e) {
 			logger.error("xreadGroup failed. group={}, consumer={}", groupName, consumerName, e);
 			return null;

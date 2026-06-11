@@ -44,6 +44,13 @@ public class MetricsNames {
     public static final String ACTION_PROCESSED = "processed";
     public static final String ACTION_SENT_TO_CUSTOMER = "sent_to_customer";
     public static final String ACTION_FAILED_TO_CUSTOMER = "failed_to_customer";
+    public static final String ACTION_WINDOW_FULL = "window_full";
+    public static final String ACTION_RETRY_CLAIM = "retry_claim";
+    public static final String ACTION_TIMEOUT_PROCESSED = "timeout_processed";
+    public static final String ACTION_TIMEOUT_SKIPPED = "timeout_skipped";
+    public static final String ACTION_REGISTRY_FALLBACK_CONFIGURED_SERVER = "registry_fallback_configured_server";
+    public static final String ACTION_REGISTRY_NO_SERVER_MODULE = "registry_no_server_module";
+    public static final String ACTION_RDQ_RETRY_POLICY = "rdq_retry_policy";
 
     private static volatile boolean ssidMetricsEnabled = false;
 

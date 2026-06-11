@@ -3,6 +3,7 @@ package com.king.gmms.connectionpool.connection;
 import java.util.Observable;
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.connectionpool.session.*;
@@ -105,6 +106,10 @@ public class ConnectionManagerImpl implements ConnectionManager {
         }else{
         	return null;
         }
+    }
+
+    public List<Connection> getAvailableConnectionsSnapshot() {
+        return connectionPool.getAvailableConnectionsSnapshot();
     }
     
     

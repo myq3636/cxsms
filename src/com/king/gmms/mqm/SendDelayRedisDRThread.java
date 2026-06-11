@@ -18,6 +18,7 @@ import com.king.redis.SerializableHandler;
 
 public class SendDelayRedisDRThread extends Thread {
 	private static SystemLogger log = SystemLogger.getSystemLogger(SendDelayRedisDRThread.class);
+	private static final int DELAY_DR_BATCH_SIZE = 500;
 	
 	protected MessageStoreManager msm = null;
 	private RedisClient redis = null;
@@ -75,9 +76,9 @@ public class SendDelayRedisDRThread extends Thread {
 				int sendDrImmediately = customer.getSendDelayDRImmediately();
 				Set<String> set = null;
 				if (sendDrImmediately == 0) {
-					set = redis.zrange(ssidKey, 1000, currentTime);
+					set = redis.zrangeByScore(ssidKey, 1000, currentTime, DELAY_DR_BATCH_SIZE);
 				}else if (sendDrImmediately == 1) {
-					set = redis.zrangeByIndex(ssidKey, 0, 500);
+					set = redis.zrangeByIndex(ssidKey, 0, DELAY_DR_BATCH_SIZE);
 				}
 								
 				if(set == null || set.size() <= 0){
