@@ -10,16 +10,17 @@ import java.io.*;
 
 public class TracingManager extends DataManager
 {
-    private PreparedStatement insertStmt = null;
 
+    // M-9: 参数化查询，避免拼接 procedureName/tableName。
     public Tracing getLastRecord(String procedureName, String tableName) throws DataControlException {
-        try{
-            String strSQL = "SELECT * FROM tracing WHERE"
-                          + " ProcedureName = '" + procedureName + "'"
-                          + " AND TableName = '" + tableName + "'"
-                          + " ORDER BY FinishOnRecord DESC LIMIT 1";
-
-            ResultSet rs = doSelect(strSQL);
+        String strSQL = "SELECT * FROM tracing WHERE"
+                      + " ProcedureName = ?"
+                      + " AND TableName = ?"
+                      + " ORDER BY FinishOnRecord DESC LIMIT 1";
+        try (PreparedStatement ps = this.getCon().prepareStatement(strSQL)){
+            ps.setString(1, procedureName);
+            ps.setString(2, tableName);
+            ResultSet rs = ps.executeQuery();
             Tracing trace = new Tracing();
             trace.setProcedureName(procedureName);
             trace.setTableName(tableName);
@@ -41,6 +42,8 @@ public class TracingManager extends DataManager
             return trace;
         } catch (Exception e){
             throw new DataControlException(e.getMessage());
+        } finally {
+            closeSession();
         }
     }
 
@@ -61,21 +64,19 @@ public class TracingManager extends DataManager
     public void add(ArrayList data) throws DataManagerException{
     }
 
+    // M-8: 不再缓存共享 PreparedStatement(本类是 DataControl 共享单例，跨线程复用一个 PS 会串数据/复用坏态)。
+    // 每次现建、try-with-resources 关闭，finally closeSession 归还连接。
     public final void setDone(Tracing trace) throws DataControlException {
-        try{
-            if (insertStmt == null){
-                String strSQL = "INSERT INTO tracing SET " +
-                                "ProcedureName = ?, " +
-                                "TableName = ?, " +
-                                "StartOnRecord = ?, " +
-                                "FinishOnRecord = ?, " +
-                                "StartTime = ?, " +
-                                "FinishTime = ?, " +
-                                "RecordIDs = ?, " +
-                                "Count = ?";
-                insertStmt = this.getCon().prepareStatement(strSQL);
-            }
-
+        String strSQL = "INSERT INTO tracing SET " +
+                        "ProcedureName = ?, " +
+                        "TableName = ?, " +
+                        "StartOnRecord = ?, " +
+                        "FinishOnRecord = ?, " +
+                        "StartTime = ?, " +
+                        "FinishTime = ?, " +
+                        "RecordIDs = ?, " +
+                        "Count = ?";
+        try (PreparedStatement insertStmt = this.getCon().prepareStatement(strSQL)){
             insertStmt.setString(1, trace.getProcedureName());
             insertStmt.setString(2, trace.getTableName());
             insertStmt.setInt(3, trace.getStartOnRecord());
@@ -96,6 +97,8 @@ public class TracingManager extends DataManager
             insertStmt.executeUpdate();
         } catch (Exception e){
             throw new DataControlException(e.getMessage());
+        } finally {
+            closeSession();
         }
     }
 

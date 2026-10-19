@@ -13,9 +13,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.TimeZone;
 
-import java_cup.internal_error;
-import sun.applet.resources.MsgAppletViewer;
-
 import com.king.db.Data;
 import com.king.db.DataManager;
 import com.king.db.DataManagerException;
@@ -435,10 +432,12 @@ public class MessageStoreManager extends DataManager {
 					try { conn.rollback(); } catch (java.sql.SQLException ex) {}
 				}
 				log.error("Error executing batch update of size " + batch.size(), e);
-				String errorMessage = e.getMessage() == null ? "" : e.getMessage();
-				if (!errorMessage.contains("Data truncated") && !errorMessage.contains("SQL syntax")) {
+				if (!isBenignSqlError(e)) {
 					MailSender.getInstance().sendAlertMail("A2P DB Batch Exception", e);
 				}
+				// H-14: 整批失败时降级逐行执行，只丢真正报错的那条，其余正常落库，
+				// 避免一条毒丸 SQL 拖垮整批(~数百条)好消息。
+				retryBatchRowByRow(conn, batch);
 			} finally {
 				if (stmt != null) {
 					try { stmt.close(); } catch (java.sql.SQLException ex) {}
@@ -448,6 +447,41 @@ public class MessageStoreManager extends DataManager {
 				}
 				closeSession();
 			}
+		}
+
+		// H-14: 逐行兜底 —— 批量失败后对同一连接逐条 autocommit 执行，
+		// 隔离毒丸 SQL，最大化保住其余消息。conn 为 null 时整批无法兜底，仅告警。
+		private void retryBatchRowByRow(java.sql.Connection conn, java.util.List<String> batch) {
+			if (batch == null || batch.isEmpty()) {
+				return;
+			}
+			if (conn == null) {
+				log.error("Batch row-by-row fallback skipped (no connection), {} messages may be lost", batch.size());
+				return;
+			}
+			int ok = 0;
+			int failed = 0;
+			try {
+				conn.setAutoCommit(true);
+			} catch (java.sql.SQLException ex) {
+				log.warn("Failed to set autocommit for row-by-row fallback", ex);
+			}
+			for (String sql : batch) {
+				java.sql.Statement st = null;
+				try {
+					st = conn.createStatement();
+					st.executeUpdate(sql);
+					ok++;
+				} catch (Exception ex) {
+					failed++;
+					log.error("Row-by-row fallback dropped a bad SQL: " + sql, ex);
+				} finally {
+					if (st != null) {
+						try { st.close(); } catch (java.sql.SQLException ex) {}
+					}
+				}
+			}
+			log.warn("Batch row-by-row fallback finished. recovered={}, dropped={}, total={}", ok, failed, batch.size());
 		}
 	}
 
@@ -1928,6 +1962,19 @@ public class MessageStoreManager extends DataManager {
 	 *            Data
 	 * @throws DataManagerException
 	 */
+	// H-14: null 安全 —— 异常 message 为 null(如 NPE) 时 getMessage().contains 会再抛 NPE，
+	// 掩盖原始异常并跳过告警。统一收口判定"良性可忽略"的 DB 错误。
+	private static boolean isBenignSqlError(Throwable t) {
+		if (t == null) {
+			return false;
+		}
+		String m = t.getMessage();
+		if (m == null) {
+			return false;
+		}
+		return m.contains("Data truncated") || m.contains("SQL syntax");
+	}
+
 	public void add(Data data) throws DataManagerException {
 		GmmsMessage message = (GmmsMessage) data;
 		String strSQL = "INSERT INTO messagestore SET "
@@ -1938,18 +1985,19 @@ public class MessageStoreManager extends DataManager {
 				doInsert(strSQL);
 			} else {
 				strSQL = strSQL + ",Payload=?, UDH = ?";
-				PreparedStatement ps = this.getCon().prepareStatement(strSQL);
-				ps.setBytes(1, ((GmmsMessage) data).getMimeMultiPartData());
-				ps.setBytes(2, ((GmmsMessage) data).getUdh());
-				ps.executeUpdate();
+				// H-14: try-with-resources 确保 PS 在异常路径也关闭，不依赖 HikariCP 归还时兜底。
+				try (PreparedStatement ps = this.getCon().prepareStatement(strSQL)) {
+					ps.setBytes(1, ((GmmsMessage) data).getMimeMultiPartData());
+					ps.setBytes(2, ((GmmsMessage) data).getUdh());
+					ps.executeUpdate();
+				}
 			}
 			if (log.isDebugEnabled()) {
 				log.debug(message, "inserted into messagestore.");
 			}
 		} catch (Exception e) {
 			log.error(message, "Error in executing:" + strSQL, e);
-			if (!e.getMessage().contains("Data truncated")
-					&& !e.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(e)) {
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
 								+ " for DB Exception", e);
@@ -1970,8 +2018,7 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception e) {
 			log.error(message, "Error in executing:" + strSQL, e);
-			if (!e.getMessage().contains("Data truncated")
-					&& !e.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(e)) {
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
 								+ " for DB Exception", e);
@@ -1981,7 +2028,10 @@ public class MessageStoreManager extends DataManager {
 		}
 	}
 
-	public void insertMessageToDB(GmmsMessage message, String table) {
+	// H-14(方案A): 返回 boolean —— 兜底落库不再"假装成功"，调用方可据此回退到更兜底路径。
+	// true = 已同步落库或成功入异步队列；false = 连入队/同步写都失败(消息可能丢，需调用方处理)。
+	// 现有忽略返回值的调用点行为不变(返回值非破坏性)。
+	public boolean insertMessageToDB(GmmsMessage message, String table) {
 
 		String strSQL = "INSERT INTO " + table + " SET "
 				+ makeUpdateAllStmt(message);
@@ -1993,23 +2043,25 @@ public class MessageStoreManager extends DataManager {
 				}
 			} else {
 				strSQL = strSQL + ",Payload=?, UDH = ?";
-				PreparedStatement ps = this.getCon().prepareStatement(strSQL);
-				ps.setBytes(1, message.getMimeMultiPartData());
-				ps.setBytes(2, message.getUdh());
-				ps.executeUpdate();
-				try { ps.close(); } catch (Exception e) {}
+				// H-14: try-with-resources 确保 PS 在异常路径也关闭。
+				try (PreparedStatement ps = this.getCon().prepareStatement(strSQL)) {
+					ps.setBytes(1, message.getMimeMultiPartData());
+					ps.setBytes(2, message.getUdh());
+					ps.executeUpdate();
+				}
 			}
 			if (log.isDebugEnabled()) {
 				log.debug(message, "inserted into {}", table);
 			}
+			return true;
 		} catch (Exception e) {
 			log.error(message, "Error in executing:" + strSQL, e);
-			if (!e.getMessage().contains("Data truncated")
-					&& !e.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(e)) {
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
 								+ " for DB Exception", e);
 			}
+			return false;
 		} finally {
 			super.closeSession(); // add by Levens in Jan.20 2006
 		}
@@ -2090,8 +2142,7 @@ public class MessageStoreManager extends DataManager {
 			try {
 				doUpdate(sqlStr);
 			} catch (Exception e) {
-				if (!e.getMessage().contains("Data truncated")
-						&& !e.getMessage().contains("SQL syntax")) {
+				if (!isBenignSqlError(e)) {
 
 					MailSender.getInstance().sendAlertMail(
 							"A2P alert mail from "
@@ -2176,8 +2227,7 @@ public class MessageStoreManager extends DataManager {
 			doDelete(sqlStr);
 		} catch (Exception e) {
 			log.error(message, e, e);
-			if (!e.getMessage().contains("Data truncated")
-					&& !e.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(e)) {
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
 								+ " for DB Exception", e);
@@ -2229,8 +2279,7 @@ public class MessageStoreManager extends DataManager {
 			doDelete(sqlStr);
 		} catch (Exception e) {
 			log.error("Error occur when clearing messages." + sqlStr, e);
-			if (!e.getMessage().contains("Data truncated")
-					&& !e.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(e)) {
 
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
@@ -2266,8 +2315,7 @@ public class MessageStoreManager extends DataManager {
 			doDelete(sqlStr);
 		} catch (Exception e) {
 			log.error("Error occur when clearing messages." + sqlStr, e);
-			if (!e.getMessage().contains("Data truncated")
-					&& !e.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(e)) {
 
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
@@ -2315,8 +2363,7 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error("Error in executing:" + sqlStr, ex);
-			if (!ex.getMessage().contains("Data truncated")
-					&& !ex.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(ex)) {
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
 								+ " for DB Exception", ex);
@@ -2393,8 +2440,7 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error("Error in executing:" + sqlStr, ex);
-			if (!ex.getMessage().contains("Data truncated")
-					&& !ex.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(ex)) {
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
 								+ " for DB Exception", ex);
@@ -2444,8 +2490,7 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error("Error in executing:" + sqlStr, ex);
-			if (!ex.getMessage().contains("Data truncated")
-					&& !ex.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(ex)) {
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
 								+ " for DB Exception", ex);
@@ -2621,8 +2666,7 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error("Error in executing:" + sqlStr, ex);
-			if (!ex.getMessage().contains("Data truncated")
-					&& !ex.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(ex)) {
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
 								+ " for DB Exception", ex);
@@ -2690,8 +2734,7 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error("Error in executing:" + sqlStr, ex);
-			if (!ex.getMessage().contains("Data truncated")
-					&& !ex.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(ex)) {
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
 								+ " for DB Exception", ex);
@@ -2766,8 +2809,7 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error("Error in executing:" + sqlStr, ex);
-			if (!ex.getMessage().contains("Data truncated")
-					&& !ex.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(ex)) {
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
 								+ " for DB Exception", ex);
@@ -2934,8 +2976,7 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error("Error in executing:" + sqlStr, ex);
-			if (!ex.getMessage().contains("Data truncated")
-					&& !ex.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(ex)) {
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
 								+ " for DB Exception", ex);
@@ -2969,8 +3010,7 @@ public class MessageStoreManager extends DataManager {
 			doUpdate(updateStr);
 		} catch (Exception e) {
 			log.error("Error in executing:" + updateStr, e);
-			if (!e.getMessage().contains("Data truncated")
-					&& !e.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(e)) {
 
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
@@ -2995,8 +3035,7 @@ public class MessageStoreManager extends DataManager {
 			doUpdate(updateStr);
 		} catch (Exception e) {
 			log.error("Error in executing:" + updateStr, e);
-			if (!e.getMessage().contains("Data truncated")
-					&& !e.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(e)) {
 
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
@@ -3021,8 +3060,7 @@ public class MessageStoreManager extends DataManager {
 			doUpdate(updateStr);
 		} catch (Exception e) {
 			log.error("Error in executing:" + updateStr, e);
-			if (!e.getMessage().contains("Data truncated")
-					&& !e.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(e)) {
 
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
@@ -3157,8 +3195,7 @@ public class MessageStoreManager extends DataManager {
 			// rs.close(); //add by Sam 2005-06-24
 		} catch (Exception e) {
 			log.error("Error in executing:" + sqlStr, e);
-			if (!e.getMessage().contains("Data truncated")
-					&& !e.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(e)) {
 
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
@@ -3173,8 +3210,7 @@ public class MessageStoreManager extends DataManager {
 					rs.close();
 				} catch (Exception ex) {
 					log.error(ex, ex);
-					if (!ex.getMessage().contains("Data truncated")
-							&& !ex.getMessage().contains("SQL syntax")) {
+					if (!isBenignSqlError(ex)) {
 
 						MailSender.getInstance().sendAlertMail(
 								"A2P alert mail from "
@@ -3224,8 +3260,7 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception e) {
 			log.error("Error when get GmmsMessage by outmsgid:" + outMsgID, e);
-			if (!e.getMessage().contains("Data truncated")
-					&& !e.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(e)) {
 
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
@@ -3240,8 +3275,7 @@ public class MessageStoreManager extends DataManager {
 					rs.close();
 				} catch (Exception ex) {
 					log.error(ex, ex);
-					if (!ex.getMessage().contains("Data truncated")
-							&& !ex.getMessage().contains("SQL syntax")) {
+					if (!isBenignSqlError(ex)) {
 
 						MailSender.getInstance().sendAlertMail(
 								"A2P alert mail from "
@@ -3293,8 +3327,7 @@ public class MessageStoreManager extends DataManager {
 			// rs.close(); //add by Sam 2005-06-24
 		} catch (Exception e) {
 			log.error("Error in executing:" + sqlStr, e);
-			if (!e.getMessage().contains("Data truncated")
-					&& !e.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(e)) {
 
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
@@ -3309,8 +3342,7 @@ public class MessageStoreManager extends DataManager {
 					rs.close();
 				} catch (Exception ex) {
 					log.error(ex, ex);
-					if (!ex.getMessage().contains("Data truncated")
-							&& !ex.getMessage().contains("SQL syntax")) {
+					if (!isBenignSqlError(ex)) {
 
 						MailSender.getInstance().sendAlertMail(
 								"A2P alert mail from "
@@ -3348,8 +3380,7 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error(message, "Error in executing:" + sqlStr, ex);
-			if (!ex.getMessage().contains("Data truncated")
-					&& !ex.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(ex)) {
 
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
@@ -3383,8 +3414,7 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error(message, "Error in executing:" + sqlStr, ex);
-			if (!ex.getMessage().contains("Data truncated")
-					&& !ex.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(ex)) {
 
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
@@ -3781,10 +3811,9 @@ public class MessageStoreManager extends DataManager {
 	}
 
 	public String makeSqlStr(String strSQL) {
-		if (strSQL == null) {
-			return "NULL";
-		}
-		return new StringBuilder("'").append(strSQL).append("'").toString();
+		// C-5 修复：原非转义实现会被内容/状态字段中的单引号破坏 SQL 字面量(注入/写入损坏)，
+		// 改为委派到转义实现(对无引号输入行为不变)；长期应迁移到 PreparedStatement 绑定参数。
+		return makeSqlStrReplace(strSQL);
 	}
 
 	private void checkLastRetry(GmmsMessage message) {
@@ -3991,8 +4020,7 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception e) {
 			log.error("Error in executing:" + sqlStr, e);
-			if (!e.getMessage().contains("Data truncated")
-					&& !e.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(e)) {
 
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
@@ -4004,8 +4032,7 @@ public class MessageStoreManager extends DataManager {
 					rs.close();
 				} catch (Exception ex) {
 					log.error(ex, ex);
-					if (!ex.getMessage().contains("Data truncated")
-							&& !ex.getMessage().contains("SQL syntax")) {
+					if (!isBenignSqlError(ex)) {
 
 						MailSender.getInstance().sendAlertMail(
 								"A2P alert mail from "
@@ -4057,8 +4084,7 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception e) {
 			log.error(" " + csmKeyInfo.toString() + " " + e, e);
-			if (!e.getMessage().contains("Data truncated")
-					&& !e.getMessage().contains("SQL syntax")) {
+			if (!isBenignSqlError(e)) {
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
 								+ " for DB Exception", e);

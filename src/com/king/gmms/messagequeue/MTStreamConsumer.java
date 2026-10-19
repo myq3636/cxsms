@@ -142,7 +142,10 @@ public class MTStreamConsumer {
                 logger.error("Error processing MT stream: " + streamKey, e);
             } finally {
                 processingMap.remove(streamKey);
-                if (pendingDoorbellMap.remove(streamKey) != null && queueManager.streamLength(streamKey, true) > 0) {
+                // M-1: 与 ResultStreamConsumer 安全范式一致 —— pendingDoorbellMap 仅做清理，
+                // re-ring 只看 streamLength>0(只处理一批后仍有剩余、或处理期间无新 doorbell 时不再被搁置)。
+                pendingDoorbellMap.remove(streamKey);
+                if (queueManager.streamLength(streamKey, true) > 0) {
                     queueManager.triggerDoorbell(streamKey, true);
                 }
             }
@@ -160,6 +163,7 @@ public class MTStreamConsumer {
 
     private void processMessage(String streamKey, GmmsMessage msg) {
         long start = System.nanoTime();
+        String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
         try {
             MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
                     MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
@@ -167,7 +171,12 @@ public class MTStreamConsumer {
                     MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
             boolean processed = InternalCoreEngineSession.getReactiveInstance().processSubmitFromStream(msg);
             if (processed) {
-                queueManager.ack(streamKey, groupName, msg, true);
+                boolean acked = queueManager.ackById(streamKey, groupName, sourceRedisId, msg, true);
+                if (!acked) {
+                    logger.warn(msg,
+                            "MT stream ack failed after process success. streamKey={}, sourceRedisId={}, currentRedisId={}",
+                            streamKey, sourceRedisId, msg == null ? null : msg.getRedisStreamID());
+                }
             } else {
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(MetricsNames.COMPONENT_CONSUMER,
                         MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_FAIL));

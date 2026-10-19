@@ -151,7 +151,11 @@ public class MessageProcessorThread extends RunnableMsgTask{
 				            			&& message.getOriginalQueue().equalsIgnoreCase(MessageStoreManager.SMQ)) {
 				            		gmmsUtility.getMessageStoreManager().updateByInMsgId(message, MessageStoreManager.SMQ);
 								} else {
-									gmmsUtility.getMessageStoreManager().insertMessageToDB(message, MessageStoreManager.SMQ);
+									// H-14(方案A): 兜底落库失败不再被静默吞掉，回退到 DBBackupHandler，避免调度消息丢失。
+									if (!gmmsUtility.getMessageStoreManager().insertMessageToDB(message, MessageStoreManager.SMQ)) {
+										log.warn(message, "insertMessageToDB(SMQ) failed for scheduled message, fallback to DBBackupHandler.");
+										dbHandler.putMsg(message);
+									}
 								}
 				            	
 			            		return;
@@ -180,7 +184,28 @@ public class MessageProcessorThread extends RunnableMsgTask{
 			com.king.db.DataManager.closeAllSessions();
 		}
 	}
-	
+
+	/**
+	 * 同步处理入口 (C-1 修复 Option C / Step 1)。
+	 *
+	 * <p>复用 {@link #run()} 的全部逻辑(含各分支的 DB 兜底)，在调用方线程上同步执行。
+	 * Downstream stream produce is synchronous; DB fallback is intentionally
+	 * asynchronous and is considered acceptable once enqueued.
+	 * <ul>
+	 *   <li>{@code run()} 正常返回表示已到达下游 stream 或 DB fallback enqueue 终点，返回 {@code true}；</li>
+	 *   <li>仅当下游 produce / fallback enqueue 抛异常时返回 {@code false}，由调用方据此不 ACK、留 PEL 重试。</li>
+	 * </ul>
+	 */
+	public boolean processSync() {
+		try {
+			run();
+			return true;
+		} catch (Throwable t) {
+			log.error(message, "MessageProcessorThread.processSync failed to reach durable terminus", t);
+			return false;
+		}
+	}
+
 	private boolean isBlackholed(GmmsMessage message) {
 		try {
 			int ossid = message.getOSsID();

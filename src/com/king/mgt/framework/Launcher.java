@@ -34,10 +34,12 @@ public class Launcher {
             util.setHa();
         }
         initA2pRedis();
-        util.initUtilities();
+        util.initCoreUtilities();
 
         UserCommandListener cmdListener=new UserCommandListener();
         cmdListener.start();
+        util.initModuleManagerAsync();
+        util.initConfigFilesAsync();
         
         Timer downloadPolicyFileTimer = new Timer("WhiteListFileTimer", true);
         String timer = util.getProperty("WhiteListFileTask.Interval.InMin", "0");     

@@ -37,7 +37,9 @@ public class DataControl {
 	private static Hashtable dataSources = new Hashtable();
 	private static DataControl instance = new DataControl();
 	// private static DBMonitor dbMonitor;
-	private static DatabaseStatus dbStatus4Used = DatabaseStatus.MASTER_USED;
+	// C-7: volatile —— 被大量 worker 线程经 getUsedDatabaseStatus()/currentConnection() 无锁读，
+	// 主备切换时若无内存屏障，读者可能长期看到旧角色。
+	private static volatile DatabaseStatus dbStatus4Used = DatabaseStatus.MASTER_USED;
 	private static boolean canHandover = false;
 
 	// private static int failureLimit = 5;
@@ -356,6 +358,39 @@ public class DataControl {
 			DataManager dm = (DataManager) (iter.next());
 			log.trace("dataManagers start closeIdleConnection!");
 			dm.closeIdelFactory(dbStatus);
+		}
+		// C-7 fencing(D5)：切换后对【旧角色】连接池 softEvict —— 空闲连接立即关闭，在途连接归还时退役(不再复用)，
+		// 避免切换后仍有线程持旧库连接继续写(双写)。不强行掐断在途 SQL(让其跑完即退役)。
+		fenceOldRolePools(dbStatus);
+	}
+
+	/** 对旧角色(被降级)数据源池执行 softEvictConnections，实现切换后的连接 fencing。 */
+	private static void fenceOldRolePools(DatabaseStatus newStatus) {
+		if (dataSources == null || dataSources.isEmpty()) {
+			return;
+		}
+		// 切到 master → 旧角色是 slave(backup* 池)；切到 slave → 旧角色是 master(非 backup 池)。
+		boolean evictBackup = DatabaseStatus.MASTER_USED.equals(newStatus);
+		Enumeration dsNames = dataSources.keys();
+		while (dsNames.hasMoreElements()) {
+			String dsName = (String) dsNames.nextElement();
+			boolean isBackup = dsName.startsWith("backup");
+			if (isBackup != evictBackup) {
+				continue; // 非旧角色，跳过
+			}
+			Object source = dataSources.get(dsName);
+			if (!(source instanceof HikariDataSource)) {
+				continue;
+			}
+			HikariDataSource hds = (HikariDataSource) source;
+			try {
+				if (!hds.isClosed() && hds.getHikariPoolMXBean() != null) {
+					hds.getHikariPoolMXBean().softEvictConnections();
+					log.warn("DB handover fencing: softEvictConnections on old-role pool. dsName={}", dsName);
+				}
+			} catch (Exception e) {
+				log.warn("softEvictConnections failed. dsName={}", dsName, e);
+			}
 		}
 	}
 

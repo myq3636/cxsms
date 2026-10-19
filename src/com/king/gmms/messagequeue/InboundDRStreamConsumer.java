@@ -165,6 +165,7 @@ public class InboundDRStreamConsumer {
 
     private void processMessage(String streamKey, GmmsMessage msg) {
         long start = System.nanoTime();
+        String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
         try {
             boolean processed = InternalCoreEngineSession.getReactiveInstance().handleInboundDRInternal(msg, null);
             if (processed) {
@@ -172,7 +173,12 @@ public class InboundDRStreamConsumer {
                         MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_PROCESSED));
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
                         MetricsNames.STAGE_IN_DR, msg, true, MetricsNames.ACTION_PROCESSED));
-                queueManager.ack(streamKey, groupName, msg, false);
+                boolean acked = queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);
+                if (!acked) {
+                    logger.warn(msg,
+                            "Inbound DR stream ack failed after process success. streamKey={}, sourceRedisId={}, currentRedisId={}",
+                            streamKey, sourceRedisId, msg == null ? null : msg.getRedisStreamID());
+                }
             } else {
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(MetricsNames.COMPONENT_CONSUMER,
                         MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_FAIL));

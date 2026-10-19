@@ -91,8 +91,9 @@ public class DuplicateMessageCheck {
 				return result;
 			}
 			
+			// M-19: contains 取代 indexOf<0(语义更清晰；List 仍 O(n) 但列表通常很短)。
 			int msgServiceTypeID = msg.getServiceTypeID();
-			if (serviceTypeIDList.indexOf(msgServiceTypeID)<0) {
+			if (!serviceTypeIDList.contains(msgServiceTypeID)) {
 				return result;
 			}
 			

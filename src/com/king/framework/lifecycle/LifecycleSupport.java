@@ -27,7 +27,8 @@ public class LifecycleSupport {
     private int notifyTimeOut = 10000;
     private EventFactory factory=EventFactory.getInstance();
 //    private final List waitingThreads=new LinkedList();
-    private final AtomicInteger notifyNum = new AtomicInteger(0);
+    // H-22: 移除共享 notifyNum —— 改为每级独立 CountDownLatch(见 notifyLevelAndWait)，
+    // 避免跨优先级计数泄漏破坏关停屏障。
 
     public LifecycleSupport() {
         notifyTimeOut = Integer.parseInt(GmmsUtility.getInstance().
@@ -104,16 +105,8 @@ public class LifecycleSupport {
         	if(listeners[i] == null){
             	break;
             }
-            notifyNum.set(listeners[i].size());
             log.info("listeners level "+i+"size is:"+listeners[i].size());
-            Iterator itLevel = listeners[i].listIterator();
-
-            while (itLevel.hasNext())
-            {
-                LifecycleListener listener=(LifecycleListener)itLevel.next();
-                singleNotify(event,listener);
-            }
-            waitNotify(notifyTimeOut);
+            notifyLevelAndWait(event, listeners[i], notifyTimeOut);
             log.info("level:"+i+",notify over! timeout is: "+notifyTimeOut);
         }
         return 0;
@@ -157,7 +150,7 @@ public class LifecycleSupport {
             while (itListener.hasNext()) {
                 LifecycleListener listener = (LifecycleListener) itListener.
                                              next();
-                singleNotify(event, listener);
+                notifyAsync(event, listener);
             }
         }
     }
@@ -176,16 +169,8 @@ public class LifecycleSupport {
             if(listeners[i] == null) {
             	continue;
             }
-            notifyNum.set(listeners[i].size());
             log.info("listeners level {} size is:{}",i,listeners[i].size());
-            Iterator itLevel = listeners[i].listIterator();
-
-            while (itLevel.hasNext())
-            {
-                LifecycleListener listener=(LifecycleListener)itLevel.next();
-                singleNotify(event,listener);
-            }
-            waitNotify(notifyTimeOut);
+            notifyLevelAndWait(event, listeners[i], notifyTimeOut);
             log.info("level:{} notify over! timeout is: {}",i,notifyTimeOut);
 
         }
@@ -196,67 +181,70 @@ public class LifecycleSupport {
      * @param event Event
      * @param listener LifecycleListener
      */
-    public void singleNotify(final Event event, final LifecycleListener listener) {
-
+    public void notifyAsync(final Event event, final LifecycleListener listener) {
+        // H-22: fire-and-forget 异步通知(用于非屏障的 notifyAll)，守护线程 + 吞异常不影响调用方。
         Thread notifyThread=new Thread(A2PThreadGroup.getInstance(),"Notify Thread"){
             public void run()
             {
-                listener.OnEvent(event);
-                notifyNum.getAndDecrement();
+                try {
+                    listener.OnEvent(event);
+                } catch (Throwable t) {
+                    log.warn("Lifecycle listener OnEvent error.", t);
+                }
             }
         };
+        notifyThread.setDaemon(true);
         notifyThread.start();
     }
-    /**
-     * waiting finish of notification in current level
-     * @param timeout int
-     */
-    private void waitNotify(int timeout)
-    {
 
-        int interval=1000;
-        int timeCost=0;
-        while (timeCost<timeout && notifyNum.get()>0)
+    /**
+     * H-22: 通知本级所有 listener 并等待完成(或超时)。
+     * 每级独立 CountDownLatch，countDown 放 finally —— listener 抛异常也能归零(不再每级干等满 timeout)，
+     * 且不会被其它级别的残留线程污染计数(消除跨级屏障破坏)。线程为守护线程。
+     * @param event 事件
+     * @param levelListeners 本优先级的 listener 列表
+     * @param timeout 本级等待超时(ms)
+     */
+    private void notifyLevelAndWait(final Event event, List levelListeners, int timeout)
+    {
+        if (levelListeners == null || levelListeners.isEmpty()) {
+            return;
+        }
+        final java.util.concurrent.CountDownLatch latch =
+                new java.util.concurrent.CountDownLatch(levelListeners.size());
+        Iterator itLevel = levelListeners.listIterator();
+        while (itLevel.hasNext())
         {
-            timeCost+=interval;
-            try
+            final LifecycleListener listener=(LifecycleListener)itLevel.next();
+            Thread notifyThread=new Thread(A2PThreadGroup.getInstance(),"Notify Thread"){
+                public void run()
+                {
+                    try {
+                        listener.OnEvent(event);
+                    } catch (Throwable t) {
+                        log.warn("Lifecycle listener OnEvent error.", t);
+                    } finally {
+                        latch.countDown();
+                    }
+                }
+            };
+            notifyThread.setDaemon(true);
+            notifyThread.start();
+        }
+        try
+        {
+            boolean done = latch.await(timeout, java.util.concurrent.TimeUnit.MILLISECONDS);
+            if (!done)
             {
-                Thread.sleep(interval);
-            }
-            catch (InterruptedException ex)
-            {
-                log.warn("Notify Thread interrupted.");
+                log.warn("Lifecycle notify level timed out after {} ms, remaining listeners: {}",
+                        timeout, latch.getCount());
             }
         }
-//        if (waitingThreads.size()>0)
-//        {
-//            Iterator itWait=waitingThreads.listIterator();
-//            while (itWait.hasNext())
-//            {
-//                Thread waitTh=(Thread)itWait.next();
-//                waitTh.interrupt();
-//            }
-//        }
-    }
-
-}
-/**
- * Notify Thread
- * @author not attributable
- * @version 1.0
- */
-class NotifyThread extends Thread
-{
-    private Event event;
-    private LifecycleListener listener;
-    public NotifyThread(Event event,LifecycleListener listener, List waitThreads)
-    {
-        this.event=event;
-        this.listener=listener;
-    }
-    public void run()
-    {
-        listener.OnEvent(event);
+        catch (InterruptedException ex)
+        {
+            Thread.currentThread().interrupt();
+            log.warn("Notify Thread interrupted.");
+        }
     }
 
 }

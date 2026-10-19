@@ -23,8 +23,11 @@ public class A2PThreadGroup extends ThreadGroup{
     }
 
     public void uncaughtException(Thread t, Throwable e) {
-        Logger log = LogManager.getLogger(e.getStackTrace()[0].getClassName());
-        log.fatal("Uncaught exception thrown from thread {}",t.getName(), e);       
+        // L-6: 栈可能为空(某些 JVM 优化/重复抛出会省略栈)，避免 getStackTrace()[0] 越界掩盖原始错误。
+        StackTraceElement[] st = (e == null) ? null : e.getStackTrace();
+        String cls = (st != null && st.length > 0) ? st[0].getClassName() : A2PThreadGroup.class.getName();
+        Logger log = LogManager.getLogger(cls);
+        log.fatal("Uncaught exception thrown from thread {}",t.getName(), e);
         MailSender.getInstance().sendAlertMail("A2P alert mail from " +
                                                ModuleURI.self().getModule() + " in " +
                                                ModuleURI.self().getAddress() +

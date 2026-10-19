@@ -32,9 +32,9 @@ public final class ThreadHelper {
     public static String resolveThreadName(String name) {
         String pattern = DEFAULT_PATTERN;
 
-        // replace tokens
-        String answer = pattern.replaceFirst("#counter#", "" + nextThreadCounter());
-        answer = answer.replaceFirst("#name#", name);
+        // L-7: 用字面 replace 而非 replaceFirst(正则)——name 含 $ / \ 等会被当作正则替换语义导致异常或乱名。
+        String answer = pattern.replace("#counter#", "" + nextThreadCounter());
+        answer = answer.replace("#name#", name == null ? "" : name);
 
         return answer;
     }

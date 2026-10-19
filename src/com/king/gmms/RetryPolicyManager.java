@@ -82,14 +82,14 @@ public class RetryPolicyManager {
 			if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT
 					.equalsIgnoreCase(messageType)) { // IN_DR
 				Date nextRetryTime = new Date(now.getTime()
-						+ policy.get(retriedNumber) * 1000);
+						+ policy.get(retriedNumber) * 1000L);
 				gmmsMessage.setNextRetryTime(nextRetryTime);
 
 			} else {
 				int defaultExpire = gmmsUtility.getExpireTimeInMinute();
 				Date expire = gmmsMessage.getExpiryDate();
 				if (expire == null) {
-					expire = new Date(gmtNow + defaultExpire * 60 * 1000);
+					expire = new Date(gmtNow + defaultExpire * 60 * 1000L);
 				}
 
 				if (GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(messageType)
@@ -98,13 +98,13 @@ public class RetryPolicyManager {
 						|| GmmsMessage.MSG_TYPE_DELIVERY_REPORT_QUERY
 								.equalsIgnoreCase(messageType)) {
 					if (expire.getTime() < gmmsMessage.getTimeStamp().getTime()
-							+ policy.get(retriedNumber) * 1000
+							+ policy.get(retriedNumber) * 1000L
 							&& gmmsMessage.getDeliveryReport()) {
 						// do nothing, handle it in
 						// handleOutSubmitRes/handleOutDeliveryReportRes/handleMessageError
 					} else {
 						Date nextRetryTime = new Date(now.getTime()
-								+ policy.get(retriedNumber) * 1000);
+								+ policy.get(retriedNumber) * 1000L);
 						gmmsMessage.setNextRetryTime(nextRetryTime);
 					}
 				} else {
@@ -284,8 +284,19 @@ public class RetryPolicyManager {
 		List<Integer> result = new LinkedList<Integer>();
 		// do the time unit conversion
 		for (String timePoint : timePoints) {
-			int timeValue = Integer.parseInt(timePoint.substring(0, timePoint
-					.length() - 1));
+			// M-18: 单 token 解析防御 —— 畸形点跳过并告警，不让整条策略失败。
+			timePoint = timePoint.trim();
+			if (timePoint.length() < 2) {
+				log.warn("Ignore malformed retry policy time point: {}", timePoint);
+				continue;
+			}
+			int timeValue;
+			try {
+				timeValue = Integer.parseInt(timePoint.substring(0, timePoint.length() - 1));
+			} catch (NumberFormatException nfe) {
+				log.warn("Ignore non-numeric retry policy time point: {}", timePoint);
+				continue;
+			}
 			switch (timePoint.toUpperCase().charAt(timePoint.length() - 1)) {
 			case 'D': {
 				result.add(timeValue * 60 * 60 * 24);
@@ -303,6 +314,9 @@ public class RetryPolicyManager {
 				result.add(timeValue);
 				break;
 			}
+			default:
+				// M-18: 未知单位不再静默丢弃，告警提示。
+				log.warn("Ignore retry policy time point with unknown unit: {}", timePoint);
 			}
 		}
 		return result;
@@ -324,11 +338,11 @@ public class RetryPolicyManager {
 			int defaultExpire = gmmsUtility.getExpireTimeInMinute();
 			Date expire = msg.getExpiryDate();
 			if (expire == null) {
-				expire = new Date(gmtNow + defaultExpire * 60 * 1000);
+				expire = new Date(gmtNow + defaultExpire * 60 * 1000L);
 			}
 
 			nextIsExpired = (expire.getTime() < msg.getTimeStamp().getTime()
-					+ policy.get(retriedNumber - 1) * 1000);
+					+ policy.get(retriedNumber - 1) * 1000L);
 		} catch (Exception ex) {
 			log.error(ex, ex);
 		}

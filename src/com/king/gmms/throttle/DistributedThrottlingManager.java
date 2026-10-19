@@ -44,14 +44,30 @@ public class DistributedThrottlingManager {
      * @param ssid 客户 SSID
      */
     public void acquire(int ssid) {
-        RateLimiter limiter = limiters.get(ssid);
-        if (limiter == null) {
-            com.king.gmms.domain.A2PCustomerInfo info = com.king.gmms.GmmsUtility.getInstance().getCustomerManager().getCustomerBySSID(ssid);
-            int tps = info != null ? info.getOutgoingThrottlingNum() : 0;
-            if (tps <= 0) return; // 不限速
-            limiter = getOrInitLimiter(ssid, tps);
+        // 方案A: 每次按当前配置自对齐速率 —— reload 后下一条即生效，不依赖任何事件 hook。
+        int tps = currentTps(ssid);
+        if (tps <= 0) {
+            // 配置为不限：移除可能存在的旧 limiter（修复 tps->0 不解除限速），直接放行。
+            limiters.remove(ssid);
+            return;
+        }
+        RateLimiter limiter = getOrInitLimiter(ssid, tps);
+        if (limiter.getRate() != (double) tps) { // 速率变化时即时调整（Guava setRate 线程安全）
+            limiter.setRate(tps);
+            log.info("Auto-aligned RateLimiter for SSID: {} to {} TPS", ssid, tps);
         }
         limiter.acquire();
+    }
+
+    /** 读取当前出站限速 TPS；取不到配置时返回 0（不限速），避免误卡死出站。 */
+    private int currentTps(int ssid) {
+        try {
+            com.king.gmms.domain.A2PCustomerInfo info =
+                    com.king.gmms.GmmsUtility.getInstance().getCustomerManager().getCustomerBySSID(ssid);
+            return info != null ? info.getOutgoingThrottlingNum() : 0;
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     /**
@@ -61,10 +77,13 @@ public class DistributedThrottlingManager {
      */
     public void updateRate(int ssid, int newTps) {
         if (newTps <= 0) {
-            log.info("Throttling disabled for SSID: {}", ssid);
+            // 改为不限：移除已有 limiter，真正解除限速（原实现只打日志、旧 limiter 仍在限）。
+            if (limiters.remove(ssid) != null) {
+                log.info("Throttling disabled (removed limiter) for SSID: {}", ssid);
+            }
             return;
         }
-        
+
         RateLimiter limiter = limiters.get(ssid);
         if (limiter != null) {
             double oldRate = limiter.getRate();

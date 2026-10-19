@@ -1,5 +1,8 @@
 package com.king.gmms.domain;
 
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
@@ -23,6 +26,7 @@ import com.king.message.gmms.GmmsMessage;
 import com.king.mgt.context.Module;
 import com.king.mgt.util.ConfigurationException;
 import com.king.mgt.util.UserInterfaceUtility;
+import com.king.redis.RedisClient;
 
 /**
  * Init ModuleManagement.xml
@@ -52,6 +56,7 @@ public class ModuleManager {
 	private List<String> systemMgtList = null;
 	private Set<String> moduleUrls = null;
 	private final String moduleConfigFile = "ModuleManagement.xml";
+	private final String moduleListConfigFile = "a2p_modules.conf";
 	// below for smsui
 	private HashMap<String, Module> mapName2Module = new HashMap<String, Module>();
 	private ArrayList<String> directStopModules = new ArrayList<String>();
@@ -79,6 +84,7 @@ public class ModuleManager {
 		moduleUrls = new HashSet<String>();
 		functionModuleList = new ArrayList<String>();
 		uiUtil = UserInterfaceUtility.getInstance();
+		ensureSmsUiRootModule();
 	}
 
 	/**
@@ -98,20 +104,225 @@ public class ModuleManager {
 	 * init ConnectionMap
 	 */
 	private void initConnectionMap() {
-		try {
-			String configFilePath = System.getProperty("a2p_home",
-					"/usr/local/a2p/")
-					+ "conf/" + moduleConfigFile;
-			SAXReader saxReader = new SAXReader();
-			Document doc = saxReader.read(configFilePath);
-			Element rootElement = doc.getRootElement();
-			initModuleElement(rootElement);
-		} catch (DocumentException e) {
-			log.error("init module configFile " + moduleConfigFile
-					+ " conf file error!!!", e);
-			System.out.println("init module configFile " + moduleConfigFile
-					+ " conf file error:" + e.getMessage());
+		String configFilePath = System.getProperty("a2p_home",
+				"/usr/local/a2p/")
+				+ "conf/" + moduleConfigFile;
+		File moduleConfig = new File(configFilePath);
+		if (moduleConfig.exists()) {
+			try {
+				SAXReader saxReader = new SAXReader();
+				Document doc = saxReader.read(configFilePath);
+				Element rootElement = doc.getRootElement();
+				initModuleElement(rootElement);
+			} catch (DocumentException e) {
+				log.error("init module configFile " + moduleConfigFile
+						+ " conf file error!!!", e);
+				System.out.println("init module configFile " + moduleConfigFile
+						+ " conf file error:" + e.getMessage());
+			}
+		} else {
+			log.info("{} not found, module list will be loaded from {}.", configFilePath, moduleListConfigFile);
 		}
+		initModuleListConfig();
+	}
+
+	private void initModuleListConfig() {
+		String a2pHome = System.getProperty("a2p_home", "/usr/local/a2p/");
+		if (!a2pHome.endsWith("/") && !a2pHome.endsWith("\\")) {
+			a2pHome = a2pHome + "/";
+		}
+		File configFile = new File(a2pHome + "conf/" + moduleListConfigFile);
+		if (!configFile.exists()) {
+			log.info("{} not found, skip module list supplement.", configFile.getAbsolutePath());
+			return;
+		}
+		BufferedReader reader = null;
+		try {
+			reader = new BufferedReader(new FileReader(configFile));
+			String line;
+			int lineNo = 0;
+			while ((line = reader.readLine()) != null) {
+				lineNo++;
+				parseModuleListLine(line, lineNo);
+			}
+		} catch (Exception e) {
+			log.error("init module list configFile " + moduleListConfigFile + " error!!!", e);
+		} finally {
+			if (reader != null) {
+				try {
+					reader.close();
+				} catch (Exception e) {
+					log.warn("close module list config reader failed", e);
+				}
+			}
+		}
+	}
+
+	private void parseModuleListLine(String line, int lineNo) {
+		if (line == null) {
+			return;
+		}
+		String trim = line.trim();
+		if (trim.length() == 0 || trim.startsWith("#")) {
+			return;
+		}
+		String[] parts = trim.split("\\|", -1);
+		if (parts.length < 4) {
+			log.warn("Ignore invalid {} line {}: {}", moduleListConfigFile, lineNo, line);
+			return;
+		}
+		if (!"1".equals(parts[0].trim())) {
+			return;
+		}
+		String moduleName = parts[1].trim();
+		String role = parts[2].trim();
+		if (moduleName.length() == 0) {
+			return;
+		}
+		addInitialModuleStatus(moduleName);
+		if (getConnectionInfo(moduleName) != null) {
+			return;
+		}
+		ModuleConnectionInfo connectionInfo = new ModuleConnectionInfo();
+		connectionInfo.setModuleName(moduleName);
+		connectionInfo.setUserName(moduleName);
+		connectionInfo.setConnectionName(moduleName);
+		connectionInfo.setURL(resolveModuleUrl(moduleName));
+		connectionInfo.setCmdPort(resolveModuleInt(moduleName, "CmdPort", -1));
+		connectionInfo.setSysPort(resolveModuleInt(moduleName, "SysPort", -1));
+		connectionInfo.setInSessionNum(resolveModuleInt(moduleName, "InBindSessionNumber", 0));
+		connectionInfo.setOutSessionNum(resolveModuleInt(moduleName, "OutBindSessionNumber", 0));
+		registerModuleConnection(moduleName, role, connectionInfo);
+	}
+
+	private void registerModuleConnection(String moduleName, String role, ModuleConnectionInfo connectionInfo) {
+		String fullModuleType = resolveFullModuleType(moduleName, role);
+		connectionInfo.setFullModuleType(fullModuleType);
+		if (SystemConstants.ROUTER_MODULE_TYPE.equalsIgnoreCase(fullModuleType)) {
+			connectionInfo.setModuleType(SystemConstants.ROUTER_MODULE_TYPE);
+			routerConnectionMap.put(moduleName, connectionInfo);
+			routerList.add(moduleName);
+		} else if (SystemConstants.MQM_MODULE_TYPE.equalsIgnoreCase(fullModuleType)) {
+			connectionInfo.setModuleType(SystemConstants.MQM_MODULE_TYPE);
+			mqmConnectionMap.put(moduleName, connectionInfo);
+			mqmList.add(moduleName);
+		} else if (SystemConstants.MGT_MODULE_TYPE.equalsIgnoreCase(fullModuleType)) {
+			connectionInfo.setModuleType(SystemConstants.MGT_MODULE_TYPE);
+			systemMgtConnectionMap.put(moduleName, connectionInfo);
+			systemMgtList.add(moduleName);
+		} else if (fullModuleType.endsWith(SystemConstants.SERVER_MODULE_TYPE)) {
+			connectionInfo.setModuleType(SystemConstants.SERVER_MODULE_TYPE);
+			serverConnectionMap.put(moduleName, connectionInfo);
+			serverList.add(moduleName);
+		} else if (fullModuleType.endsWith(SystemConstants.CLIENT_MODULE_TYPE)) {
+			connectionInfo.setModuleType(SystemConstants.CLIENT_MODULE_TYPE);
+			clientConnectionMap.put(moduleName, connectionInfo);
+			clientList.add(moduleName);
+		} else {
+			functionConnectionMap.put(moduleName, connectionInfo);
+			functionModuleList.add(moduleName);
+		}
+		addModuleType(moduleName, fullModuleType);
+		addInitialModuleStatus(moduleName);
+		moduleUrls.add(connectionInfo.getURL());
+		log.info("Module added from {}. module={}, role={}, fullType={}, cmdPort={}",
+				moduleListConfigFile, moduleName, role, fullModuleType, connectionInfo.getCmdPort());
+	}
+
+	private String resolveFullModuleType(String moduleName, String role) {
+		String lowerRole = role == null ? "" : role.toLowerCase();
+		if ("core".equals(lowerRole)) {
+			return SystemConstants.ROUTER_MODULE_TYPE;
+		}
+		if ("mqm".equals(lowerRole)) {
+			return SystemConstants.MQM_MODULE_TYPE;
+		}
+		if ("mgt".equals(lowerRole) || "system-mgt".equals(lowerRole)) {
+			return SystemConstants.MGT_MODULE_TYPE;
+		}
+		if (moduleName != null) {
+			if (moduleName.startsWith(SystemConstants.MULTISMPPSERVER_MODULE_TYPE)) {
+				return SystemConstants.MULTISMPPSERVER_MODULE_TYPE;
+			}
+			if (moduleName.startsWith(SystemConstants.COMMONHTTPSERVER_MODULE_TYPE)) {
+				return SystemConstants.COMMONHTTPSERVER_MODULE_TYPE;
+			}
+			if (moduleName.startsWith(SystemConstants.SSLSMPPSERVER_MODULE_TYPE)) {
+				return SystemConstants.SSLSMPPSERVER_MODULE_TYPE;
+			}
+			if (moduleName.startsWith(SystemConstants.MULTISMPPCLIENT_MODULE_TYPE)) {
+				return SystemConstants.MULTISMPPCLIENT_MODULE_TYPE;
+			}
+			if (moduleName.startsWith(SystemConstants.COMMONHTTPCLIENT_MODULE_TYPE)) {
+				return SystemConstants.COMMONHTTPCLIENT_MODULE_TYPE;
+			}
+			if (moduleName.startsWith(SystemConstants.SSLSMPPCLIENT_MODULE_TYPE)) {
+				return SystemConstants.SSLSMPPCLIENT_MODULE_TYPE;
+			}
+		}
+		if (lowerRole.endsWith("server")) {
+			return SystemConstants.MULTISMPPSERVER_MODULE_TYPE;
+		}
+		if (lowerRole.endsWith("client")) {
+			return SystemConstants.MULTISMPPCLIENT_MODULE_TYPE;
+		}
+		return role == null || role.length() == 0 ? "Function" : role;
+	}
+
+	private String resolveModuleUrl(String moduleName) {
+		String value = getUtilityProperty(moduleName + ".ModuleUrl", null);
+		if (value == null || value.length() == 0) {
+			value = getUtilityProperty("Module.ModuleUrl", null);
+		}
+		if (value == null || value.length() == 0) {
+			value = getUtilityProperty("ServerIP", "127.0.0.1");
+		}
+		return value;
+	}
+
+	private int resolveModuleInt(String moduleName, String suffix, int defaultValue) {
+		String value = getUtilityProperty(moduleName + "." + suffix, null);
+		if (value == null || value.length() == 0) {
+			value = getUtilityProperty("Module." + suffix, null);
+		}
+		if (value == null || value.length() == 0) {
+			return defaultValue;
+		}
+		try {
+			return Integer.parseInt(value.trim());
+		} catch (Exception e) {
+			log.warn("Invalid module integer config. module={}, suffix={}, value={}", moduleName, suffix, value);
+			return defaultValue;
+		}
+	}
+
+	private String getUtilityProperty(String key, String defaultValue) {
+		try {
+			return GmmsUtility.getInstance().getCommonProperty(key, defaultValue);
+		} catch (Exception e) {
+			return defaultValue;
+		}
+	}
+
+	private void addModuleType(String moduleName, String fullModuleType) {
+		ArrayList<String> moduleList = moduleTypeMap.get(fullModuleType);
+		if (moduleList == null) {
+			moduleList = new ArrayList<String>();
+			moduleTypeMap.put(fullModuleType, moduleList);
+		}
+		if (!moduleList.contains(moduleName)) {
+			moduleList.add(moduleName);
+		}
+	}
+
+	private void addInitialModuleStatus(String moduleName) {
+		if (moduleStatusMap.containsKey(moduleName)) {
+			return;
+		}
+		ArrayList<String> statusList = new ArrayList<String>();
+		statusList.add(SystemConstants.INITIAL_MODULE_STATUS);
+		statusList.add(SystemConstants.INITIAL_MODULE_STATUS);
+		moduleStatusMap.put(moduleName, statusList);
 	}
 
 	/**
@@ -172,10 +383,6 @@ public class ModuleManager {
 				moduleList.add(moduleName);
 				moduleTypeMap.put(fullModuleType, moduleList);
 			}
-			ArrayList<String> statusList = new ArrayList<String>();
-			statusList.add(SystemConstants.INITIAL_MODULE_STATUS);
-			statusList.add(SystemConstants.INITIAL_MODULE_STATUS);
-			moduleStatusMap.put(moduleName, statusList);
 		}
 	}
 
@@ -273,6 +480,7 @@ public class ModuleManager {
 	 * init for smsui
 	 */
 	public void initSmsUI() {
+		ensureSmsUiRootModule();
 		String dStopModules = uiUtil.getProperty("DirectStopModules");
 		if (dStopModules != null && !dStopModules.equalsIgnoreCase("")) {
 			String[] list = dStopModules.trim().split(",");
@@ -303,6 +511,8 @@ public class ModuleManager {
 
 		if (modules.size() == 0) {
 			uiUtil.setEnableNotification(false);
+			log.info("No local smsui legacy command module found. Redis control command path can still be used.");
+			ensureSmsUiRootModule();
 			return;
 		}
 		String[] moduleList = modules.toArray(new String[0]);
@@ -314,18 +524,33 @@ public class ModuleManager {
 			}
 			name = moduleList[i].trim();
 			ModuleConnectionInfo conInfo = this.getConnectionInfo(name);
+			if (conInfo == null) {
+				log.warn("Skip smsui active module without connection info. module={}", name);
+				continue;
+			}
 			String ip = conInfo.getURL();
 			int port = conInfo.getCmdPort();
-			if (port == -1) {
-				throw new ConfigurationException(
-						"Wrong port configuration for module " + name);
+			if (port <= 0) {
+				log.info("Skip smsui legacy command module without valid cmd_port. module={}, cmdPort={}", name, port);
+				continue;
 			}
 
 			Module module = new Module(name, ip, port);
 			addModule(module);
 			addActiveModule(name);
 		}
-		A2P = new Module("A2P", null, -1);
+		if (activeModules.size() == 0) {
+			uiUtil.setEnableNotification(false);
+			log.info("No smsui legacy command modules enabled. Redis control command path can still be used.");
+		}
+		ensureSmsUiRootModule();
+	}
+
+	private void ensureSmsUiRootModule() {
+		if (A2P == null) {
+			A2P = new Module("A2P", null, -1);
+		}
+		addModule(A2P);
 	}
 
 	/**
@@ -341,6 +566,10 @@ public class ModuleManager {
 		for (String item : confModules) {
 			ConnectionInfo conInfo = domainModuleManager
 					.getConnectionInfo(item);
+			if (conInfo == null || conInfo.getURL() == null || conInfo.getURL().trim().length() == 0) {
+				log.warn("Skip local module check without url. module={}", item);
+				continue;
+			}
 			String url = conInfo.getURL();
 			System.out.println(item + "url=" + url);
 
@@ -970,6 +1199,11 @@ public class ModuleManager {
 																		// status,
 																		// last
 																		// status
+		if (statusList == null || statusList.isEmpty()) {
+			log.info("Ignore module down status update because module is not loaded from {}. module={}",
+					moduleListConfigFile, moduleName);
+			return;
+		}
 		String currentStatus = SystemConstants.DOWN_MODULE_STATUS;
 		String lastStatus = statusList.get(0);
 		statusList.clear();
@@ -986,6 +1220,11 @@ public class ModuleManager {
 	public void updateModuleStatus2Up(String moduleName) {
 		log.trace("updateModuleStatus2Up:{}", moduleName);
 		ArrayList<String> statusList = moduleStatusMap.get(moduleName);// current status,last status
+		if (statusList == null || statusList.isEmpty()) {
+			log.info("Ignore module up status update because module is not loaded from {}. module={}",
+					moduleListConfigFile, moduleName);
+			return;
+		}
 		String currentStatus = SystemConstants.UP_MODULE_STATUS;
 		String lastStatus = statusList.get(0);
 		statusList.clear();
@@ -997,6 +1236,102 @@ public class ModuleManager {
 	public Map<String, ArrayList<String>> getModuleStatusMap() {
 		return moduleStatusMap;
 	}
+
+	private boolean isAliveModuleByLocalMap(String module) {
+		List<String> modList = this.moduleStatusMap.get(module);
+		if (modList == null || modList.isEmpty()) {
+			return false;
+		}
+		String status = modList.get(0);
+		return SystemConstants.UP_MODULE_STATUS.equals(status);
+	}
+
+	private Boolean isAliveModuleByRedis(String module) {
+		String role = resolveModuleStatusRole(module);
+		if (role == null || role.length() == 0) {
+			return null;
+		}
+		RedisClient redis = null;
+		try {
+			redis = GmmsUtility.getInstance().getRedisClient();
+		} catch (Exception e) {
+			return null;
+		}
+		if (redis == null) {
+			return null;
+		}
+		Set<String> nodes = new HashSet<String>();
+		boolean redisRead = addModuleStatusNodes(redis, nodes, "system:nodes:" + role);
+		if ("server".equalsIgnoreCase(role)) {
+			redisRead = addModuleStatusNodes(redis, nodes, "system:server:nodes") || redisRead;
+		} else if ("httpserver".equalsIgnoreCase(role)) {
+			redisRead = addModuleStatusNodes(redis, nodes, "system:httpserver:nodes") || redisRead;
+		}
+		if (!redisRead) {
+			return null;
+		}
+		if (nodes.isEmpty()) {
+			return Boolean.FALSE;
+		}
+		for (String nodeId : nodes) {
+			if (nodeId == null || nodeId.length() == 0) {
+				continue;
+			}
+			String key = "module:status:" + role + ":" + module + ":" + nodeId;
+			try {
+				String status = redis.getString(key);
+				if ("ONLINE".equalsIgnoreCase(status)) {
+					return Boolean.TRUE;
+				}
+			} catch (Exception e) {
+				log.warn("Failed to read redis module status. module={}, role={}, nodeId={}, key={}",
+						module, role, nodeId, key, e);
+				return null;
+			}
+		}
+		return Boolean.FALSE;
+	}
+
+	private boolean addModuleStatusNodes(RedisClient redis, Set<String> nodes, String key) {
+		try {
+			Set<String> members = redis.smembers(key);
+			if (members != null) {
+				nodes.addAll(members);
+			}
+			return true;
+		} catch (Exception e) {
+			log.warn("Failed to read redis module node set. key={}", key, e);
+			return false;
+		}
+	}
+
+	private String resolveModuleStatusRole(String module) {
+		ModuleConnectionInfo info = this.getConnectionInfo(module);
+		String fullModuleType = info != null ? info.getFullModuleType() : null;
+		if ((fullModuleType == null || fullModuleType.length() == 0) && module != null) {
+			fullModuleType = resolveFullModuleType(module, null);
+		}
+		if (SystemConstants.ROUTER_MODULE_TYPE.equalsIgnoreCase(fullModuleType)) {
+			return "core";
+		}
+		if (SystemConstants.MQM_MODULE_TYPE.equalsIgnoreCase(fullModuleType)) {
+			return "mqm";
+		}
+		if (SystemConstants.MGT_MODULE_TYPE.equalsIgnoreCase(fullModuleType)) {
+			return null;
+		}
+		if (SystemConstants.COMMONHTTPSERVER_MODULE_TYPE.equalsIgnoreCase(fullModuleType)) {
+			return "httpserver";
+		}
+		if (fullModuleType != null && fullModuleType.endsWith(SystemConstants.SERVER_MODULE_TYPE)) {
+			return "server";
+		}
+		if (fullModuleType != null && fullModuleType.endsWith(SystemConstants.CLIENT_MODULE_TYPE)) {
+			return "client";
+		}
+		return null;
+	}
+
 	/**
 	 * getModules By Type
 	 * 
@@ -1015,12 +1350,19 @@ public class ModuleManager {
 	 */
 	public List<String> getAliveModulesWithSameType(String moduleName) {
 		ModuleConnectionInfo modInfo = this.getConnectionInfo(moduleName);
+		if (modInfo == null) {
+			return new ArrayList<String>();
+		}
 		String fullModuleType = modInfo.getFullModuleType();
 		List<String> modules = this.moduleTypeMap.get(fullModuleType);
 		List<String> aliveModules = new ArrayList<String>();
+		if (modules == null) {
+			return aliveModules;
+		}
 		for (String module : modules) {
-			String moduleStatus = this.moduleStatusMap.get(module).get(0);
-			if (SystemConstants.UP_MODULE_STATUS.equalsIgnoreCase(moduleStatus)) {
+			Boolean redisAlive = isAliveModuleByRedis(module);
+			if (Boolean.TRUE.equals(redisAlive)
+					|| (redisAlive == null && isAliveModuleByLocalMap(module))) {
 				aliveModules.add(module);
 			}
 		}
@@ -1034,12 +1376,11 @@ public class ModuleManager {
 	 * @return
 	 */
 	public boolean isAliveModule(String module) {
-		List<String> modList = this.moduleStatusMap.get(module);
-		if(modList==null || modList.isEmpty()){
-			return false;
+		Boolean redisAlive = isAliveModuleByRedis(module);
+		if (redisAlive != null) {
+			return redisAlive.booleanValue();
 		}
-		String status = modList.get(0);
-		return SystemConstants.UP_MODULE_STATUS.equals(status);
+		return isAliveModuleByLocalMap(module);
 	}
 
 	/**

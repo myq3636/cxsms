@@ -24,6 +24,9 @@ public class MqmActiveCoordinator implements Runnable {
 	private volatile String leaderValue = null;
 	private long noLeaderSince = 0L;
 	private Thread thread;
+	// C-9: 当前任期纪元(仅全新抢锁时 INCR，续约不变)；上次成功续约/抢锁时刻(用于"续约迟到即自我降级")。
+	private volatile long currentFence = -1L;
+	private long lastRenewSuccessMs = 0L;
 
 	public MqmActiveCoordinator(GmmsUtility gmmsUtility, String module, String nodeId) {
 		this.gmmsUtility = gmmsUtility;
@@ -72,6 +75,9 @@ public class MqmActiveCoordinator implements Runnable {
 				registerCandidate();
 				if (!isEnabled()) {
 					releaseLeadership("disabled");
+					if (currentFence < 0L) {
+						currentFence = acquireFence(); // standalone 单实例也取一个纪元供生产方打标
+					}
 					becomeActive("active-standby-disabled");
 					sleepSeconds(getStandbyCheckSeconds());
 					continue;
@@ -118,6 +124,7 @@ public class MqmActiveCoordinator implements Runnable {
 			if (acquired) {
 				leaderValue = value;
 				noLeaderSince = 0L;
+				currentFence = acquireFence(); // C-9: 全新抢锁 → 新任期纪元(单调递增)
 				becomeActive("lease-acquired");
 			} else {
 				becomeStandby("lease-owned-by-other");
@@ -137,6 +144,16 @@ public class MqmActiveCoordinator implements Runnable {
 		RedisClient redis = gmmsUtility.getRedisClient();
 		if (redis == null) {
 			becomeStandby("redis-client-null");
+			return;
+		}
+		// C-9: 续约迟到即自我降级——距上次成功续约/抢锁已 >= TTL，租约极可能已过期(GC/卡顿)，
+		// 先降级，避免"自以为还是 active"继续干活造成脑裂。
+		if (active && lastRenewSuccessMs > 0L
+				&& (System.currentTimeMillis() - lastRenewSuccessMs) >= getLeaseTtlSeconds() * 1000L) {
+			log.warn("MQM renew too late, self-demote. identity={}, sinceLastRenewMs={}",
+					identity, System.currentTimeMillis() - lastRenewSuccessMs);
+			leaderValue = null;
+			becomeStandby("renew-too-late");
 			return;
 		}
 		if (leaderValue == null) {
@@ -178,10 +195,11 @@ public class MqmActiveCoordinator implements Runnable {
 
 	private void becomeActive(String reason) {
 		if (!active) {
-			log.info("MQM role changed to ACTIVE. identity={}, reason={}", identity, reason);
+			log.info("MQM role changed to ACTIVE. identity={}, reason={}, fence={}", identity, reason, currentFence);
 		}
 		active = true;
-		MqmActiveState.setActive(true, reason);
+		lastRenewSuccessMs = System.currentTimeMillis(); // 抢锁/续约成功都经此
+		MqmActiveState.setActive(true, reason, currentFence);
 	}
 
 	private void becomeStandby(String reason) {
@@ -189,7 +207,23 @@ public class MqmActiveCoordinator implements Runnable {
 			log.warn("MQM role changed to STANDBY. identity={}, reason={}", identity, reason);
 		}
 		active = false;
-		MqmActiveState.setActive(false, reason);
+		currentFence = -1L;
+		lastRenewSuccessMs = 0L;
+		MqmActiveState.setActive(false, reason, -1L);
+	}
+
+	/** C-9: 取下一任期纪元(INCR)；Redis 异常时保持原值，不破坏选主。 */
+	private long acquireFence() {
+		try {
+			RedisClient redis = gmmsUtility.getRedisClient();
+			Long f = (redis != null) ? redis.incrFence() : null;
+			if (f != null) {
+				return f.longValue();
+			}
+		} catch (Exception e) {
+			log.warn("MQM incrFence failed, keep current fence={}", currentFence, e);
+		}
+		return currentFence;
 	}
 
 	private void registerCandidate() {
@@ -239,8 +273,9 @@ public class MqmActiveCoordinator implements Runnable {
 	}
 
 	private int getRenewSeconds() {
-		int renew = intProperty("MQM.ActiveRenewSeconds", 10);
-		return renew <= 0 ? 10 : renew;
+		// C-9: 默认 5s(原 10s)——TTL=30s 时给 GC/卡顿留约 6 次续约余量，缩小脑裂窗口。
+		int renew = intProperty("MQM.ActiveRenewSeconds", 5);
+		return renew <= 0 ? 5 : renew;
 	}
 
 	private int getStandbyCheckSeconds() {

@@ -69,6 +69,7 @@ public class GmmsMessage extends MessageBase {
 	protected String deliveryChannel = null;
 	protected String routingSsIDs = null;
 	protected String redisStreamID = null; // V4.0 Redis Stream ID for ACK
+	protected long redisFence = -1L; // C-9: 该消息所属 MQM 任期纪元(来自 stream 字段, 非序列化); -1=缺失
 	protected transient String redisStreamMessageType = null; // metrics hint: original type read from Redis
 	
 	
@@ -768,6 +769,14 @@ public class GmmsMessage extends MessageBase {
 
 	public void setRedisStreamID(String redisStreamID) {
 		this.redisStreamID = redisStreamID;
+	}
+
+	public long getRedisFence() {
+		return redisFence;
+	}
+
+	public void setRedisFence(long redisFence) {
+		this.redisFence = redisFence;
 	}
 
 	public String getRedisStreamMessageType() {

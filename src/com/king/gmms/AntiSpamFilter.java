@@ -34,6 +34,7 @@ public class AntiSpamFilter implements LifecycleListener {
     private static final String UNICODE_BEG = ".*(?:";
     private static final String UNICODE_END = ").*";
     private static final int GROUP_NUM = 10;
+    // L-5: 改实例字段(原为可变静态 → 多实例/多次 reload 共享污染)。
     private static String SPECIAL_CHARS="\\\"'^$*+?./(){}|-<>[]";
     private Map<Integer,List<Pattern>> map_InAscii = new HashMap<Integer,List<Pattern>>();
     private Map<Integer,List<Pattern>> map_OutAscii = new HashMap<Integer,List<Pattern>>();
@@ -97,11 +98,12 @@ public class AntiSpamFilter implements LifecycleListener {
 					String outunicode = block.getString("OUT_UNICODE");
 					outunicode = this.escapeSpecialChars(outunicode);
 					initUnicodeKey(ssid,outunicode,false);
-					
-					
+
+
 				}
+				isLoad = true; // L-5: 解析成功置位，使调用方能区分加载成败
 			}
-	
+
 		} catch (Exception ex) {
 			if(log.isInfoEnabled()){
 				log.info("load antiSpam error:{}",ex);

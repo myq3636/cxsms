@@ -151,7 +151,16 @@ public class BufferMonitor {
                 notifySpaceAvailable();
                 return msg;
             }
-            
+
+            // C-11: 也查 fourBuffer —— 老化进 fourBuffer 但尚未超时的条目原对 get/remove 不可见，
+            // 导致此时到达的响应/DR 关联不上而被误超时丢失。
+            msg = fourBuffer.remove(key);
+            if (msg != null) {
+                totalItemCount.decrementAndGet();
+                notifySpaceAvailable();
+                return msg;
+            }
+
         } catch (Exception e) {
             log.warn(e, e);
         } finally {
@@ -172,6 +181,9 @@ public class BufferMonitor {
         if (msg != null) return msg;
 
         msg = threeBuffer.get(key);
+        if (msg != null) return msg;
+
+        msg = fourBuffer.get(key); // C-11: 补查 fourBuffer，避免老化条目不可见
         return msg;
     }
 

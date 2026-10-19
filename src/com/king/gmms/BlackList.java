@@ -1,6 +1,9 @@
 package com.king.gmms;
 
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.io.*;
 
 import org.apache.logging.log4j.LogManager;
@@ -26,26 +29,28 @@ import com.king.message.gmms.GmmsMessage;
  * @version 1.0
  */
 public class BlackList implements LifecycleListener{
-    private ArrayList<BlackListValue> oopBlacklist;
-    private ArrayList<BlackListValue> ropBlacklist;
-    private ArrayList<BlackListValue> oNumberBlacklist;
-    private ArrayList<BlackListValue> rNumberBlacklist;
-    private ArrayList<BlackListValue> oopRnumberBlacklist;
-    private ArrayList<BlackListValue> oNumberRopBlacklist;
-    private ArrayList<BlackListValue> oopRopBlacklist;
-    
+    // H-25: 精确匹配项改 HashSet (O(1))；H-26: 全部字段 volatile —— reload 线程整体替换、
+    // 消息线程无锁读，需 happens-before 保证 reload 可见。前缀匹配项无法 HashSet，保持线性扫描。
+    private volatile Set<String> oNumberBlacklist;       // 发送号精确匹配(已归一化)
+    private volatile List<String> rNumberBlacklist;      // 接收号前缀匹配
+    private volatile Set<Integer> oopBlacklist;          // 源运营商精确匹配
+    private volatile Set<Integer> ropBlacklist;          // 目标运营商精确匹配
+    private volatile List<BlackListValue> oopRnumberBlacklist;   // 源运营商 + 接收号前缀
+    private volatile List<BlackListValue> oNumberRopBlacklist;   // 发送号前缀 + 目标运营商
+    private volatile Set<Long> oopRopBlacklist;          // (源运营商,目标运营商) 精确匹配(打包)
+
     LifecycleSupport lifecycle;
     private static SystemLogger log = SystemLogger
 	.getSystemLogger(BlackList.class);
 
     public BlackList() {
-        oopBlacklist = new ArrayList<BlackListValue> ();
-        ropBlacklist = new ArrayList<BlackListValue> ();
-        oNumberBlacklist = new ArrayList<BlackListValue> ();
-        rNumberBlacklist = new ArrayList<BlackListValue> ();
-        oopRnumberBlacklist = new ArrayList<BlackListValue> ();
-        oNumberRopBlacklist = new ArrayList<BlackListValue> ();
-        oopRopBlacklist = new ArrayList<BlackListValue> ();
+        oNumberBlacklist = new HashSet<String>();
+        rNumberBlacklist = new ArrayList<String>();
+        oopBlacklist = new HashSet<Integer>();
+        ropBlacklist = new HashSet<Integer>();
+        oopRnumberBlacklist = new ArrayList<BlackListValue>();
+        oNumberRopBlacklist = new ArrayList<BlackListValue>();
+        oopRopBlacklist = new HashSet<Long>();
         lifecycle = GmmsUtility.getInstance().getLifecycleSupport();
         lifecycle.addListener(Event.TYPE_BLACKLIST_RELOAD, this, 1);
     }
@@ -54,20 +59,33 @@ public class BlackList implements LifecycleListener{
         this.lifecycle = lifecycle;
     }
 
+    // H-25: replace 而非 replaceAll(正则)，且 null→"" 统一归一化(小写、去空格)。
+    private static String normalizeNumber(String s) {
+        if (s == null) {
+            return "";
+        }
+        return s.toLowerCase().replace(" ", "");
+    }
+
+    // H-25: 把 (o_op, r_op) 打包成 long 作为精确匹配 key。
+    private static long packOpPair(int oOp, int rOp) {
+        return (((long) oOp) << 32) | (rOp & 0xFFFFFFFFL);
+    }
+
     public void addOopBlacklist(int o_op) {
-        oopBlacklist.add(new BlackListValue(null, null, o_op, -1));
+        oopBlacklist.add(o_op);
     }
 
     public void addRopBlacklist(int r_op) {
-        ropBlacklist.add(new BlackListValue(null, null, -1, r_op));
+        ropBlacklist.add(r_op);
     }
 
     public void addONumberBlacklist(String oNumber) {
-        oNumberBlacklist.add(new BlackListValue(oNumber, null, -1, -1));
+        oNumberBlacklist.add(normalizeNumber(oNumber));
     }
 
     public void addRNumberBlacklist(String rNumber) {
-        rNumberBlacklist.add(new BlackListValue(null, rNumber, -1, -1));
+        rNumberBlacklist.add(rNumber);
     }
 
     public void addOopRNumberBlacklist(int o_op, String rNumber) {
@@ -79,58 +97,31 @@ public class BlackList implements LifecycleListener{
     }
 
     public void addOopRopBlacklist(int o_op,int r_op){
-    	oopRopBlacklist.add(new BlackListValue(null, null, o_op, r_op));
+    	oopRopBlacklist.add(packOpPair(o_op, r_op));
     }
-    
+
     private boolean blockOopRop(int o_op,int r_op) {
-        for (BlackListValue blackList : oopRopBlacklist) {
-            if ((o_op == blackList.getOOP()) && (r_op == blackList.getROP())) {
-                return true;
-            }
-        }
-        return false;
+        return oopRopBlacklist.contains(packOpPair(o_op, r_op));
     }
     private boolean blockOop(int o_op) {
-        for (BlackListValue blackList : oopBlacklist) {
-            if (o_op == blackList.getOOP()) {
-                return true;
-            }
-        }
-        return false;
+        return oopBlacklist.contains(o_op);
     }
 
     private boolean blockRop(int r_op) {
-        for (BlackListValue blackList : ropBlacklist) {
-            if (r_op == blackList.getROP()) {
-                return true;
-            }
-        }
-        return false;
+        return ropBlacklist.contains(r_op);
     }
 
     private boolean blockONumber(String oNumber) {
-        for (BlackListValue blackList : oNumberBlacklist) {
-        	String sender = blackList.getONumber();
-        	if(sender == null){
-        		sender = "";
-        	}
-        	if(oNumber == null){
-        		oNumber = "";       		
-        	}
-        	oNumber = oNumber.toLowerCase();
-        	oNumber = oNumber.replaceAll(" ", "");
-        	sender = sender.toLowerCase();
-        	sender = sender.replaceAll(" ", "");
-            if (oNumber.equalsIgnoreCase(sender)) {
-                return true;
-            }
-        }
-        return false;
+        // H-25: 入参只归一化一次，存储项装载时已预归一化 → O(1) 精确匹配。
+        return oNumberBlacklist.contains(normalizeNumber(oNumber));
     }
 
     private boolean blockRNumber(String rNumber) {
-        for (BlackListValue blackList : rNumberBlacklist) {
-            if (rNumber.startsWith(blackList.getRNumber())) {
+        if (rNumber == null) {
+            return false;
+        }
+        for (String prefix : rNumberBlacklist) {
+            if (prefix != null && rNumber.startsWith(prefix)) {
                 return true;
             }
         }
@@ -138,6 +129,9 @@ public class BlackList implements LifecycleListener{
     }
 
     private boolean blockOopRNumber(int o_op, String rNumber) {
+        if (rNumber == null) {
+            return false;
+        }
         for (BlackListValue blackList : oopRnumberBlacklist) {
             if (o_op == blackList.getOOP() &&
                 rNumber.startsWith(blackList.getRNumber())) {
@@ -148,6 +142,9 @@ public class BlackList implements LifecycleListener{
     }
 
     private boolean blockONumberRop(String oNumber, int r_op) {
+        if (oNumber == null) {
+            return false;
+        }
         for (BlackListValue blackList : oNumberRopBlacklist) {
             if (r_op == blackList.getROP() &&
                 oNumber.startsWith(blackList.getONumber())) {
@@ -162,7 +159,7 @@ public class BlackList implements LifecycleListener{
                 !blockOopRNumber(msg.getOoperator(), msg.getRecipientAddress()) &&
                 !blockOop(msg.getOSsID()));
     }
-    
+
     public boolean allowBlackList(GmmsMessage msg) {
         return (!blockONumber(msg.getSenderAddress()));
     }
@@ -185,18 +182,18 @@ public class BlackList implements LifecycleListener{
 	            log.debug("Loading Blacklist from file {} ...",path);
 	   	   }
            File file = new File(path);
-           FileInputStream fin = new FileInputStream(file);
-           BufferedReader reader = new BufferedReader(new InputStreamReader(
-               fin));
+           // M-20: try-with-resources 确保 reader/流在任何路径都关闭，避免每次 reload 漏 FD。
+           try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+               new FileInputStream(file)))) {
 
            // clear the old blacklist after successfully read the configuration file.
-           ArrayList<BlackListValue> tempONumber=new ArrayList<BlackListValue>();
-           ArrayList<BlackListValue> tempRNumber=new ArrayList<BlackListValue>();
-           ArrayList<BlackListValue> tempONumberROp=new ArrayList<BlackListValue>();
-           ArrayList<BlackListValue> tempOOpRNumber=new ArrayList<BlackListValue>();
-           ArrayList<BlackListValue> tempOOp=new ArrayList<BlackListValue>();
-           ArrayList<BlackListValue> tempRop=new ArrayList<BlackListValue>();
-           ArrayList<BlackListValue> tempOopRop=new ArrayList<BlackListValue>();
+           Set<String> tempONumber=new HashSet<String>();
+           List<String> tempRNumber=new ArrayList<String>();
+           List<BlackListValue> tempONumberROp=new ArrayList<BlackListValue>();
+           List<BlackListValue> tempOOpRNumber=new ArrayList<BlackListValue>();
+           Set<Integer> tempOOp=new HashSet<Integer>();
+           Set<Integer> tempRop=new HashSet<Integer>();
+           Set<Long> tempOopRop=new HashSet<Long>();
            String line=null;
            while ( (line=reader.readLine())  != null) {
                line=line.trim();
@@ -204,7 +201,7 @@ public class BlackList implements LifecycleListener{
                    continue;
                }
                String[] args = line.split(",", 2);
-               
+
                if (args.length<2)
                {
                    log.error("Wrong blacklist length for line:{}, {}",line, args.length);
@@ -216,15 +213,15 @@ public class BlackList implements LifecycleListener{
                if(right.startsWith(",")){
             	   left= left+",";
             	   right = right.substring(1);
-               }               
+               }
                try {
                    if (left.length() == 0 && right.startsWith("p")) {
                        String rNumber=right.substring(1);
-                       tempRNumber.add(new BlackListValue(null,rNumber,-1,-1));
+                       tempRNumber.add(rNumber);
                    }
                    else if (left.startsWith("p") && right.length() == 0) {
                        String oNumber=left.substring(1);
-                       tempONumber.add(new BlackListValue(oNumber,null,-1,-1));
+                       tempONumber.add(normalizeNumber(oNumber));
                    }
                    else if (left.startsWith("o") && right.startsWith("p")) {
                        String rNumber=right.substring(1);
@@ -238,16 +235,16 @@ public class BlackList implements LifecycleListener{
                    }
                    else if (left.startsWith("o") && right.length() == 0) {
                        int o_op=Integer.parseInt(left.substring(1));
-                       tempOOp.add(new BlackListValue(null,null,o_op,-1));
+                       tempOOp.add(o_op);
                    }
                    else if (left.length() == 0 && right.startsWith("o")) {
                        int r_op=Integer.parseInt(right.substring(1));
-                       tempRop.add(new BlackListValue(null,null,-1,r_op));
+                       tempRop.add(r_op);
                    }
                    else if (left.startsWith("o") && right.startsWith("o")) {
                        int o_op=Integer.parseInt(left.substring(1));
                        int r_op=Integer.parseInt(right.substring(1));
-                       tempOopRop.add(new BlackListValue(null,null,o_op,r_op));
+                       tempOopRop.add(packOpPair(o_op,r_op));
                    }
                    else
                    {
@@ -268,9 +265,9 @@ public class BlackList implements LifecycleListener{
            this.ropBlacklist = tempRop;
            this.oopRopBlacklist=tempOopRop;
            this.oopBlacklist=tempOOp;
-// Note: this method costs lots of time. Try to improve it.
            log.trace("Blacklist Loaded:\n"+printBlacklist());
            return rtnval;
+           } // close try-with-resources (reader)
        }
        catch (FileNotFoundException ex) {
            log.error(ex, ex);
@@ -301,13 +298,13 @@ public class BlackList implements LifecycleListener{
 
    private String printBlacklist() {
        StringBuilder rtnval = new StringBuilder("Prefix_ALL:\n");
-       for (BlackListValue prefix_all : this.oNumberBlacklist) {
-           rtnval.append("Prefix(").append(prefix_all.getONumber()).append(
+       for (String prefix_all : this.oNumberBlacklist) {
+           rtnval.append("Prefix(").append(prefix_all).append(
                ") --- All\n");
        }
        rtnval.append("\nALL_Prefix:\n");
-       for (BlackListValue all_prefix : this.rNumberBlacklist) {
-           rtnval.append("All --- Prefix(").append(all_prefix.getRNumber()).
+       for (String all_prefix : this.rNumberBlacklist) {
+           rtnval.append("All --- Prefix(").append(all_prefix).
                append(")\n");
        }
        rtnval.append("\nOP_Prefix:\n");
@@ -324,8 +321,8 @@ public class BlackList implements LifecycleListener{
                .append(")\n");
        }
        rtnval.append("\nOP_All:\n");
-       for (BlackListValue op_all : this.oopBlacklist) {
-           rtnval.append("OP(").append(op_all.getOOP()).append(") --- ALL\n");
+       for (Integer op_all : this.oopBlacklist) {
+           rtnval.append("OP(").append(op_all).append(") --- ALL\n");
        }
        return rtnval.toString();
    }

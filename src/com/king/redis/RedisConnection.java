@@ -220,6 +220,23 @@ public class RedisConnection {
 		}
 	}
 
+	/**
+	 * 原子 INCR + 首次 EXPIRE（H-6）：单条 Lua 完成自增并在计数为 1（新建）时设置 TTL，
+	 * 避免 "INCR 与 EXPIRE 两步之间崩溃/失败导致计数 key 无 TTL 永久残留、该桶永久限流"。
+	 * @return 自增后的计数；异常返回 null（调用方据此 fail-open）。
+	 */
+	public Long incrWithExpire(String key, int expireSeconds) {
+		String script = "local v = redis.call('INCR', KEYS[1]); "
+				+ "if v == 1 then redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1])); end; return v";
+		try (Jedis jedis = pool.getResource()) {
+			Object r = jedis.eval(script, Arrays.asList(key), Arrays.asList(String.valueOf(expireSeconds)));
+			return r instanceof Long ? (Long) r : null;
+		} catch (Exception e) {
+			logger.error("incrWithExpire failed. key={}", key, e);
+			return null;
+		}
+	}
+
 	public boolean setString(String key, String obj, int time) {
 		try (Jedis jedis = pool.getResource()) {
 			String result = jedis.setex(key, (long) time, obj);
@@ -344,6 +361,105 @@ public class RedisConnection {
 		} catch (Exception e) {
 			logger.error("deleteIfStringEquals failed. key={}", key, e);
 			return false;
+		}
+	}
+
+	/**
+	 * CSM 长短信合并：原子地 HSET 当前分段 + 首次创建时设置 TTL 并写过期索引 ZSET + 用 HLEN 判定是否集齐。
+	 * 采用 produce-before-DEL 策略：集齐时只读取整组(不删)，由调用方在外发持久化成功后再调
+	 * {@link #csmDeleteIfComplete}。
+	 *
+	 * @return 集齐：非空扁平列表 [seq1,payload1,seq2,payload2,...]；
+	 *         未集齐(分段已持久)：空列表；
+	 *         存储失败(Redis 异常)：{@code null}（调用方据此不 ACK，留 PEL 重试）。
+	 */
+	public List<String> csmReassemble(String hashKey, String indexZset, String seq, String payload,
+			int total, int ttlSeconds, long expireAtMs) {
+		String script =
+			"redis.call('HSET', KEYS[1], ARGV[1], ARGV[2]); "
+			+ "if redis.call('TTL', KEYS[1]) < 0 then "
+			+ "  redis.call('EXPIRE', KEYS[1], tonumber(ARGV[4])); "
+			+ "  redis.call('ZADD', KEYS[2], tonumber(ARGV[5]), KEYS[1]); "
+			+ "end; "
+			+ "local n = redis.call('HLEN', KEYS[1]); "
+			+ "if n == tonumber(ARGV[3]) then return redis.call('HGETALL', KEYS[1]); "
+			+ "else return {}; end";
+		try (Jedis jedis = pool.getResource()) {
+			Object r = jedis.eval(script, Arrays.asList(hashKey, indexZset),
+					Arrays.asList(seq, payload, String.valueOf(total),
+							String.valueOf(ttlSeconds), String.valueOf(expireAtMs)));
+			List<String> out = new ArrayList<>();
+			if (r instanceof List<?>) {
+				for (Object o : (List<?>) r) {
+					out.add(o == null ? null : String.valueOf(o));
+				}
+			}
+			return out; // 空=未集齐(已持久); 非空=集齐
+		} catch (Exception e) {
+			logger.error("csmReassemble failed. key={}", hashKey, e);
+			return null; // 存储失败 -> 不 ACK
+		}
+	}
+
+	/**
+	 * CSM 完成提交令牌：仅当 hash 仍集齐(HLEN==total)时删除合并 hash 与过期索引项，返回本次是否删除成功。
+	 * 由调用方在 {@code routeSubmitSync} 外发持久化成功后调用；produce 失败则不调用，hash 保留供重投重组。
+	 */
+	public boolean csmDeleteIfComplete(String hashKey, String indexZset, int total) {
+		String script =
+			"if redis.call('HLEN', KEYS[1]) == tonumber(ARGV[1]) then "
+			+ "  redis.call('DEL', KEYS[1]); redis.call('ZREM', KEYS[2], KEYS[1]); return 1; "
+			+ "else return 0; end";
+		try (Jedis jedis = pool.getResource()) {
+			Object r = jedis.eval(script, Arrays.asList(hashKey, indexZset),
+					Arrays.asList(String.valueOf(total)));
+			return Long.valueOf(1L).equals(r);
+		} catch (Exception e) {
+			logger.error("csmDeleteIfComplete failed. key={}", hashKey, e);
+			return false;
+		}
+	}
+
+	/**
+	 * CSM 过期 sweeper：原子地从过期索引 ZSET 取出已到期(score &le; now)的最多 batch 个 hashKey 并从索引中移除(claim)，
+	 * 返回被认领的 hashKey 列表。原子 claim 保证（即便 MQM 主备切换瞬间重叠）每个过期项只被一个实例处理一次。
+	 */
+	public List<String> csmClaimExpired(String indexZset, long nowMs, int batch) {
+		String script =
+			"local due = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, tonumber(ARGV[2])); "
+			+ "for i=1,#due do redis.call('ZREM', KEYS[1], due[i]); end; "
+			+ "return due";
+		try (Jedis jedis = pool.getResource()) {
+			Object r = jedis.eval(script, Arrays.asList(indexZset),
+					Arrays.asList(String.valueOf(nowMs), String.valueOf(batch)));
+			List<String> out = new ArrayList<>();
+			if (r instanceof List<?>) {
+				for (Object o : (List<?>) r) {
+					if (o != null) out.add(String.valueOf(o));
+				}
+			}
+			return out;
+		} catch (Exception e) {
+			logger.error("csmClaimExpired failed. zset={}", indexZset, e);
+			return new ArrayList<>();
+		}
+	}
+
+	public Map<String, String> hgetAll(String key) {
+		try (Jedis jedis = pool.getResource()) {
+			return jedis.hgetAll(key);
+		} catch (Exception e) {
+			logger.error("hgetAll failed. key={}", key, e);
+			return null;
+		}
+	}
+
+	public Long delKey(String key) {
+		try (Jedis jedis = pool.getResource()) {
+			return jedis.del(key);
+		} catch (Exception e) {
+			logger.error("delKey failed. key={}", key, e);
+			return 0L;
 		}
 	}
 
@@ -905,6 +1021,44 @@ public class RedisConnection {
 	}
 
 	/**
+	 * 【性能·阶段1】原子写：单段 Lua 内完成 XADD(取 id) + ZADD(doorbell)。
+	 * 把原"XADD 一次 RTT + ZADD 一次 RTT + 失败回滚"合并为 1 次 RTT，且 XADD/ZADD 原子(强化 C-4：
+	 * 不可能出现已写流未响铃的孤儿)。返回 stream id；任一失败整体不留痕、返回 null。
+	 * 前置：streamKey 与 doorbellZset 须同节点(主备/单实例满足；Redis Cluster 需同 hash-tag)。
+	 *
+	 * @param fieldValues XADD 字段，顺序 field,value,field,value...
+	 */
+	public String xaddWithDoorbell(String streamKey, String doorbellZset, long doorbellScore,
+			long maxLen, boolean approximateTrimming, java.util.List<String> fieldValues) {
+		// KEYS[1]=streamKey KEYS[2]=doorbellZset
+		// ARGV[1]=maxLen ARGV[2]=approx('~' 或 '') ARGV[3]=doorbellScore ARGV[4]=doorbellMember
+		// ARGV[5..]=field,value,...
+		String script =
+			"local args = {KEYS[1], 'MAXLEN'} "
+			+ "if ARGV[2] == '~' then args[#args+1] = '~' end "
+			+ "args[#args+1] = ARGV[1] args[#args+1] = '*' "
+			+ "for i=5,#ARGV do args[#args+1] = ARGV[i] end "
+			+ "local id = redis.call('XADD', unpack(args)) "
+			+ "redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4]) "
+			+ "return id";
+		try (Jedis jedis = pool.getResource()) {
+			java.util.List<String> argv = new java.util.ArrayList<String>();
+			argv.add(String.valueOf(maxLen));
+			argv.add(approximateTrimming ? "~" : "");
+			argv.add(String.valueOf(doorbellScore));
+			argv.add(streamKey);
+			if (fieldValues != null) {
+				argv.addAll(fieldValues);
+			}
+			Object r = jedis.eval(script, Arrays.asList(streamKey, doorbellZset), argv);
+			return r == null ? null : String.valueOf(r);
+		} catch (Exception e) {
+			logger.error("xaddWithDoorbell failed. key={}, zset={}", streamKey, doorbellZset, e);
+			return null;
+		}
+	}
+
+	/**
 	 * 为 Stream 创建消费组 (XGROUP CREATE)
 	 * 在启动消费者线程前调用，确保组存在
 	 * 
@@ -978,6 +1132,28 @@ public class RedisConnection {
 			return jedis.xack(key, groupName, ids);
 		} catch (Exception e) {
 			logger.error("xack failed. key={}, group={}", key, groupName, e);
+			return 0L;
+		}
+	}
+
+	/**
+	 * 原子确认并删除 (XACK + XDEL)
+	 * 通过单条 Lua 脚本保证 XACK 成功后立即 XDEL，避免两次往返之间崩溃导致
+	 * "已确认但消息体残留" 的 Stream 泄漏，或与 auto-claim 竞争造成的重复处理。
+	 * 仅适用于单 (活) 消费组的 Stream；本系统所有 Stream 均满足该前提。
+	 *
+	 * @return XACK 确认成功的条数 (>0 表示本次确认成功并已删除消息体)；异常时返回 0
+	 */
+	public Long xackAndDel(String key, String groupName, StreamEntryID id) {
+		String script = "local acked = redis.call('XACK', KEYS[1], ARGV[1], ARGV[2]); "
+				+ "if acked >= 1 then redis.call('XDEL', KEYS[1], ARGV[2]); end; "
+				+ "return acked";
+		try (Jedis jedis = pool.getResource()) {
+			Object result = jedis.eval(script, Arrays.asList(key),
+					Arrays.asList(groupName, id.toString()));
+			return result instanceof Long ? (Long) result : 0L;
+		} catch (Exception e) {
+			logger.error("xackAndDel failed. key={}, group={}", key, groupName, e);
 			return 0L;
 		}
 	}
@@ -1069,6 +1245,20 @@ public class RedisConnection {
 		} catch (Exception e) {
 			logger.error("zadd failed. key={}, member={}", key, member, e);
 			return 0L;
+		}
+	}
+
+	/**
+	 * 与 {@link #zadd} 相同，但异常时返回 {@code null}（而非 0）。
+	 * 用于需要区分"失败"与"成员已存在(真实 ZADD 返回 0)"的场景，例如 doorbell：
+	 * 0=已有人响铃(成功)，null=写入失败(需回滚/重试)。
+	 */
+	public Long zaddOrNull(String key, double score, String member) {
+		try (Jedis jedis = pool.getResource()) {
+			return jedis.zadd(key, score, member);
+		} catch (Exception e) {
+			logger.error("zaddOrNull failed. key={}, member={}", key, member, e);
+			return null;
 		}
 	}
 
@@ -1178,55 +1368,6 @@ public class RedisConnection {
 		}
 	}
 
-	public static void main(String[] args) {
-
-		// Jedis redis = new Jedis("192.168.23.112",6379);
-		/*
-		 * RedisConnection redis =new RedisConnection(false); JedisPool pool =
-		 * RedisConnection.getSlavePool(); // Jedis redis1 = pool.getResource();
-		 * //System.out.println(jedis); try { String key = "key1";
-		 * redis.setHash(key, "hao"); redis.setHash(key, "hao1");
-		 * 
-		 * //redis.setObject(key, new Date(),12222);
-		 * //System.out.println(redis.setObject(key, new Date(),1222));
-		 * 
-		 * 
-		 * 
-		 * // Map<String,String>map = redis.hgetAll(key); Set<String> set =
-		 * redis.getHashValue(key); for (Iterator<String> i = set.iterator();
-		 * i.hasNext();) { System.out.println(i.next()); }
-		 * 
-		 * } catch (Exception e) { e.printStackTrace(); } Object s
-		 * =redis.getObject("3022710132355"); String role = redis1.info();
-		 * //String s = role.substring(role.indexOf("role:")+5,
-		 * role.indexOf("role:")+6); System.out.println(s);
-		 * System.out.println(role);
-		 */
-		Jedis redis = new Jedis("192.168.23.191", 6378);
-		/*
-		 * RedisConnection redis =new RedisConnection((true)); JedisPool pool =
-		 * RedisConnection.getSlavePool(); Jedis redis1 = pool.getResource();//
-		 */// System.out.println(jedis);
-			// GmmsUtility gmmsUtility =GmmsUtility.getInstance();
-		String s = null;
-		/*
-		 * Pipeline p = redis.pipelined(); p.get("1002125424");
-		 * p.del("1002125424"); List<Object> list = p.syncAndReturnAll();
-		 */
-		String[] s1 = new String[] { "s", "t" };
-		List list = redis.hmget("ss", s1);
-		for (int i = 0; i < list.size(); i++) {
-			System.out.println(list.size());
-		}
-		/*
-		 * GmmsMessage message =
-		 * SerializableHandler.convertRedisMssage2GmmsMessage(s); String time =
-		 * gmmsUtility.getRedisDateIn(message);
-		 */
-		System.out.println("s=" + s);
-		// redis.hdel(time, "1002125424");
-		// redis.del("1002125424");
-		// redis.delHash(gmmsUtility.getRedisDateIn(message), "1002125424");
-	}
+	// L-4: 移除死测试 main()(含硬编码 IP 192.168.23.191:6378)。
 
 }

@@ -14,7 +14,7 @@ import com.king.redis.SerializableHandler;
 /**
  * Core-owned delayed IN_DR dispatcher.
  */
-public class DelayedInDRDispatcher extends Thread {
+public class DelayedInDRDispatcher implements Runnable {
 	private static final SystemLogger log = SystemLogger.getSystemLogger(DelayedInDRDispatcher.class);
 	private static final DelayedInDRDispatcher instance = new DelayedInDRDispatcher();
 
@@ -23,6 +23,8 @@ public class DelayedInDRDispatcher extends Thread {
 	private static final String PAYLOAD_KEY_PREFIX = "delay:outdr:payload:";
 
 	private volatile boolean running = false;
+	// M-3: 持有 worker 线程引用，stop 时 interrupt，避免停在 sleep 里要等 idleSleepMs 才退出。
+	private volatile Thread worker;
 	private GmmsUtility gmmsUtility;
 	private RedisClient redis;
 	private DBBackupHandler dbHandler;
@@ -44,12 +46,18 @@ public class DelayedInDRDispatcher extends Thread {
 		running = true;
 		Thread thread = new Thread(A2PThreadGroup.getInstance(), this, "DelayedInDRDispatcher");
 		thread.setDaemon(true);
+		worker = thread;
 		thread.start();
 		log.info("DelayedInDRDispatcher started. enabled={}", isEnabled());
 	}
 
 	public synchronized void stopDispatcher() {
 		running = false;
+		Thread t = worker;
+		if (t != null) {
+			t.interrupt(); // M-3: 唤醒 sleep 中的 worker 立即退出
+			worker = null;
+		}
 		log.info("DelayedInDRDispatcher stopped.");
 	}
 

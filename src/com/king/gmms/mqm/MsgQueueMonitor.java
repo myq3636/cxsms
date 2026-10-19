@@ -27,6 +27,9 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 	private List<MQMMessageSender> retrySenders = null;
 	private ModuleStatusReporter statusReporter = null;
 	private MqmActiveCoordinator activeCoordinator = null;
+	// #3: 保存 DbHealthDetector 及其线程引用，供 stopService 停止，避免热停/重启残留探测线程。
+	private com.king.gmms.ha.DbHealthDetector dbHealthDetector = null;
+	private Thread dbHealthDetectorThread = null;
 	//private SystemSession systemSession = null; // system client
 	//private SystemSessionFactory sysFactory = null;
 	private boolean isEnableSysMgt = false;
@@ -64,8 +67,27 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 		startTaskTimers();
 		startRedisRetrieveThread();
 		startRedisSendDelayDRThread();
+		startDbHealthDetector();
 		log.info("Message monitor has started in asynchronous mode.");
 		return true;
+	}
+
+	/** DB HA Phase 2: 启动 DB 健康单点探测器（运行时仅 active MQM 探测；默认关闭，由 DbHa.AutoDetect.Enable 控制）。 */
+	private void startDbHealthDetector() {
+		try {
+			com.king.gmms.ha.DbHealthDetector detector = new com.king.gmms.ha.DbHealthDetector();
+			if (detector.isEnabled()) {
+				Thread t = new Thread(com.king.framework.A2PThreadGroup.getInstance(), detector, "DbHealthDetector");
+				t.start();
+				this.dbHealthDetector = detector;       // #3: 保存引用供 stopService 停止
+				this.dbHealthDetectorThread = t;
+				log.info("DbHealthDetector thread started.");
+			} else {
+				log.info("DbHealthDetector disabled (DbHa.AutoDetect.Enable=false).");
+			}
+		} catch (Exception e) {
+			log.error("Failed to start DbHealthDetector", e);
+		}
 	}
 
 
@@ -80,6 +102,15 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 		if (statusReporter != null) {
 			statusReporter.stop();
 			statusReporter = null;
+		}
+		// #3: 停止 DB 健康探测器线程，避免热停/重启残留。
+		if (dbHealthDetector != null) {
+			dbHealthDetector.stop();
+			dbHealthDetector = null;
+		}
+		if (dbHealthDetectorThread != null) {
+			dbHealthDetectorThread.interrupt();
+			dbHealthDetectorThread = null;
 		}
 		return true;
 	}

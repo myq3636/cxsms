@@ -214,17 +214,60 @@ public class CoreMQMStreamConsumer {
             consumerConfig.applyWorkerPool(workerPool);
         }
 
+        // C-9: 缓存权威纪元(mqm:active:fence)，每 3s 刷新一次(纪元仅易主时变，无需每条读 Redis)。
+        private volatile long cachedAuthorityFence = -1L;
+        private volatile long cachedAuthorityFenceMs = 0L;
+
+        /** 消息纪元 < 当前权威纪元 → 旧任期(脑裂旧 active)产出，应拒绝。缺失纪元(-1)按"容忍接受"(灰度)。 */
+        private boolean isStaleFence(GmmsMessage msg) {
+            long msgFence = msg.getRedisFence();
+            if (msgFence < 0L) {
+                return false;
+            }
+            long authority = currentAuthorityFence();
+            return authority >= 0L && msgFence < authority;
+        }
+
+        private long currentAuthorityFence() {
+            long now = System.currentTimeMillis();
+            if (now - cachedAuthorityFenceMs >= 3000L) {
+                try {
+                    com.king.redis.RedisClient rc = com.king.gmms.GmmsUtility.getInstance().getRedisClient();
+                    if (rc != null) {
+                        cachedAuthorityFence = rc.getFence();
+                    }
+                } catch (Exception e) {
+                    // 读失败保持上次值
+                }
+                cachedAuthorityFenceMs = now;
+            }
+            return cachedAuthorityFence;
+        }
+
         private void processMessage(String streamKey, GmmsMessage msg) {
             long start = System.nanoTime();
+            String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
             try {
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
                         MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
+                if (isStaleFence(msg)) {
+                    // C-9: 旧任期(脑裂的旧 active MQM)产的补偿消息 → 直接丢弃(ACK)，不处理，避免重复下发。
+                    logger.warn(msg, "Reject stale-fence MQM message. msgFence={}, streamKey={}",
+                            msg.getRedisFence(), streamKey);
+                    queueManager.ackById(streamKey, groupName, sourceRedisId, msg, submitMq);
+                    return;
+                }
                 boolean processed = submitMq
                         ? InternalCoreEngineSession.getReactiveInstance().processMqmSubmitFromStream(msg)
                         : InternalCoreEngineSession.getReactiveInstance().processMqmReportFromStream(msg);
                 if (processed) {
                     incrementSsidProcessed(msg);
-                    queueManager.ack(streamKey, groupName, msg, submitMq);
+                    boolean acked = queueManager.ackById(streamKey, groupName, sourceRedisId, msg, submitMq);
+                    if (!acked) {
+                        logger.warn(msg,
+                                "MQM stream ack failed after process success. streamKey={}, sourceRedisId={}, currentRedisId={}",
+                                streamKey, sourceRedisId, msg == null ? null : msg.getRedisStreamID());
+                    }
                 } else {
                     MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(MetricsNames.COMPONENT_CONSUMER,
                             MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_FAIL));

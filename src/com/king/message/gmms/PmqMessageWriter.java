@@ -351,10 +351,8 @@ public class PmqMessageWriter {
 	}
 
 	private String makeSqlStr(String strSQL) {
-		if (strSQL == null) {
-			return "NULL";
-		}
-		return new StringBuilder("'").append(strSQL).append("'").toString();
+		// C-5 修复：委派到转义实现，避免内容/状态字段中的单引号导致 SQL 注入/写入损坏。
+		return makeSqlStrReplace(strSQL);
 	}
 
 	private String replaceBreakLine(String originalString) {

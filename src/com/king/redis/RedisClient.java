@@ -16,9 +16,11 @@ import com.king.gmms.GmmsUtility;
 public class RedisClient {
 	private static SystemLogger log = SystemLogger.getSystemLogger(RedisClient.class);
 
-	private static RedisConnection stateRedis = null; 
-	private static RedisConnection submitMqRedis = null; 
-	private static RedisConnection reportMqRedis = null; 
+	// H-7: volatile —— 切换线程重新赋值后，所有 worker/consumer 热路径读必须及时看到新池引用，
+	// 否则 JMM 下可能长期走旧(已 destroy)池。配合 setRedisHaFlag 的 synchronized + 延迟销毁。
+	private static volatile RedisConnection stateRedis = null;
+	private static volatile RedisConnection submitMqRedis = null;
+	private static volatile RedisConnection reportMqRedis = null;
 
 	private static RedisClient init = new RedisClient();
 	private boolean redisHaFlag = true;
@@ -134,20 +136,30 @@ public class RedisClient {
 	public boolean setStringIfAbsent(String key, String value, int expireSeconds) { return stateRedis.setStringIfAbsent(key, value, expireSeconds); }
 	public boolean compareAndSetString(String key, String expectedValue, String newValue, int expireSeconds) { return stateRedis.compareAndSetString(key, expectedValue, newValue, expireSeconds); }
 	public boolean deleteIfStringEquals(String key, String expectedValue) { return stateRedis.deleteIfStringEquals(key, expectedValue); }
+	public java.util.List<String> csmReassemble(String hashKey, String indexZset, String seq, String payload, int total, int ttlSeconds, long expireAtMs) { return stateRedis.csmReassemble(hashKey, indexZset, seq, payload, total, ttlSeconds, expireAtMs); }
+	public boolean csmDeleteIfComplete(String hashKey, String indexZset, int total) { return stateRedis.csmDeleteIfComplete(hashKey, indexZset, total); }
+	public java.util.List<String> csmClaimExpired(String indexZset, long nowMs, int batch) { return stateRedis.csmClaimExpired(indexZset, nowMs, batch); }
+	public java.util.Map<String,String> hgetAll(String key) { return stateRedis.hgetAll(key); }
+	public Long delKey(String key) { return stateRedis.delKey(key); }
 	public boolean lpush(String key, String obj) { return stateRedis.lpush(key, obj); }
 
 	private static final java.util.concurrent.BlockingQueue<RedisConnection.RedisTask> asyncRedisQueue = new java.util.concurrent.LinkedBlockingQueue<RedisConnection.RedisTask>(100000);
+	// M-6: 关停排空控制 —— 标志置位后 writer 继续处理直到队列空再退出；shutdown hook 通知并 join。
+	private static volatile boolean asyncWriterRunning = true;
+	private static Thread asyncWriterThread;
 
 	static {
-		Thread asyncThread = new Thread(() -> {
+		asyncWriterThread = new Thread(() -> {
 			java.util.List<RedisConnection.RedisTask> batch = new java.util.ArrayList<>();
 			long lastExecuteTime = System.currentTimeMillis();
-			while (true) {
+			// M-6: 关停时排空 —— 停止后继续处理直到队列为空才退出，避免缓冲的 CDR/计数丢失。
+			while (asyncWriterRunning || !asyncRedisQueue.isEmpty()) {
 				try {
 					RedisConnection.RedisTask task = asyncRedisQueue.poll(10, java.util.concurrent.TimeUnit.MILLISECONDS);
 					if (task != null) batch.add(task);
 					long now = System.currentTimeMillis();
-					if (batch.size() >= 500 || (batch.size() > 0 && (now - lastExecuteTime) >= 200)) {
+					boolean flushDueToStop = !asyncWriterRunning && task == null && !batch.isEmpty();
+					if (batch.size() >= 500 || (batch.size() > 0 && (now - lastExecuteTime) >= 200) || flushDueToStop) {
 						if (stateRedis != null) stateRedis.executeAsyncPipeline(batch);
 						batch.clear();
 						lastExecuteTime = now;
@@ -156,9 +168,25 @@ public class RedisClient {
 					log.error("AsyncRedisWriterThread error", e);
 				}
 			}
+			// M-6: 退出前最后冲刷残留 batch。
+			try {
+				if (!batch.isEmpty() && stateRedis != null) stateRedis.executeAsyncPipeline(batch);
+			} catch (Exception e) {
+				log.error("AsyncRedisWriterThread final flush error", e);
+			}
 		}, "AsyncRedisWriterThread");
-		asyncThread.setDaemon(true);
-		asyncThread.start();
+		asyncWriterThread.setDaemon(true);
+		asyncWriterThread.start();
+
+		// M-6: 关停钩子 —— daemon 线程在 JVM 退出时会被强杀，用 hook 通知停止并 join，尽量把缓冲落库。
+		Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+			asyncWriterRunning = false;
+			try {
+				if (asyncWriterThread != null) asyncWriterThread.join(5000);
+			} catch (InterruptedException ie) {
+				Thread.currentThread().interrupt();
+			}
+		}, "AsyncRedisWriterShutdown"));
 	}
 
 	public void asyncLpush(String key, String value) {
@@ -184,6 +212,19 @@ public class RedisClient {
 	public void delPipeline(String key, String hashKey) { stateRedis.delPipeline(key, hashKey); }
 	public String getString(String key) { return stateRedis.getString(key); }
 	public boolean hashINC(String key, String field) { return stateRedis.hashINC(key, field); }
+	// C-9 MQM fencing：单调递增任期纪元号。
+	public static final String MQM_FENCE_KEY = "mqm:active:fence";
+	public Long incrFence() { return stateRedis != null ? stateRedis.incrString(MQM_FENCE_KEY) : null; }
+	public long getFence() {
+		try {
+			String s = (stateRedis != null) ? stateRedis.getString(MQM_FENCE_KEY) : null;
+			return (s != null) ? Long.parseLong(s.trim()) : -1L;
+		} catch (Exception e) { return -1L; }
+	}
+	// DB HA：DB 主备状态真源(全集群共享, 值 "master"|"slave")。
+	public static final String DB_STATUS_KEY = "system:db:status";
+	public String getDbStatus() { return stateRedis != null ? stateRedis.getString(DB_STATUS_KEY) : null; }
+	public boolean setDbStatus(String status) { return stateRedis != null && stateRedis.setString(DB_STATUS_KEY, status); }
 	public String rpop(String key) { return stateRedis.rpop(key); }
 	public List<String> rpopBatch(String key, int count) { return stateRedis.rpopBatch(key, count); }
 	public String brpop(String key) { return stateRedis.brpop(key); }
@@ -197,7 +238,7 @@ public class RedisClient {
 	public void delHash(String key, String field) { stateRedis.delHash(key, field); }
 	public boolean isRedisHaFlag() { return redisHaFlag; }
 
-	public void setRedisHaFlag(boolean redisHaFlag) {
+	public synchronized void setRedisHaFlag(boolean redisHaFlag) {
 		log.info("setRedisHaFlag start. redisHaFlag={}, stateHost={}:{}, submitHost={}:{}, reportHost={}:{}",
 				redisHaFlag, redisHaFlag ? host : host1, redisHaFlag ? port : port1,
 				redisHaFlag ? submitHost : submitHost1, redisHaFlag ? submitPort : submitPort1,
@@ -224,10 +265,45 @@ public class RedisClient {
 		}
 		log.info("RedisConnection creation finished. redisHaFlag={}", redisHaFlag);
 
-		if (oldStateRedis != null) oldStateRedis.destroy();
-		if (oldSubmitMqRedis != null) oldSubmitMqRedis.destroy();
-		if (oldReportMqRedis != null) oldReportMqRedis.destroy();
+		// H-7: 延迟销毁旧池 —— 新引用已发布(volatile)，但在重新赋值前已读到旧引用的在途请求仍在执行；
+		// 立即 pool.destroy() 会打挂这些在途操作。等一个 grace 期让其排空后再销毁。
+		scheduleDelayedDestroy(oldStateRedis, oldSubmitMqRedis, oldReportMqRedis);
 		log.info("setRedisHaFlag finished. redisHaFlag={}", redisHaFlag);
+	}
+
+	private void scheduleDelayedDestroy(final RedisConnection... oldPools) {
+		if (oldPools == null || oldPools.length == 0) {
+			return;
+		}
+		long graceMs;
+		try {
+			graceMs = Long.parseLong(GmmsUtility.getInstance()
+					.getCommonProperty("Redis_ha_old_pool_destroy_delay_ms", "30000").trim());
+		} catch (Exception e) {
+			graceMs = 30000L;
+		}
+		final long delayMs = graceMs;
+		Thread t = new Thread(new Runnable() {
+			public void run() {
+				try {
+					Thread.sleep(delayMs);
+				} catch (InterruptedException ie) {
+					Thread.currentThread().interrupt();
+				}
+				for (RedisConnection old : oldPools) {
+					if (old != null) {
+						try {
+							old.destroy();
+						} catch (Exception e) {
+							log.warn("delayed destroy old RedisConnection failed: {}", e.getMessage());
+						}
+					}
+				}
+				log.info("Delayed destroy of old RedisConnection pools finished. delayMs={}", delayMs);
+			}
+		}, "RedisOldPoolDestroyer");
+		t.setDaemon(true);
+		t.start();
 	}
 
 	public boolean addStock(String key, long timemark, long num) { return stateRedis.addStock(key, timemark, num); }
@@ -252,6 +328,15 @@ public class RedisClient {
 		}
 		return submitMqRedis.xadd(key, hash, maxLen, approximateTrimming);
 	}
+	// 阶段1: 原子写(XADD+ZADD doorbell)合并，降 RTT 并强化 C-4。
+	public String xaddWithDoorbellSubmitMq(String streamKey, String doorbellZset, long doorbellScore,
+			long maxLen, boolean approximateTrimming, java.util.List<String> fieldValues) {
+		if (submitMqRedis == null) {
+			log.error("xaddWithDoorbellSubmitMq failed. submitMqRedis is null, key={}", streamKey);
+			return null;
+		}
+		return submitMqRedis.xaddWithDoorbell(streamKey, doorbellZset, doorbellScore, maxLen, approximateTrimming, fieldValues);
+	}
 	public boolean xgroupCreateSubmitMq(String key, String groupName, boolean mkStream) {
 		return submitMqRedis != null ? submitMqRedis.xgroupCreate(key, groupName, mkStream) : false;
 	}
@@ -264,6 +349,9 @@ public class RedisClient {
 	public Long xdelSubmitMq(String key, redis.clients.jedis.StreamEntryID... ids) {
 		return submitMqRedis != null ? submitMqRedis.xdel(key, ids) : 0L;
 	}
+	public Long xackDelSubmitMq(String key, String groupName, redis.clients.jedis.StreamEntryID id) {
+		return submitMqRedis != null ? submitMqRedis.xackAndDel(key, groupName, id) : 0L;
+	}
 	public Map.Entry<redis.clients.jedis.StreamEntryID, List<redis.clients.jedis.resps.StreamEntry>> xautoclaimSubmitMq(String key, String group, String consumer, long minIdleMs, redis.clients.jedis.StreamEntryID start, int count) {
 		return submitMqRedis != null ? submitMqRedis.xautoclaim(key, group, consumer, minIdleMs, start, count) : null;
 	}
@@ -274,7 +362,8 @@ public class RedisClient {
 		return submitMqRedis != null ? submitMqRedis.zpopmin(key) : null;
 	}
 	public Long zaddSubmitMq(String key, double score, String member) {
-		return submitMqRedis != null ? submitMqRedis.zadd(key, score, member) : 0L;
+		// C-4: doorbell 专用，异常/池缺失返回 null 以区分"失败"与"已存在(0)"。
+		return submitMqRedis != null ? submitMqRedis.zaddOrNull(key, score, member) : null;
 	}
 	public Set<String> zrangeSubmitMq(String key, long start, long end) {
 		return submitMqRedis != null ? submitMqRedis.zrangeDoorbell(key, start, end) : null;
@@ -305,6 +394,13 @@ public class RedisClient {
 	public String xaddToReportMq(String key, Map<String, String> hash, long maxLen, boolean approximateTrimming) {
 		return reportMqRedis != null ? reportMqRedis.xadd(key, hash, maxLen, approximateTrimming) : null;
 	}
+	// 阶段1: 原子写(XADD+ZADD doorbell)合并。
+	public String xaddWithDoorbellReportMq(String streamKey, String doorbellZset, long doorbellScore,
+			long maxLen, boolean approximateTrimming, java.util.List<String> fieldValues) {
+		return reportMqRedis != null
+			? reportMqRedis.xaddWithDoorbell(streamKey, doorbellZset, doorbellScore, maxLen, approximateTrimming, fieldValues)
+			: null;
+	}
 	public boolean xgroupCreateReportMq(String key, String groupName, boolean mkStream) {
 		return reportMqRedis != null ? reportMqRedis.xgroupCreate(key, groupName, mkStream) : false;
 	}
@@ -317,6 +413,9 @@ public class RedisClient {
 	public Long xdelReportMq(String key, redis.clients.jedis.StreamEntryID... ids) {
 		return reportMqRedis != null ? reportMqRedis.xdel(key, ids) : 0L;
 	}
+	public Long xackDelReportMq(String key, String groupName, redis.clients.jedis.StreamEntryID id) {
+		return reportMqRedis != null ? reportMqRedis.xackAndDel(key, groupName, id) : 0L;
+	}
 	public Map.Entry<redis.clients.jedis.StreamEntryID, List<redis.clients.jedis.resps.StreamEntry>> xautoclaimReportMq(String key, String group, String consumer, long minIdleMs, redis.clients.jedis.StreamEntryID start, int count) {
 		return reportMqRedis != null ? reportMqRedis.xautoclaim(key, group, consumer, minIdleMs, start, count) : null;
 	}
@@ -327,7 +426,8 @@ public class RedisClient {
 		return reportMqRedis != null ? reportMqRedis.zpopmin(key) : null;
 	}
 	public Long zaddReportMq(String key, double score, String member) {
-		return reportMqRedis != null ? reportMqRedis.zadd(key, score, member) : 0L;
+		// C-4: doorbell 专用，异常/池缺失返回 null 以区分"失败"与"已存在(0)"。
+		return reportMqRedis != null ? reportMqRedis.zaddOrNull(key, score, member) : null;
 	}
 	public Set<String> zrangeReportMq(String key, long start, long end) {
 		return reportMqRedis != null ? reportMqRedis.zrangeDoorbell(key, start, end) : null;

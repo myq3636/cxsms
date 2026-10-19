@@ -19,10 +19,10 @@ public abstract class DBHeartBeat extends Observable implements Runnable {
 	protected static SystemLogger log = SystemLogger
 			.getSystemLogger(DBHeartBeat.class);
 	protected boolean initialed = false;
-	private boolean running = false;
-	protected DatabaseStatus dbStatus = DatabaseStatus.MASTER_UP;// TODO: need read db_status file
+	private volatile boolean running = false;
+	protected volatile DatabaseStatus dbStatus = DatabaseStatus.MASTER_UP;// TODO: need read db_status file
 	private static int retryLimit = 3;
-	private int retryCount = 0;
+	private volatile int retryCount = 0;
 	private long interval = 5000L; // 5 seconds
 	private Object mutex = new Object();
 	protected String dbName = null;
@@ -78,8 +78,10 @@ public abstract class DBHeartBeat extends Observable implements Runnable {
 	public void run() {
 		while (running) {
 			try {
-				Thread.currentThread().sleep(interval);
-				if (null == connection) {
+				Thread.sleep(interval); // M-12: 用静态 Thread.sleep，去掉废弃的实例调用写法
+				// H-11: 每轮重验缓存连接(isValid 带超时，可快速发现半开 socket)，失效则关闭重建。
+				if (connection == null || !connection.isValid(2)) {
+					this.closeSession();
 					this.getConnection();
 				}
 				if (connection != null && stmt!=null) {
@@ -193,26 +195,22 @@ public abstract class DBHeartBeat extends Observable implements Runnable {
 	}
 	
 	private void changeStatus() {
+		// H-12: 自增、阈值判定、状态翻转放在同一临界区，避免阈值判定在锁外导致的双翻转/漏触发；
+		// 观察者通知放到锁外，避免持锁期间执行 SystemManager failover 回调。
+		DatabaseStatus newStatus = null;
 		synchronized (mutex) {
-			retryCount++;
-		}
-		if (retryCount >= this.retryLimit) {//get property
-			log.trace("enter changeStatus...");
-			DatabaseStatus oldstat = this.dbStatus;
-			synchronized (mutex) {
-				retryCount = 0;
-				int ordinal = this.dbStatus.ordinal();// up<-->down
-				if (ordinal % 2 == 0) {
-					ordinal++;
-				} else {
-					ordinal--;
-				}
-				this.dbStatus = DatabaseStatus.get(Integer.toString(ordinal));
-				log.trace("changeStatus:oldstatus={};dbStatus={}",
-						oldstat, this.dbStatus);
+			if (++retryCount < this.retryLimit) {
+				return;
 			}
-			notifyDBStatus(this.dbStatus);
+			retryCount = 0;
+			DatabaseStatus oldstat = this.dbStatus;
+			int ordinal = this.dbStatus.ordinal();// up<-->down
+			ordinal += (ordinal % 2 == 0) ? 1 : -1;
+			this.dbStatus = DatabaseStatus.get(Integer.toString(ordinal));
+			newStatus = this.dbStatus;
+			log.trace("changeStatus:oldstatus={};dbStatus={}", oldstat, this.dbStatus);
 		}
+		notifyDBStatus(newStatus);
 	}
 
 	public String getDbName() {

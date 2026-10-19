@@ -50,14 +50,14 @@ public class GmmsUtility {
 	private ModuleManager moduleManager;
 	private MessageAddressInterpreter messageAddressInterpreter;
 	private boolean initialized;
-	private Properties properties;
+	private volatile Properties properties;
 	private String gmmsConfigFile;
 	private String serverIP;
 	private String serviceIP;
-	private HashSet<String> screenedIPs;
-	private int initPhoneLen;
-	private int expireTime;
-	private int finalExpireTime;
+	private volatile HashSet<String> screenedIPs;
+	private volatile int initPhoneLen;
+	private volatile int expireTime;
+	private volatile int finalExpireTime;
 	private static Map<Integer, Random> randomMap = new HashMap<Integer, Random>();
 	private static Map<Integer, Random> routingMap = new HashMap<Integer, Random>();
 	
@@ -66,7 +66,7 @@ public class GmmsUtility {
 	 * Unit: minute
 	 * Default: 1 hour
 	 */
-	private int minMessageExpireTimeFromCust;
+	private volatile int minMessageExpireTimeFromCust;
 	
 	/**
 	 * define the max value of ExpireTime from customer, 
@@ -74,17 +74,17 @@ public class GmmsUtility {
 	 * Unit: minute
 	 * Default 7 days
 	 */
-	private int maxMessageExpireTimeFromCust;
+	private volatile int maxMessageExpireTimeFromCust;
 	
-	private int drInterval;
-	private int connectionSilentTime;
+	private volatile int drInterval;
+	private volatile int connectionSilentTime;
 	private String routerModule;
-	private HashSet<String> loopbacks;
-	private int alertFreq;
+	private volatile HashSet<String> loopbacks;
+	private volatile int alertFreq;
 	private int alertCount;
-	private int maxSilentTime;
-	private int cdrMaxTime;
-	private int cdrMaxSize;
+	private volatile int maxSilentTime;
+	private volatile int cdrMaxTime;
+	private volatile int cdrMaxSize;
 	private boolean isSystemManageEnable = false;
 
 	private String blackListFile = null;
@@ -102,11 +102,11 @@ public class GmmsUtility {
 	private String contentActionDir;
 	private String vendorRoutingFile;
 
-	private int cacheMsgTimeout = 180000;
-	private int csmIntegrityCacheTimeout = 3600000; // 1 hour
-	private int csmIntegrityCacheCapacity = 100000;
-	private int enquireLinkResponseTime = 100;	
-	private int resendDRThrottle = 0;	
+	private volatile int cacheMsgTimeout = 180000;
+	private volatile int csmIntegrityCacheTimeout = 3600000; // 1 hour
+	private volatile int csmIntegrityCacheCapacity = 100000;
+	private volatile int enquireLinkResponseTime = 100;	
+	private volatile int resendDRThrottle = 0;	
 
 	private TimeZone local;
 
@@ -114,7 +114,7 @@ public class GmmsUtility {
 	private Object mutex = new Object();
 
 	private volatile boolean isRunningStoreDRMode = false;
-	private boolean storeDRModeEnable = false;
+	private volatile boolean storeDRModeEnable = false;
 
 	private static final String HEXES = "0123456789ABCDEF";
 	private static final String HEX_CHARSET = "UTF-16BE";
@@ -123,60 +123,60 @@ public class GmmsUtility {
 	 * the blackhole DC ssid
 	 * the message to blackhole will not be delivered to next hop
 	 */
-	private static int blackholeSsid = -1;
+	private static volatile int blackholeSsid = -1;
 	
 	/**
 	 * Consecutive number of throttling control time window
      * when need to send alert mail 
 	 */
-	private int conSecThrottleWinNumToAlert;
+	private volatile int conSecThrottleWinNumToAlert;
 	
 	/**
 	 * max number of throttling alert mail to send
 	 */
-	private int maxThrottleAlertMailNum;
+	private volatile int maxThrottleAlertMailNum;
 	
 	/**
 	 *  The interval of protocol module report incoming message count to SYS module.
 	 */
-	private int reportModuleIncomingMsgCountInterval;
+	private volatile int reportModuleIncomingMsgCountInterval;
 	
 	/**
 	 *  The expire time of dynamic customer incoming throttle, 
 	 *  after that time the dynamic throttle will be reset.
 	 */
-	private int dynamicCustInThresholdExipreTime;
+	private volatile int dynamicCustInThresholdExipreTime;
 
 	// V4.0 Redis Stream Sharding
 	private String nodeId = "0";
-	private int totalShards = 1;
-	private Set<Integer> myShards = new HashSet<>();
+	private volatile int totalShards = 1;
+	private volatile Set<Integer> myShards = new HashSet<>();
 
 	/**
 	 *  The system max average incoming threshold (per second).
 	 */
-	private int systemIncomingThreshold;
+	private volatile int systemIncomingThreshold;
 
 	/**
 	 * default customer incoming threshold (per second).
 	 */
-	private int defaultCustIncomingThreshold;
+	private volatile int defaultCustIncomingThreshold;
 	
 	/**
 	 *  The max magnification of customer threshold
 	 */
-    private int maxCustIncomingThresholdMagnification;
+    private volatile int maxCustIncomingThresholdMagnification;
 
     
     private ExecutorServiceManager executorServiceManager;
     
     private ThreadPoolProfile defaultThreadPoolProfile;
     
-    private int dnsTimeout = 20;
+    private volatile int dnsTimeout = 20;
     
     private SslConfiguration sslConfiguration = null;
     
-    private int maxServiceTypeID = 3;
+    private volatile int maxServiceTypeID = 3;
     
     private PhoneNumberGeo phoneNumberGeo;
     
@@ -185,12 +185,12 @@ public class GmmsUtility {
      * Hex format
      * Default: 1401
      */
-    private short smppServiceTypeIDTag = -1;
+    private volatile short smppServiceTypeIDTag = -1;
 
     /**
      * MinID expire time in redis for query thread
      */
-    private int min_ID_expireTime = 0;
+    private volatile int min_ID_expireTime = 0;
     
     private com.king.framework.lifecycle.RedisControlSubscriber controlSubscriber;
     private Thread controlSubscriberThread;
@@ -232,6 +232,18 @@ public class GmmsUtility {
 		controlSubscriberThread.setDaemon(true);
 		controlSubscriberThread.start();
 		log.info("RedisControlSubscriber thread started.");
+		// DB HA Phase 1: SystemManager 关闭(默认)时由 DbSwitchListener 处理 SWITCH_DB 控制命令(否则无人处理)；
+		// SystemManager 开启时由其自身监听处理同一事件，此处不重复注册。
+		try {
+			if (!isSystemManageEnable() && getLifecycleSupport() != null) {
+				getLifecycleSupport().addListener(
+						com.king.framework.lifecycle.event.Event.TYPE_SWITCHDB,
+						new com.king.gmms.ha.DbSwitchListener(), 1);
+				log.info("DbSwitchListener registered for SWITCH_DB (SystemManager disabled).");
+			}
+		} catch (Exception e) {
+			log.error("Failed to register DbSwitchListener", e);
+		}
 	}
 
 	public void stopCDRManager() {
@@ -239,14 +251,13 @@ public class GmmsUtility {
 	}
 
     public void initDBManager(DatabaseStatus dbstatus){
-    	
+
     	try{
     		log.debug("init DBManager!");
 	    	if(!DataControl.isInitialized()) {
-	    		if(dbstatus==null){
-	    			dbstatus=DatabaseStatus.MASTER_USED;
-	    		}
-	            DataControl.init(properties,dbstatus);
+	    		// DB HA Phase 1: 启动优先读 Redis 真源 system:db:status，读不到回退传入值/文件默认 MASTER_USED。
+	    		DatabaseStatus resolved = resolveStartupDbStatus(dbstatus);
+	            DataControl.init(properties,resolved);
 	        }
 	        messageStoreManager = (MessageStoreManager) DataControl.getDataManager(MessageStoreManager.class.getName());
 	        dataConnection = (DBLockConnection) DataControl.getDataManager(DBLockConnection.class.getName());
@@ -255,7 +266,27 @@ public class GmmsUtility {
             log.fatal(e, e);
             System.exit( -1);
     	}
-    }   
+    }
+
+    /** DB HA Phase 1: 解析启动初始 DB 状态——优先 Redis 真源键，回退传入值，再回退 MASTER_USED。 */
+    private DatabaseStatus resolveStartupDbStatus(DatabaseStatus fallback) {
+        try {
+            RedisClient rc = getRedisClient();
+            String s = (rc != null) ? rc.getDbStatus() : null;
+            if ("master".equalsIgnoreCase(s)) {
+                log.info("initDBManager: DB status resolved from redis=master");
+                return DatabaseStatus.MASTER_USED;
+            }
+            if ("slave".equalsIgnoreCase(s)) {
+                log.info("initDBManager: DB status resolved from redis=slave");
+                return DatabaseStatus.SLAVE_USED;
+            }
+        } catch (Exception e) {
+            log.warn("initDBManager: read system:db:status failed, fallback. {}", e.getMessage());
+        }
+        return fallback != null ? fallback : DatabaseStatus.MASTER_USED;
+    }
+
     
     public void initRedisClient(String flag){
     	try{

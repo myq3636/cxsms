@@ -98,7 +98,7 @@ public class HALauncher {
             beforeStart();
             moduleManager = ModuleManager.getInstance();
             ModuleConnectionInfo moduleInfo = moduleManager.getConnectionInfo(moduleName);
-            port = moduleInfo.getCmdPort();
+            port = resolveCmdPort(moduleInfo);
             service = (A2PService) Class.forName(className).newInstance();
             if (service.startService()) {
                 Runtime.getRuntime().addShutdownHook(new Thread(
@@ -129,5 +129,18 @@ public class HALauncher {
 
     public boolean restartService() {
         return true;
+    }
+
+    private int resolveCmdPort(ModuleConnectionInfo moduleInfo) {
+        if (moduleInfo != null && moduleInfo.getCmdPort() > 0) {
+            return moduleInfo.getCmdPort();
+        }
+        String value = GmmsUtility.getInstance().getCommonProperty(moduleName + ".CmdPort",
+                GmmsUtility.getInstance().getCommonProperty("Module.CmdPort", "-1"));
+        try {
+            return value == null ? -1 : Integer.parseInt(value.trim());
+        } catch (Exception e) {
+            return -1;
+        }
     }
 }

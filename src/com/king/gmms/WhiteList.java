@@ -1,6 +1,8 @@
 package com.king.gmms;
 
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Set;
 import java.io.*;
 
 import org.apache.logging.log4j.LogManager;
@@ -30,14 +32,15 @@ import com.king.message.gmms.GmmsMessage;
  * @version 1.0
  */
 public class WhiteList implements LifecycleListener{
-    private ArrayList<String> whiteList;
+    // H-25: HashSet O(1) contains; H-26: volatile —— reload 线程整体替换、消息线程无锁读需可见性保证。
+    private volatile Set<String> whiteList;
     LifecycleSupport lifecycle;
     private static SystemLogger log = SystemLogger
 	.getSystemLogger(WhiteList.class);
     private String confFileVersion = null;
 
     public WhiteList() {
-    	whiteList = new ArrayList<String> ();
+    	whiteList = new HashSet<String> ();
         lifecycle = GmmsUtility.getInstance().getLifecycleSupport();
         lifecycle.addListener(Event.TYPE_WHITELIST_RELOAD, this, 1);
     }
@@ -71,12 +74,12 @@ public class WhiteList implements LifecycleListener{
            if(!compareConfBlocks(file)){
         	   return 0;
            }
-           FileInputStream fin = new FileInputStream(file);
-           BufferedReader reader = new BufferedReader(new InputStreamReader(
-               fin));
+           // M-20: try-with-resources 关闭流(原开流不关 → 每次 reload 漏 FD)。
+           try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+               new FileInputStream(file)))) {
 
            // clear the old blacklist after successfully read the configuration file.
-           ArrayList<String> tempWhiteList=new ArrayList<String>();
+           Set<String> tempWhiteList=new HashSet<String>();
            String line=null;
            while ( (line=reader.readLine())  != null) {
                line=line.trim();
@@ -87,12 +90,13 @@ public class WhiteList implements LifecycleListener{
                for(int i=0; i<args.length; i++){
             	   if(args[i]!=null && args[i].length()!=0){
             		   tempWhiteList.add(args[i]);
-            	   }            	   
+            	   }
                }
-               
-           }           
+
+           }
            this.whiteList = tempWhiteList;
            return rtnval;
+           } // close try-with-resources (reader)
        }
        catch (FileNotFoundException ex) {
            log.error(ex, ex);
@@ -139,20 +143,15 @@ public class WhiteList implements LifecycleListener{
    
    private String getFileCheckSum(File file) {
 		String md5Sum = null;
-		FileInputStream fin = null;
-		BufferedReader reader = null;
-		try {
-			fin = new FileInputStream(file);
-			reader = new BufferedReader(new InputStreamReader(fin));
+		// M-20: try-with-resources，异常路径也关闭流(原仅成功路径 close → reload 出错累积 FD 泄漏)。
+		try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file)))) {
 			ByteBuffer buffer = new ByteBuffer();
 			String line = null;
 			while ((line = reader.readLine()) != null) {
 				buffer.appendString(line);
 			}
 			md5Sum = HttpUtils.encrypt(buffer.getBuffer(), "MD5");
-			reader.close();
-			fin.close();
-		} catch (IOException ex) {
+		} catch (Exception ex) {
 			log.error(ex, ex);
 		}
 		return md5Sum;

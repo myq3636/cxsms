@@ -21,20 +21,24 @@ import com.king.gmms.domain.ModuleManager;
 public class ContextManager {
 
     private static SystemLogger log = SystemLogger.getSystemLogger(ContextManager.class);
+    private static final Module ROOT_MODULE = new Module("A2P", null, -1);
     private String curUser;
     private String curUserIP;
     private Date curUserLoginTime;
 
-    private Module currentModule=ModuleManager.getInstance().A2P;
+    private Module currentModule;
     private static HashMap<Integer, Module> mapId2Module=new HashMap<Integer,Module>();
     private static HashMap<String, Module> mapName2Module=new HashMap<String, Module>();
     public ContextManager(String userName, String ip) {
         this.curUser=userName;
         this.curUserIP=ip;
         this.curUserLoginTime=new Date();
+        this.currentModule = rootModule();
     }
     public ContextManager()
-    {}
+    {
+        this.currentModule = rootModule();
+    }
     public boolean change(String name)
     {
         // the module name starts with "_" are reserved.
@@ -47,6 +51,9 @@ public class ContextManager {
     }
     public Module getCurrentModule()
     {
+        if (currentModule == null) {
+            currentModule = rootModule();
+        }
         return currentModule;
     }
 
@@ -64,7 +71,12 @@ public class ContextManager {
 
     public String getPrompt()
     {
-        return currentModule.getName()+"> ";
+        Module module = getCurrentModule();
+        return module.getName()+"> ";
+    }
+
+    private Module rootModule() {
+        return ROOT_MODULE;
     }
 
     public void setCurUser(String curUser) {

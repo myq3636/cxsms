@@ -6,6 +6,8 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.Properties;
 
 import com.king.framework.SystemLogger;
@@ -93,8 +95,8 @@ public enum DatabaseStatus {
     	Properties dbprop = new Properties();
         String a2phome = System.getProperty("a2p_home");
         if(a2phome == null) {
-            System.out.println("No a2p_home definited!");
-            System.exit(-1);
+            // M-10: 不再 System.exit 硬杀整个 JVM(本方法运行时切库也会被调到)，改为抛异常由调用方处理。
+            throw new IllegalStateException("a2p_home is not defined");
         }
         if(!a2phome.endsWith("/")) {
             a2phome = a2phome + "/";
@@ -141,73 +143,52 @@ public enum DatabaseStatus {
     public static void updateDBStatus2File(DatabaseStatus status){
 		String a2phome = System.getProperty("a2p_home");
         if(a2phome == null) {
-            System.out.println("No a2p_home definited!");
-            System.exit(-1);
+            // M-10: 不再 System.exit 硬杀整个 JVM(本方法运行时切库也会被调到)，改为抛异常由调用方处理。
+            throw new IllegalStateException("a2p_home is not defined");
         }
         if(!a2phome.endsWith("/")) {
             a2phome = a2phome + "/";
             System.setProperty("a2p_home", a2phome);
         }
+        // C-7 原子文件写：先读现有内容(保留其它键)→写临时文件→Files.move(ATOMIC_MOVE)，
+        // 避免原来 new FileOutputStream(同路径) 立即截断、store 前崩溃留下空/损坏的 DBStatus 文件。
+        String targetPath = a2phome + DBHAConstants.DBSTATUS_FILE_RELATIVE_PATH;
+        File target = new File(targetPath);
         Properties dbprop = new Properties();
-        OutputStream fos = null;
-        InputStream in = null;
-		try{
-			in = new FileInputStream(a2phome + DBHAConstants.DBSTATUS_FILE_RELATIVE_PATH);
-	        dbprop.load(in);
-			fos = new FileOutputStream(a2phome + DBHAConstants.DBSTATUS_FILE_RELATIVE_PATH);
-			switch(status){
-				case MASTER_UP:
-					dbprop.setProperty(DBHAConstants.MASTER_KEY, DBHAConstants.DB_STATUS_UP);
-					break;
-				case MASTER_DOWN:
-					dbprop.setProperty(DBHAConstants.MASTER_KEY, DBHAConstants.DB_STATUS_DOWN);
-					break;
-				case SLAVE_UP:
-					dbprop.setProperty(DBHAConstants.SLAVE_KEY, DBHAConstants.DB_STATUS_UP);
-					break;
-				case SLAVE_DOWN:
-					dbprop.setProperty(DBHAConstants.SLAVE_KEY, DBHAConstants.DB_STATUS_DOWN);
-					break;
-				case MASTER_USED:
-					dbprop.setProperty(DBHAConstants.USED_KEY,DBHAConstants.MASTER_KEY);
-					break;
-				case SLAVE_USED:
-					dbprop.setProperty(DBHAConstants.USED_KEY,DBHAConstants.SLAVE_KEY);
-					break;
-				default:break;
-			}
-			dbprop.store(fos, "Update "+status+" to file.");
-		}catch(Exception e){
-			if(in!=null){
-				try {
-					in.close();
-				} catch (IOException ex) {
-					log.info("close Input stream in error!");
-				}
-			}
-			if(fos!=null){
-				try {
-					fos.close();
-				} catch (IOException ex) {
-					log.info("close output stream fos error!");
-				}
-			}
-        	log.info("Write dbstatus to "+DBHAConstants.DBSTATUS_FILE_RELATIVE_PATH+"failed!"+e);
-		}finally{
-			if(in!=null){
-				try {
-					in.close();
-				} catch (IOException e) {
-					log.info("close Input stream in error!");
-				}
-			}
-			if(fos!=null){
-				try {
-					fos.close();
-				} catch (IOException e) {
-					log.info("close output stream fos error!");
-				}
-			}
-		}
+        if (target.exists()) {
+            try (InputStream in = new FileInputStream(target)) {
+                dbprop.load(in);
+            } catch (Exception e) {
+                log.info("read existing dbstatus failed (continue): " + e);
+            }
+        }
+        switch(status){
+            case MASTER_UP:   dbprop.setProperty(DBHAConstants.MASTER_KEY, DBHAConstants.DB_STATUS_UP);   break;
+            case MASTER_DOWN: dbprop.setProperty(DBHAConstants.MASTER_KEY, DBHAConstants.DB_STATUS_DOWN); break;
+            case SLAVE_UP:    dbprop.setProperty(DBHAConstants.SLAVE_KEY,  DBHAConstants.DB_STATUS_UP);   break;
+            case SLAVE_DOWN:  dbprop.setProperty(DBHAConstants.SLAVE_KEY,  DBHAConstants.DB_STATUS_DOWN); break;
+            case MASTER_USED: dbprop.setProperty(DBHAConstants.USED_KEY,   DBHAConstants.MASTER_KEY);     break;
+            case SLAVE_USED:  dbprop.setProperty(DBHAConstants.USED_KEY,   DBHAConstants.SLAVE_KEY);      break;
+            default: break;
+        }
+        File tmp = new File(targetPath + ".tmp");
+        try (OutputStream fos = new FileOutputStream(tmp)) {
+            dbprop.store(fos, "Update " + status + " to file.");
+            fos.flush();
+        } catch (Exception e) {
+            log.info("Write dbstatus tmp failed! " + e);
+            return;
+        }
+        try {
+            Files.move(tmp.toPath(), target.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (Exception e) {
+            // 某些文件系统不支持 ATOMIC_MOVE → 回退非原子替换
+            try {
+                Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            } catch (Exception e2) {
+                log.info("rename dbstatus tmp->target failed! " + e2);
+            }
+        }
 	}
 }

@@ -29,6 +29,15 @@ public class GuavaCache {
 		this.bufferCapacity = bufferCapacity;
 		this.listener = listener;
 		this.permit = new Semaphore(bufferCapacity);
+		// C-10: 必须在字段赋值之后用真实参数构建 cache —— 字段初始化器先于构造体执行，
+		// 否则会用字段默认值(100/60000)而非构造参数，导致 maximumSize=100 触发 SIZE 静默淘汰丢消息、过期时间错。
+		this.cacheConnection = CacheBuilder.newBuilder()
+				.initialCapacity(bufferCapacity)
+				.maximumSize(bufferCapacity)
+				.concurrencyLevel(16)
+				.expireAfterWrite(timeout, TimeUnit.MILLISECONDS)
+				.removalListener(async)
+				.build();
 	}
 	private class MyRemovalListener implements RemovalListener<String, GmmsMessage> {  
         @Override  
@@ -44,18 +53,8 @@ public class GuavaCache {
             }
         }  
     }
-	  public Cache<String, GmmsMessage> cacheConnection = CacheBuilder.newBuilder()  
-	      //设置cache的初始大小为20000，要合理设置该值  
-	      .initialCapacity(bufferCapacity)  
-	      .maximumSize(bufferCapacity)
-	      //设置并发数为5，即同一时间最多只能有5个线程往cache执行写入操作  
-	      .concurrencyLevel(100)  
-	      //设置cache中的数据在600秒没有被读写将自动删除  
-	      .expireAfterWrite(timeout, TimeUnit.MILLISECONDS) 
-	      //设置监听，当出现自动删除时的回调
-	      .removalListener(async)
-	      //构建cache实例  
-	      .build();  
+	  // C-10: 在构造体中构建(见构造函数)，不可用字段初始化器(会先于构造体执行、用错默认值)。
+	  public Cache<String, GmmsMessage> cacheConnection;
 	  
 	  public GmmsMessage get(String key)  {
 	    try {	    	

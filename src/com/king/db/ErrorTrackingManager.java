@@ -15,7 +15,6 @@ public class ErrorTrackingManager extends DataManager {
     private static final String TABLE_NAME = "errortracking";
     protected static SystemLogger log = SystemLogger
 	.getSystemLogger(ErrorTrackingManager.class);
-    PreparedStatement insertStmt = null;
     String preparedInsertStr = "INSERT INTO " + TABLE_NAME
         + " (RecordID, FromTableName, ErrorCode, ErrorDescription, ReferenceCode, Corrected)"
         + " VALUES(?, ?, ?, ?, ?, ?) ";
@@ -130,11 +129,9 @@ public class ErrorTrackingManager extends DataManager {
         }
     }
 
+    // M-8: 不缓存共享 PreparedStatement(共享单例跨线程复用会串数据/复用坏态)，每次现建并关闭，finally 归还连接。
     public void add(Data data) throws DataManagerException{
-        try{
-            if (insertStmt == null)
-                insertStmt = this.getCon().prepareStatement(preparedInsertStr);
-
+        try (PreparedStatement insertStmt = this.getCon().prepareStatement(preparedInsertStr)){
             ErrorTracking et = (ErrorTracking)data;
             insertStmt.setInt(1, et.getRecordID());
             insertStmt.setString(2, et.getFromTableName());
@@ -146,6 +143,8 @@ public class ErrorTrackingManager extends DataManager {
 
         } catch(Exception e){
             throw new DataManagerException(e.toString());
+        } finally {
+            closeSession();
         }
     }
 
@@ -170,17 +169,21 @@ public class ErrorTrackingManager extends DataManager {
      }
 
 
+     // M-9: 参数化(FixedTime/RecordId/FromTableName)，不再拼接。
      public void fixError(TracableData td, String tableName) throws SQLException{
-        Date fixedTime = new Date();
-        Timestamp ftime = new Timestamp(fixedTime.getTime());
-        String strSql = " update " + this.TABLE_NAME + " set FixedTime =" +
-            "'" + ftime + "', Corrected = 1, datein=datein " +
-            " where RecordId = " + td.getRowId()+ " and FromTableName = " +
-            makeSqlStr(tableName);
-        try{
-          doUpdate(strSql);
+        Timestamp ftime = new Timestamp(System.currentTimeMillis());
+        String strSql = " update " + this.TABLE_NAME
+            + " set FixedTime = ?, Corrected = 1, datein=datein "
+            + " where RecordId = ? and FromTableName = ?";
+        try (PreparedStatement ps = this.getCon().prepareStatement(strSql)){
+          ps.setTimestamp(1, ftime);
+          ps.setInt(2, td.getRowId());
+          ps.setString(3, tableName);
+          ps.executeUpdate();
         }catch(Exception e){
           throw new SQLException(e.getMessage());
+        } finally {
+          closeSession();
         }
      }
 

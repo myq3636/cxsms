@@ -22,8 +22,8 @@ public class PhoneUtils {
      */
     public static String getRegionCodeByPhone(final String phone) {
         final Phonenumber.PhoneNumber phoneNumber = parse(phone);
-        return phoneNumber != null ? phoneNumberUtil.getRegionCodeForNumber(phoneNumber) : "null";
-        //return phoneNumber != null ? phoneNumberUtil.getRegionCodeForNumber(phoneNumber) : null;
+        // M-17: 返回真 null 而非字面量 "null"(调用方均为字符串拼接，拼接结果不变；避免下游误把 "null" 当真实 region)。
+        return phoneNumber != null ? phoneNumberUtil.getRegionCodeForNumber(phoneNumber) : null;
         //        System.out.println(PhoneNumberToCarrierMapper.getInstance().getNameForNumber(phoneNumber,Locale.ENGLISH));
         //        System.out.println(PhoneNumberOfflineGeocoder.getInstance().getDescriptionForNumber(phoneNumber,Locale.ENGLISH));
     }
@@ -41,6 +41,10 @@ public class PhoneUtils {
 
 
     public static Phonenumber.PhoneNumber parse(String phone) {
+    	// M-17: null/空守护，避免 startsWith 触发 NPE。
+    	if (phone == null || phone.isEmpty()) {
+    		return null;
+    	}
     	String recipientAddress = phone;
 		if (recipientAddress.startsWith("+")) {
 			recipientAddress = recipientAddress.substring(1);

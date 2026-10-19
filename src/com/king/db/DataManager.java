@@ -217,6 +217,7 @@ public abstract class DataManager {
 
 
     protected Statement getStmt() throws DataControlException {
+        // M-11: return 移出 finally —— 原 finally return 会吞掉 catch 抛出的异常并返回陈旧/null stmt。
         try {
             Connection conn = currentConnection();
             stmt = conn.createStatement();
@@ -225,9 +226,8 @@ public abstract class DataManager {
 //            exceptionHandler(e);
             throw new DataControlException("Database query error: " +
                                            e.getMessage(), e);
-        } finally {
-            return stmt;
         }
+        return stmt;
     }
 
     protected Statement getBatchUpdateStmt() throws DataControlException {
@@ -235,6 +235,7 @@ public abstract class DataManager {
     }
 
     protected boolean isSupportBatchUpdate() throws Exception {
+        // M-11: return 移出 finally(保留 closeSession)，避免吞掉抛出的异常。
         boolean br = false;
         try {
             Connection conn = currentConnection();
@@ -245,8 +246,8 @@ public abstract class DataManager {
             throw new Exception(e);
         } finally {
             closeSession();
-            return br;
         }
+        return br;
     }
 
     protected int[] doBatchUpdate() throws DataControlException {
@@ -440,6 +441,8 @@ public abstract class DataManager {
                     logger.warn("SQL Resultset close cause error! ");
                 }
             }
+            // C-6: 释放本次借用的线程连接回池，避免维护线程长期钉住连接。
+            closeSession();
         }
     }
 

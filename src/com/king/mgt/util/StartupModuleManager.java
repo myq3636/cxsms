@@ -164,9 +164,16 @@ public class StartupModuleManager {
                 Runtime.getRuntime().exec(cmd);
                 System.out.println("Stop "+moduleName+" successfully!");
                 return true;
-        	}
+            }
             int port = moduleInfo.getCmdPort();
+            if (port <= 0) {
+                System.out.println("Skip legacy stop command for " + moduleName + " because cmd_port is not configured.");
+                return false;
+            }
             String ip = moduleInfo.getURL();
+            if (ip == null || ip.trim().length() == 0) {
+                ip = "127.0.0.1";
+            }
             Socket socket = new Socket();
             socket.connect(new InetSocketAddress(ip, port),15000);
             BufferedOutputStream bWriter = new BufferedOutputStream(socket.getOutputStream());
@@ -258,8 +265,14 @@ public class StartupModuleManager {
 	 * @return
 	 */
 	private static boolean isLocalModule(ModuleConnectionInfo conInfo){
+		if (conInfo == null) {
+			return false;
+		}
 		Set<InetAddress> inetAddressSet = getLocalAddress();
 		String url = conInfo.getURL();
+		if (url == null || url.trim().length() == 0) {
+			return true;
+		}
     	InetAddress urlAddr = null;
     	try {
     		urlAddr = InetAddress.getByName(url);
@@ -267,7 +280,7 @@ public class StartupModuleManager {
     		e.printStackTrace();
     	}
     	
-    	if (urlAddr.isLoopbackAddress() || inetAddressSet.contains(urlAddr)) {
+        if (urlAddr != null && (urlAddr.isLoopbackAddress() || inetAddressSet.contains(urlAddr))) {
     		return true;
     	}
     	return false;

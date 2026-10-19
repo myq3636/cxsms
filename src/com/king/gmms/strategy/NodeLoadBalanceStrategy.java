@@ -25,26 +25,23 @@ public class NodeLoadBalanceStrategy
         NodeLoadBalanceStrategy.class);
     private int lastNodePosistion = 0;
     private Object mutex = new Object();
-    private Map<String, Node> initialNodeMap;
     private Map<String, Node> activeNodeMap;
 
     public NodeLoadBalanceStrategy(NodeManager nodeManager) {
         this.strategyType = StrategyType.LoadBalance;
         this.nodeManager = nodeManager;
         this.activeNodeMap = nodeManager.getActiveNodeMap();
-        this.initialNodeMap = nodeManager.getInitialNodeMap();
     }
 
     public Object execute(GmmsMessage msg) {
-        int nodePosition = 0;
+        int nodePosition;
         int nodesNum = activeNodeMap.size();
 
+        // H-4: active 为空时不再走 initialNodeMap 死逻辑(getAvailableNode 只迭代 activeNodeMap，
+        // 无法服务 initial 节点)，直接返回 null 落 deadNode，避免用 nodePosition=0 调用导致歧义。
         if (nodesNum <= 0) {
-            nodesNum = initialNodeMap.size();
-            if(nodesNum <= 0) {
-                log.warn(msg, "all nodes are inactive, send to deadNode.");
-                return null;
-            }
+            log.warn(msg, "no active node available, send to deadNode.");
+            return null;
         }
         else if (1 == nodesNum) {
             nodePosition = 1;

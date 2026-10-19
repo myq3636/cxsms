@@ -68,12 +68,21 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
     private boolean isStoreDRModeEnable = false;
 	private RedisClient redis = null;
 	
-	private static InternalCoreEngineSession reactiveInstance = null;
-	public static synchronized InternalCoreEngineSession getReactiveInstance() {
-		if (reactiveInstance == null) {
-			reactiveInstance = new InternalCoreEngineSession();
+	// 性能①: volatile 双检锁取代 static synchronized —— 原 getter 每条入站消息都抢类锁、令所有 worker 串行。
+	// 保留懒加载时机(构造依赖 GmmsUtility 等单例已就绪)，快路径仅一次 volatile 读、无锁。
+	private static volatile InternalCoreEngineSession reactiveInstance = null;
+	public static InternalCoreEngineSession getReactiveInstance() {
+		InternalCoreEngineSession local = reactiveInstance;
+		if (local == null) {
+			synchronized (InternalCoreEngineSession.class) {
+				local = reactiveInstance;
+				if (local == null) {
+					local = new InternalCoreEngineSession();
+					reactiveInstance = local;
+				}
+			}
 		}
-		return reactiveInstance;
+		return local;
 	}
 	
 	protected InternalCoreEngineSession() {
@@ -1395,14 +1404,22 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 				return true;
 			}
 			if (CsmUtility.isConcatenatedMsg(msg) && msg.getRoperator() < 0) {
-				if (!csmHandler.putMsg(msg)) {
+				// CSM 修复：CsmReassembleMode=redis 走 Redis Hash 同步合并(持久化后才 ACK)；否则 legacy 异步。
+				if ("redis".equalsIgnoreCase(gmmsUtility.getCommonProperty("CsmReassembleMode", "legacy"))) {
+					if (!com.king.gmms.routing.SyncSubmitRouter.getInstance().routeCsmSegmentSync(msg)) {
+						msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
+						return false;   // 不 ACK -> MQM 流 PEL auto-claim 重试
+					}
+				} else if (!csmHandler.putMsg(msg)) {
 					msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
 					msgStoreManager.handleOutSubmitRes(msg);
 				}
 			} else {
-				if (!deliveryRouterHandler.putMsg(msg)) {
+				// C-1: downstream produce is synchronous; DB fallback is async and acceptable once enqueued.
+				// routeSubmitSync returns false only when neither produce nor fallback enqueue completed.
+				if (!com.king.gmms.routing.SyncSubmitRouter.getInstance().routeSubmitSync(msg)) {
 					msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
-					msgStoreManager.handleOutSubmitRes(msg);
+					return false;
 				}
 			}
 			return true;
@@ -1919,7 +1936,13 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 						}
 						msgStoreManager.handleInSubmit(msg, false);
 						if (CsmUtility.isConcatenatedMsg(msg)) {
-							if(!csmHandler.putMsg(msg)){
+							// CSM 修复：CsmReassembleMode=redis 走 Redis Hash 同步合并(持久化后才 ACK，不丢)；否则 legacy 异步。
+							if ("redis".equalsIgnoreCase(gmmsUtility.getCommonProperty("CsmReassembleMode", "legacy"))) {
+								if(!com.king.gmms.routing.SyncSubmitRouter.getInstance().routeCsmSegmentSync(msg)){
+									msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
+									return false;   // 不 ACK -> PEL auto-claim 重试
+								}
+							} else if(!csmHandler.putMsg(msg)){
 								msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
 								msgStoreManager.handleOutSubmitResForInnack(msg);
 							}
@@ -1954,9 +1977,11 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 								
 								
 							}
-							if(!deliveryRouterHandler.putMsg(msg)){
+							// C-1: downstream produce is synchronous; DB fallback is async and acceptable once enqueued.
+							// routeSubmitSync returns false only when neither produce nor fallback enqueue completed.
+							if(!com.king.gmms.routing.SyncSubmitRouter.getInstance().routeSubmitSync(msg)){
 								msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
-								msgStoreManager.handleOutSubmitResForInnack(msg);
+								return false;
 							}
 						}
 					}

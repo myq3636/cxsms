@@ -111,7 +111,8 @@ public abstract class PDU extends ByteData {
     public static final byte VALID_ALL = 3;
 
 
-    private static final int MAX_PDU_SIZE = 8*1024;
+    // L-2: 与 MultiSmppSession 会话层上限(16384)对齐，避免 8-16K 的 PDU 过会话层却被 PDU 层拒 → 流错位。
+    private static final int MAX_PDU_SIZE = 16*1024;
 
     /**
      * This vector contains instances of all possible PDUs whic can be
@@ -131,8 +132,10 @@ public abstract class PDU extends ByteData {
      *
      * @see #assignSequenceNumber()
      */
-    private static int sequenceNumber = 0;
-    private static Object sequemutex = new Object();
+    // H-15: 原 static int + sequemutex 改为原子计数(全局兜底, 1..MAX 绕回)。
+    // 会话发送路径应优先走 MultiSmppSession.nextSequence()(每会话序列号)，此为兜底，避免撕裂。
+    private static final java.util.concurrent.atomic.AtomicInteger sequenceNumber =
+            new java.util.concurrent.atomic.AtomicInteger(0);
     /**
      * Indicates that the sequence number has been changed either by setting
      * by method <code>setSequenceNumber(int) or by reading from buffer by
@@ -323,14 +326,13 @@ public abstract class PDU extends ByteData {
      * @see #setHeader(SmppByteBuffer)
      */
     public void assignSequenceNumber(boolean always) {
-    	int sequeceNO=0;
         if((!sequenceNumberChanged) || always) {
-        	synchronized(sequemutex){//added by Jianming
-        		if(sequenceNumber==Integer.MAX_VALUE){
-        			sequenceNumber = 0;
-        		}
-        		sequeceNO = ++sequenceNumber;        		
-        	}
+            int sequeceNO;
+            for (;;) {
+                int cur = sequenceNumber.get();
+                int next = (cur >= Integer.MAX_VALUE) ? 1 : cur + 1;
+                if (sequenceNumber.compareAndSet(cur, next)) { sequeceNO = next; break; }
+            }
             setSequenceNumber(sequeceNO);
         }
     }
@@ -1052,7 +1054,7 @@ public abstract class PDU extends ByteData {
         else {
             // it's likely that this will be the assigned seq number
             // (in simple cases :-)
-            dbgs.append("[").append(sequenceNumber + 1).append("]");
+            dbgs.append("[").append(sequenceNumber.get() + 1).append("]");
         }
         dbgs.append(") ");
         return dbgs.toString();
@@ -1095,11 +1097,17 @@ public abstract class PDU extends ByteData {
     public boolean equals(Object object) {
         if((object != null) && (object instanceof PDU)) {
             PDU pdu = (PDU) object;
-            return pdu.getSequenceNumber() == getSequenceNumber();
+            // H-15: 原仅按 sequence 判等会把不同命令误判相等；改为 (commandId, sequence) 联合判等。
+            return pdu.getCommandId() == getCommandId()
+                    && pdu.getSequenceNumber() == getSequenceNumber();
         }
         else {
             return false;
         }
+    }
+
+    public int hashCode() {
+        return 31 * getCommandId() + getSequenceNumber();
     }
 
     /**

@@ -2783,8 +2783,19 @@ public class Smpp {
 		 if(log.isTraceEnabled()){
 			 log.trace(msg, "The content contains UDH.");
 		 }
+		// H-18: 校验长度，避免空内容读 btContent[0] 越界、或 UDHL 超长导致 new byte[负数]
+		if (btContent == null || btContent.length == 0) {
+			log.warn(msg, "UDH flagged but content is empty; treat as no content.");
+			msg.setUdh(new byte[0]);
+			return new byte[0];
+		}
 		udhLen = btContent[0] & 0xff;
 		udhLen = udhLen + 1;
+		if (udhLen > btContent.length) {
+			log.warn(msg, "Invalid UDHL={} exceeds content length={}; drop malformed UDH.", udhLen, btContent.length);
+			msg.setUdh(new byte[0]);
+			return new byte[0];
+		}
 		if (btContent.length == udhLen) { // only has udh, no other content
 			msg.setUdh(btContent);
 			messageDataNew = new byte[0];
@@ -2825,7 +2836,7 @@ public class Smpp {
 			if(smsOptionIncomingGSM7bit ==2){
 				int fillBits = 0;
 				if(udh){
-					int udhLen = btContent[0] & 0xff;
+					int udhLen = (btContent != null && btContent.length > 0) ? (btContent[0] & 0xff) : 0; // H-19: 防空内容越界
 					fillBits = (7 - (udhLen+1)*8%7)%7;
 				}				 
 				 newContent = Convert.decodeGSM7Bit(newContent, fillBits);
@@ -2847,7 +2858,7 @@ public class Smpp {
 									if(value ==-1){
 										// mapping extended characters
 										if(temp==27){
-											int c = newContent[i+1];
+											int c = (i + 1 < newContent.length) ? newContent[i+1] : -1; // H-19: 悬挂转义防越界
 											switch(c){
 											case 10: value=12; break;
 											case 20: value=94; break;

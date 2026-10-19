@@ -59,6 +59,8 @@ public class SmppPendingSubmitManager {
     private final int windowSize;
     private final long timeoutMs;
     private final long resultRetryDelayMs;
+    // M-14: 产结果失败重试上限——超过即放弃并释放 window 许可，避免无限重试钉死 entry → window 枯竭。
+    private final int maxResultRetry;
     private final BufferTimeoutInterface timeoutListener;
     private final ConcurrentMap<String, PendingSubmitEntry> pendingMap;
     private final ConcurrentMap<String, String> redisKeyBySequence;
@@ -78,6 +80,7 @@ public class SmppPendingSubmitManager {
         this.windowSize = windowSize;
         this.timeoutMs = timeoutMs > 0 ? timeoutMs : 60000L;
         this.resultRetryDelayMs = Math.max(1000L, Math.min(this.timeoutMs / 3, 10000L));
+        this.maxResultRetry = Math.max(1, intProperty("SMPPSubmitPendingResultMaxRetry", 50));
         this.timeoutListener = timeoutListener;
         this.pendingMap = new ConcurrentHashMap<String, PendingSubmitEntry>();
         this.redisKeyBySequence = new ConcurrentHashMap<String, String>();
@@ -206,7 +209,7 @@ public class SmppPendingSubmitManager {
             if (isRedisBacked(sequence, entry) && !redisPendingExists(sequence)) {
                 if (pendingMap.remove(sequence, entry)) {
                     redisKeyBySequence.remove(sequence);
-                    releasePermit();
+                    releasePermitIfHeld(entry);
                 }
                 log.info(entry.getMessage(), "Redis-backed SMPP pending already completed before response. pendingKey={}",
                         entry.getPendingKey());
@@ -222,6 +225,7 @@ public class SmppPendingSubmitManager {
             return null;
         }
         PendingSubmitEntry redisEntry = new PendingSubmitEntry(buildPendingKey(sequence), sequence, message, timeoutMsFor(message));
+		redisEntry.setPermitHeld(false); // M-13: redis 复活 entry 未 acquire 许可，释放时不可计入
 		PendingSubmitEntry old = pendingMap.putIfAbsent(sequence, redisEntry);
 		if (old != null) {
 			return old;
@@ -235,7 +239,7 @@ public class SmppPendingSubmitManager {
         }
         PendingSubmitEntry entry = pendingMap.remove(sequence);
         if (entry != null) {
-            releasePermit();
+            releasePermitIfHeld(entry);
         }
         deleteRedisPending(sequence);
         return entry;
@@ -290,7 +294,7 @@ public class SmppPendingSubmitManager {
 			if (!redisPendingExists(sequence)) {
 				if (pendingMap.remove(sequence, entry)) {
 					redisKeyBySequence.remove(sequence);
-					releasePermit();
+					releasePermitIfHeld(entry);
 				}
 				log.info(entry.getMessage(), "Redis-backed SMPP pending already handled by Redis timeout scanner. pendingKey={}",
 						entry.getPendingKey());
@@ -305,6 +309,21 @@ public class SmppPendingSubmitManager {
 		}
     }
 
+    // M-14: 产结果失败计数 +1；若超过上限则放弃(移除 entry + 释放 window 许可 + 清 redis)，返回 true 表示已放弃。
+    private boolean giveUpIfResultRetryExhausted(String sequence, PendingSubmitEntry entry, GmmsMessage message) {
+        if (entry.incrementAndGetResultRetry() <= maxResultRetry) {
+            return false;
+        }
+        if (pendingMap.remove(sequence, entry)) {
+            redisKeyBySequence.remove(sequence);
+            releasePermitIfHeld(entry);
+        }
+        deleteRedisPending(sequence);
+        log.error(message, "SMPP pending submit result production exhausted after {} retries, give up and free window. pendingKey={}",
+                maxResultRetry, entry.getPendingKey());
+        return true;
+    }
+
     private void retryPendingResult(String sequence, PendingSubmitEntry entry) {
         GmmsMessage message = entry.getMessage();
 		if (message == null) {
@@ -314,17 +333,24 @@ public class SmppPendingSubmitManager {
 		if (isRedisBacked(sequence, entry) && !redisPendingExists(sequence)) {
 			if (pendingMap.remove(sequence, entry)) {
 				redisKeyBySequence.remove(sequence);
-				releasePermit();
+				releasePermitIfHeld(entry);
 			}
 			log.info(message, "Redis-backed pending result already handled. pendingKey={}",
 					entry.getPendingKey());
 			return;
+		}
+		if (!entry.tryClaimProduce()) {
+			return; // H-16: 响应路径已认领并在产 → 跳过，避免重复产结果
 		}
 		if (StreamQueueManager.getInstance().produceResult(message)) {
 			remove(sequence);
 			log.info(message, "Retried pending SMPP submit response result successfully. pendingKey={}",
                     entry.getPendingKey());
         } else {
+            entry.releaseProduceClaim(); // 产失败 → 释放认领，允许后续重试再认领
+            if (giveUpIfResultRetryExhausted(sequence, entry, message)) { // M-14: 超上限放弃，释放 window
+                return;
+            }
             entry.reschedule(resultRetryDelayMs);
             offerGlobalTimeout(entry);
             if (redisKeyBySequence.containsKey(sequence)) {
@@ -342,13 +368,20 @@ public class SmppPendingSubmitManager {
             return;
         }
 		if (timeoutListener instanceof PendingSubmitTimeoutHandler) {
+			if (!entry.tryClaimProduce()) {
+				return; // H-16: 响应路径已认领并在产 → 跳过，避免重复产结果
+			}
 			boolean produced = ((PendingSubmitTimeoutHandler) timeoutListener).timeoutPendingSubmit(sequence, message);
 			if (produced) {
 				remove(sequence);
                 log.info(message, "SMPP pending submit timeout result produced. pendingKey={}",
                         entry.getPendingKey());
             } else {
+                entry.releaseProduceClaim(); // 产失败 → 释放认领，允许后续重试再认领
                 entry.markResultPending(message);
+                if (giveUpIfResultRetryExhausted(sequence, entry, message)) { // M-14: 超上限放弃，释放 window
+                    return;
+                }
                 entry.reschedule(resultRetryDelayMs);
                 offerGlobalTimeout(entry);
                 if (redisKeyBySequence.containsKey(sequence)) {
@@ -360,7 +393,7 @@ public class SmppPendingSubmitManager {
             return;
         }
         if (pendingMap.remove(sequence, entry)) {
-            releasePermit();
+            releasePermitIfHeld(entry);
             deleteRedisPending(sequence);
             if (timeoutListener != null) {
                 timeoutListener.timeout(sequence, message);
@@ -374,7 +407,7 @@ public class SmppPendingSubmitManager {
             if (!pendingMap.remove(item.getKey(), entry)) {
                 continue;
 			}
-			releasePermit();
+			releasePermitIfHeld(entry);
 			GmmsMessage message = entry.getMessage();
 			boolean redisBacked = isRedisBacked(item.getKey(), entry);
 			if (message == null) {
@@ -422,6 +455,13 @@ public class SmppPendingSubmitManager {
 
     private void releasePermit() {
         if (permits != null) {
+            permits.release();
+        }
+    }
+
+    /** M-13: 仅当该 entry 确实持有许可时释放，避免对 redis 复活(未 acquire)的 entry 过度释放。 */
+    private void releasePermitIfHeld(PendingSubmitEntry entry) {
+        if (permits != null && entry != null && entry.isPermitHeld()) {
             permits.release();
         }
     }
@@ -638,6 +678,10 @@ public class SmppPendingSubmitManager {
         public int compareTo(Delayed other) {
             if (other == this) {
                 return 0;
+            }
+            // M-16: 比较绝对到期时刻 dueAt，避免两次活动 getDelay 导致 DelayQueue 排序不稳定。
+            if (other instanceof PendingSubmitTimeoutTask) {
+                return Long.compare(this.dueAt, ((PendingSubmitTimeoutTask) other).dueAt);
             }
             long diff = getDelay(TimeUnit.MILLISECONDS) - other.getDelay(TimeUnit.MILLISECONDS);
             return diff == 0 ? 0 : (diff < 0 ? -1 : 1);

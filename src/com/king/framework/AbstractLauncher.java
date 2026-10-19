@@ -13,6 +13,7 @@ import java.net.*;
 
 import com.king.gmms.domain.ModuleConnectionInfo;
 import com.king.gmms.domain.ModuleManager;
+import com.king.gmms.GmmsUtility;
 import com.king.mgt.cmd.system.SystemCommandStop;
 import com.king.mgt.cmd.user.UserCommandStop;
 
@@ -45,7 +46,7 @@ public abstract class AbstractLauncher implements Runnable {
             beforeStart();
             moduleManager = ModuleManager.getInstance();
             ModuleConnectionInfo moduleInfo = moduleManager.getConnectionInfo(moduleName);
-            port = moduleInfo.getCmdPort();
+            port = resolveCmdPort(moduleInfo);
             service = (A2PService) Class.forName(className).newInstance();
             new Thread(A2PThreadGroup.getInstance(),this).start();
             if(service.startService()) {
@@ -74,8 +75,12 @@ public abstract class AbstractLauncher implements Runnable {
         	beforeStop();
         	moduleManager = ModuleManager.getInstance();
             ModuleConnectionInfo moduleInfo = moduleManager.getConnectionInfo(moduleName);
-            port = moduleInfo.getCmdPort();
-            String ip = moduleInfo.getURL();
+            port = resolveCmdPort(moduleInfo);
+            if (port <= 0) {
+                System.out.println("Stop service fail! cmd port is not configured for module " + moduleName);
+                return false;
+            }
+            String ip = resolveModuleUrl(moduleInfo);
             System.out.println("Stopping service...");
             Socket socket = new Socket();
             socket.connect(new InetSocketAddress(ip, port),15000);
@@ -100,7 +105,11 @@ public abstract class AbstractLauncher implements Runnable {
         	beforeStop();
         	moduleManager = ModuleManager.getInstance();
             ModuleConnectionInfo moduleInfo = moduleManager.getConnectionInfo(moduleName);
-            port = moduleInfo.getCmdPort();
+            port = resolveCmdPort(moduleInfo);
+            if (port <= 0) {
+                System.out.println("Restart service fail! cmd port is not configured for module " + moduleName);
+                return false;
+            }
             Socket socket = new Socket();
             socket.connect(new InetSocketAddress("127.0.0.1", port),15000);
             BufferedOutputStream bWriter = new BufferedOutputStream(socket.getOutputStream());
@@ -130,5 +139,42 @@ public abstract class AbstractLauncher implements Runnable {
         }
         return true;
 
+    }
+
+    private int resolveCmdPort(ModuleConnectionInfo moduleInfo) {
+        if (moduleInfo != null && moduleInfo.getCmdPort() > 0) {
+            return moduleInfo.getCmdPort();
+        }
+        String value = System.getProperty(moduleName + ".CmdPort");
+        if (value == null || value.trim().length() == 0) {
+            value = System.getProperty("Module.CmdPort");
+        }
+        if (value == null || value.trim().length() == 0) {
+            value = getCommonProperty(moduleName + ".CmdPort", getCommonProperty("Module.CmdPort", "-1"));
+        }
+        try {
+            return value == null ? -1 : Integer.parseInt(value.trim());
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    private String resolveModuleUrl(ModuleConnectionInfo moduleInfo) {
+        if (moduleInfo != null && moduleInfo.getURL() != null && moduleInfo.getURL().trim().length() > 0) {
+            return moduleInfo.getURL().trim();
+        }
+        String value = System.getProperty(moduleName + ".ModuleUrl");
+        if (value == null || value.trim().length() == 0) {
+            value = getCommonProperty(moduleName + ".ModuleUrl", getCommonProperty("Module.ModuleUrl", "127.0.0.1"));
+        }
+        return value.trim();
+    }
+
+    private String getCommonProperty(String key, String defaultValue) {
+        try {
+            return GmmsUtility.getInstance().getCommonProperty(key, defaultValue);
+        } catch (Exception e) {
+            return defaultValue;
+        }
     }
 }

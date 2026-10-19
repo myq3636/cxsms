@@ -86,8 +86,10 @@ public class ExpiredMessageQueue implements Runnable, Queue {
 	public void run() {
 		long checkInterval = timeout / 3;
 		Object temp = null;
-		try {
-			while (running) {
+		while (running) {
+			// H-23: 异常处理收进循环体内 —— 单次瞬时异常只记录并继续，不再永久杀死超时检查线程
+			// (否则此后消息再不超时兜底)。仅 running=false / interrupt 才退出。
+			try {
 				if (messageQueue.size() > 0
 						&& System.currentTimeMillis() - lastMsgTimeMillis > timeout) {
 					synchronized (messageQueue) {
@@ -115,10 +117,9 @@ public class ExpiredMessageQueue implements Runnable, Queue {
 					Thread.sleep(checkInterval);
 				} catch (InterruptedException ex) {
 				}
+			} catch (Exception e) {
+				log.warn(e, e);
 			}
-		} catch (Exception e) {
-			running = false;
-			log.warn(e, e);
 		}
 	}
 
@@ -166,10 +167,15 @@ public class ExpiredMessageQueue implements Runnable, Queue {
 
 		running = false;
 
-		messageTimeoutThread.interrupt();
-		
-		expiredMessageThread.interrupt();
-		
+		// H-23: null 守护 —— start() 中途失败时 running 可能为 true 但线程为 null，避免 stop() NPE。
+		if (messageTimeoutThread != null) {
+			messageTimeoutThread.interrupt();
+		}
+
+		if (expiredMessageThread != null) {
+			expiredMessageThread.interrupt();
+		}
+
 		memoryQueueManager.cancel(uuid);
 	}
 

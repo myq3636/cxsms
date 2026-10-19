@@ -1,5 +1,6 @@
 package com.king.mgt.connection;
 
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 
@@ -32,8 +33,9 @@ public class UserCommandListener extends Thread{
     {
         ServerSocket listenSocket=null;
         try {
-            listenSocket = new ServerSocket(port);
+            listenSocket = new ServerSocket();
             listenSocket.setReuseAddress(true);
+            listenSocket.bind(new InetSocketAddress(port));
             log.trace("Listening on {}",port);
         }catch(Exception ex)
         {
@@ -59,8 +61,16 @@ public class UserCommandListener extends Thread{
     }
     public void start()
     {
-        this.keepRunning=true;
         this.init();
+        if (port <= 0) {
+            log.fatal("Invalid user command listening port. port={}", port);
+            return;
+        }
+        if (factory == null) {
+            log.fatal("User command listener can not start because SessionFactory is null.");
+            return;
+        }
+        this.keepRunning=true;
         super.start();
     }
     public void init()
@@ -71,6 +81,7 @@ public class UserCommandListener extends Thread{
                 port = Integer.parseInt(sPort);
             }
             factory=utility.getSessionFactory();
+            log.info("User command listener init. port={}, sessionFactoryReady={}", port, factory != null);
         } catch (NumberFormatException ex) {
             log.error(ex,ex);
         }

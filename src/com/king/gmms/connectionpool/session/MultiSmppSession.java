@@ -102,6 +102,9 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
     protected MessageIdGenerator messageIdGenerator = MessageIdGenerator.getInstance();
     protected ExceptionMessageManager exMsgManager = ExceptionMessageManager.getInstance();
     protected SmppPendingSubmitManager pendingSubmitManager = null;
+    // H-15: 每会话独立序列号(取代全局 PDU.sequenceNumber)，消除跨会话碰撞与提早绕回。
+    private final java.util.concurrent.atomic.AtomicInteger seqGen =
+            new java.util.concurrent.atomic.AtomicInteger(0);
     protected SmppPendingDrManager pendingDrManager = null;
     private String serverRegistrySessionKey = null;
     private volatile long lastServerRegistryRefreshMs = 0L;
@@ -530,7 +533,11 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 	}                
                 	
                 	msg = processor.handleSubmitSM(request);
-                	
+                	if (msg == null) {
+                		// H-17: 畸形 submit_sm 解码失败(processor 返回 null) → 回错误响应并跳过，避免后续 NPE
+                		sendErrorResponse(request, Data.ESME_RSYSERR);
+                		return;
+                	}
                     tagServerInboundContext(msg);
 
                 	if(log.isInfoEnabled()){
@@ -624,7 +631,11 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 }
                 else if (commandId == Data.DELIVER_SM) {
                 	msg = processor.handleDeliverSM(request);
-
+                	if (msg == null) {
+                		// H-17: 畸形 deliver_sm 解码失败 → 回错误响应并跳过，避免后续 NPE
+                		sendErrorResponse(request, Data.ESME_RSYSERR);
+                		return;
+                	}
                     tagServerInboundContext(msg);
 
                 	if(log.isInfoEnabled()){
@@ -729,20 +740,35 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 else if (commandId == Data.UNBIND) {
                     // unbind causes stopping of the session
                 	log.warn("unbind causes stopping of the session");
+                	// H-20: 先回 unbind_resp(ESME_ROK) 再停会话(SMPP 规范要求确认 unbind)
+                	sendErrorResponse(request, Data.ESME_ROK);
                     stop();
                 }
                 else if(commandId == Data.ENQUIRE_LINK){
                 	handleEnquire_Link(request);
-                }                
+                }
                 else { // all other Requests that we can't handle
-                    // send system error back.
-                    Response response = request.getResponse();
-                    response.setCommandStatus(Data.ESME_RSYSERR);
+                    // H-20: 未知命令——实际把错误响应发回对端(原代码构造了 Response 却未 send)
                     if(log.isInfoEnabled()){
     					log.info("Unknow CommandId, Just response it.Sequence={}", request.getSequenceNumber());
                     }
+                    sendErrorResponse(request, Data.ESME_RSYSERR);
                 }
             }
+    }
+
+    /** H-17/H-20: 安全地给请求回一个指定状态的响应(畸形 PDU 错误响应 / unbind_resp / 未知命令)。 */
+    private void sendErrorResponse(Request request, int status) {
+        try {
+            if (request != null && request.canResponse()) {
+                Response response = request.getResponse();
+                response.setCommandStatus(status);
+                connection.send(response.getData().getBuffer());
+            }
+        } catch (Exception e) {
+            log.warn("Fail to send response. status=" + status
+                    + ", seq=" + (request != null ? request.getSequenceNumber() : -1), e);
+        }
     }
     /**
      * put message to Router queue
@@ -1406,6 +1432,11 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             bufferedMsg = bufferMonitor.remove(sequenceKey);
         }
         if (bufferedMsg != null) {
+            // H-16: 认领产结果权；若超时 worker 已认领则放弃，避免对同一 DR 重复产结果
+            if (pendingDrEntry != null && !pendingDrEntry.tryClaimProduce()) {
+                log.warn(bufferedMsg, "DR_RESP lost produce-claim race (handled by timeout). sequence={}", sequenceKey);
+                return;
+            }
             processor.handleDeliver_SM_Resp( (DeliverSMResp) response,
                                             bufferedMsg);
             // V5.0: DR Response 通过 Redis Stream 回传 Core，完成解耦闭环
@@ -1413,6 +1444,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             	log.error(bufferedMsg, "Failed to produce DR_RESP to stream:core:results, sequence={}",
                         sequenceKey);
                 if (pendingDrManager != null && pendingDrEntry != null) {
+                    pendingDrEntry.releaseProduceClaim(); // 产失败 → 释放认领供重试
                     pendingDrManager.markResultPending(sequenceKey, bufferedMsg);
                 }
             } else {
@@ -1447,6 +1479,17 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         }
     }
 
+    /** H-15: 每会话序列号(SMPP sequence 1..0x7FFFFFFF, 0 保留)；绕回到 1。 */
+    private int nextSequence() {
+        for (;;) {
+            int cur = seqGen.get();
+            int next = (cur >= 0x7FFFFFFF) ? 1 : cur + 1;
+            if (seqGen.compareAndSet(cur, next)) {
+                return next;
+            }
+        }
+    }
+
     private void handleSubmit_SM_Resp(Response response) {
         Integer sequence = response.getSequenceNumber();
         String sequenceKey = Integer.toString(sequence);
@@ -1463,6 +1506,11 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
 	        }
         }
         if (bufferedMsg != null) {
+            // H-16: 认领产结果权；若超时 worker 已认领则放弃，避免对同一 submit 重复产结果
+            if (pendingEntry != null && !pendingEntry.tryClaimProduce()) {
+                log.warn(bufferedMsg, "SUBMIT_RESP lost produce-claim race (handled by timeout). sequence={}", sequenceKey);
+                return;
+            }
             processor.handleSubmit_SM_Resp( (SubmitSMResp) response,
                                            bufferedMsg);
                     MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
@@ -1481,6 +1529,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             	log.error(bufferedMsg, "Failed to produce SUBMIT_RESP to stream:core:results, sequence={}" ,
                         sequenceKey);
                 if (pendingSubmitManager != null && pendingEntry != null) {
+                    pendingEntry.releaseProduceClaim(); // 产失败 → 释放认领供重试
                     pendingSubmitManager.markResultPending(sequenceKey, bufferedMsg);
                 }
             }
@@ -1710,7 +1759,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         	return false;
         }
         try {
-            request.assignSequenceNumber();
+            request.setSequenceNumber(nextSequence()); // H-15: 每会话序列号
 
             if (gmmsUtility.getCustomerManager().getTransparency(msg.getOSsID()) > 0) {
                 smpp.addMncMccForRequest(msg, request);
@@ -1775,7 +1824,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 smpp.addMncMccForRequest(msg, request);
             }
             
-            request.assignSequenceNumber();
+            request.setSequenceNumber(nextSequence()); // H-15: 每会话序列号
 
             key = Integer.toString(request.getSequenceNumber());            
             msg.setOutTransID(key);
@@ -1843,7 +1892,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 smpp.addMncMccForRequest(msg, request);
             }
 
-            request.assignSequenceNumber();
+            request.setSequenceNumber(nextSequence()); // H-15: 每会话序列号
 
             key = Integer.toString(request.getSequenceNumber());
             msg.setOutTransID(key);
@@ -1959,7 +2008,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             if (gmmsUtility.getCustomerManager().getTransparency(deliverMsg.getOoperator()) > 0) {
                 smpp.addMncMccForRequest(deliverMsg, delivSm);
             }
-            delivSm.assignSequenceNumber();
+            delivSm.setSequenceNumber(nextSequence()); // H-15: 每会话序列号
             key = Integer.toString(delivSm.getSequenceNumber());
             while (isKeepRunning() &&
                    !bufferMonitor.put(key, deliverMsg))
@@ -2066,7 +2115,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 smpp.addMncMccForRequest(deliverMsg, delivSm);
             }
             delivSm.setVersion(ver);
-            delivSm.assignSequenceNumber();
+            delivSm.setSequenceNumber(nextSequence()); // H-15: 每会话序列号
             key = Integer.toString(delivSm.getSequenceNumber());
             deliverMsg.setInTransID(key);
             if (pendingDrManager == null) {

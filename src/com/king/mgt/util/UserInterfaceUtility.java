@@ -102,6 +102,14 @@ public class UserInterfaceUtility {
     }
     public void initUtilities()
     {
+        initCoreUtilities();
+        initConfigFiles();
+    }
+
+    public void initCoreUtilities()
+    {
+        long start = System.currentTimeMillis();
+        log.info("SmsUI core utilities init start.");
         String enable=this.getProperty("enableNotification","yes");
         if ("no".equalsIgnoreCase(enable) || "disable".equalsIgnoreCase(enable) ||
             "false".equalsIgnoreCase(enable)) {
@@ -117,13 +125,82 @@ public class UserInterfaceUtility {
         commandSet=new UserCommandSet();
         commandSet.init();
         mailSender=MailSender.getInstance();
-        ModuleManager.getInstance().initSmsUI();
-        this.initBlacklistCfg();
-        this.initCmCfg();
-        this.initRoutingCfg();
-        this.initAntiSpamCfg();
-        this.initContentTplCfg();
-        this.initPhonePrefixCfg();
+        log.info("SmsUI core utilities init done. elapsedMs={}", System.currentTimeMillis() - start);
+    }
+
+    public void initConfigFiles()
+    {
+        long start = System.currentTimeMillis();
+        log.info("SmsUI config files init start.");
+        initConfigFileSafely(UserCommandBlacklist.keyword, new Runnable() {
+            public void run() {
+                initBlacklistCfg();
+            }
+        });
+        initConfigFileSafely(UserCommandCustomer.keyword, new Runnable() {
+            public void run() {
+                initCmCfg();
+            }
+        });
+        initConfigFileSafely(UserCommandRoutingInfo.keyword, new Runnable() {
+            public void run() {
+                initRoutingCfg();
+            }
+        });
+        initConfigFileSafely(UserCommandAntiSpam.keyword, new Runnable() {
+            public void run() {
+                initAntiSpamCfg();
+            }
+        });
+        initConfigFileSafely(UserCommandContentTpl.keyword, new Runnable() {
+            public void run() {
+                initContentTplCfg();
+            }
+        });
+        initConfigFileSafely(UserCommandPhonePrefix.keyword, new Runnable() {
+            public void run() {
+                initPhonePrefixCfg();
+            }
+        });
+        log.info("SmsUI config files init done. elapsedMs={}", System.currentTimeMillis() - start);
+    }
+
+    public void initConfigFilesAsync()
+    {
+        Thread thread = new Thread(new Runnable() {
+            public void run() {
+                initConfigFiles();
+            }
+        }, "SmsUiConfigInitThread");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    public void initModuleManagerAsync()
+    {
+        Thread thread = new Thread(new Runnable() {
+            public void run() {
+                long start = System.currentTimeMillis();
+                log.info("SmsUI module manager init start.");
+                try {
+                    ModuleManager.getInstance().initSmsUI();
+                    log.info("SmsUI module manager init done. elapsedMs={}", System.currentTimeMillis() - start);
+                } catch (Throwable e) {
+                    log.error("Initial smsui module manager load failed.", e);
+                }
+            }
+        }, "SmsUiModuleInitThread");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void initConfigFileSafely(String keyword, Runnable task)
+    {
+        try {
+            task.run();
+        } catch (Throwable e) {
+            log.error("Initial config file load failed. keyword={}", keyword, e);
+        }
     }
     public void init()
     {

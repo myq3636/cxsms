@@ -172,6 +172,7 @@ public class ResultStreamConsumer {
 
     private void processResult(String streamKey, GmmsMessage msg) {
         long start = System.nanoTime();
+        String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
         try {
             String resultType = msg.getRedisStreamMessageType() != null
                     ? msg.getRedisStreamMessageType() : msg.getMessageType();
@@ -189,7 +190,12 @@ public class ResultStreamConsumer {
                         MetricsNames.STAGE_OUT_DR, msg, false, MetricsNames.ACTION_PROCESSED));
             }
             CoreOutboundOutboxManager.getInstance().complete(msg);
-            queueManager.ack(streamKey, groupName, msg, false);
+            boolean acked = queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);
+            if (!acked) {
+                logger.warn(msg,
+                        "Result stream ack failed after process success. streamKey={}, sourceRedisId={}, currentRedisId={}",
+                        streamKey, sourceRedisId, msg == null ? null : msg.getRedisStreamID());
+            }
         } catch (Exception e) {
             MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(MetricsNames.COMPONENT_CONSUMER,
                     MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_FAIL));

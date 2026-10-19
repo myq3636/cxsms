@@ -2968,7 +2968,8 @@ public class A2PCustomerManager implements LifecycleListener {
 				// reload for sessions
 				this.reloadConnectionManagement(block.getSSID());
 				this.createCustomerSessions(block);
-				//DistributedThrottlingManager.getInstance().updateRate(ssid, newBlock.getOutgoingThrottlingNum());
+				// 客户配置 reload 时同步刷新 Stream 出站限速(方案A 冗余；acquire 也会自对齐)。
+				DistributedThrottlingManager.getInstance().updateRate(ssid, newBlock.getInt("SMSOptionOutgoingThrottlingNum", 10));
 //				RetryPolicyManager.getInstance().updateRetryPolicy(block.getSSID());
 				rmShortName.remove(shortName);
 				if ("partition".equalsIgnoreCase(newBlock.getString("A2PPlayerType"))) {

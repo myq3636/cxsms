@@ -1,8 +1,15 @@
 package com.king.gmms.metrics;
 
+import java.util.concurrent.ConcurrentHashMap;
+
 import com.king.message.gmms.GmmsMessage;
 
 public class MetricsNames {
+
+    // 性能④: 缓存 module（启动后不变）避免每条消息多次 System.getProperty(同步 Hashtable)；
+    //         memo normalize（输入均为常量/小集合）避免每次 trim/replace/toLowerCase 的多次 String 分配。
+    private static volatile String cachedModule = null;
+    private static final ConcurrentHashMap<String, String> NORMALIZE_CACHE = new ConcurrentHashMap<String, String>();
 
     public static final String COMPONENT_STREAM = "stream";
     public static final String COMPONENT_CONSUMER = "consumer";
@@ -114,11 +121,19 @@ public class MetricsNames {
     }
 
     public static String module() {
+        // 性能④: 一次性缓存（module 在启动设定、运行期不变）。未设置时返回 "unknown" 且不缓存，
+        // 以便后续真正设置后能被采用。
+        String cached = cachedModule;
+        if (cached != null) {
+            return cached;
+        }
         String module = System.getProperty("module");
         if (module == null || module.trim().length() == 0) {
             return "unknown";
         }
-        return normalize(module);
+        cached = normalize(module);
+        cachedModule = cached;
+        return cached;
     }
 
     public static String msgType(GmmsMessage msg) {
@@ -154,6 +169,13 @@ public class MetricsNames {
         if (value == null || value.trim().length() == 0) {
             return "unknown";
         }
-        return value.trim().replace(' ', '_').replace('-', '_').toLowerCase();
+        // 性能④: memo —— 输入为常量/小集合(component/flow/action/msgType)，缓存后命中即免去 trim/replace×2/toLowerCase 的分配。
+        String cached = NORMALIZE_CACHE.get(value);
+        if (cached != null) {
+            return cached;
+        }
+        cached = value.trim().replace(' ', '_').replace('-', '_').toLowerCase();
+        NORMALIZE_CACHE.put(value, cached);
+        return cached;
     }
 }

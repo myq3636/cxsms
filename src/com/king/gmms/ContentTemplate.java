@@ -159,11 +159,10 @@ public class ContentTemplate implements LifecycleListener {
 			Map<String, List<Pattern>> tmpRuleAscii,
 			Map<String, List<Pattern>> tmpRuleUnicode,
 			Map<String, Map<String, String>>  tmpTemplateContentMaps) throws Exception {
-		try {
-			File confFile = new File(confPath);
-			FileInputStream fin = new FileInputStream(confFile);
-			BufferedReader reader = new BufferedReader(new InputStreamReader(
-					fin, "utf-8"));
+		// M-20: try-with-resources 关闭流(原 try 体内开流不关 → 每次 reload 漏 FD)。
+		File confFile = new File(confPath);
+		try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+				new FileInputStream(confFile), "utf-8"))) {
 			String line = null;
 			int lineNum = 0;
 			String ruleKey = null;
@@ -227,11 +226,9 @@ public class ContentTemplate implements LifecycleListener {
 					}
 				}
 			}
-		} catch (Exception ex) {
-			throw ex;
 		}
 	}
-	
+
 	private void addTemplateContent(String ruleKey, String contentType, String content,
 			Map<String, Map<String, String>>  tmpTemplateContentMaps){
 		Map<String, String> typeContent = tmpTemplateContentMaps.get(ruleKey);
@@ -246,11 +243,10 @@ public class ContentTemplate implements LifecycleListener {
 	private void parseTemplateIdConfFile(String confPath,
 			Map<String, Map<String, Map<String, String>>> tempTemplateIdMap,
 			Map<String, Map<String, Map<String, String>>> tempSignatureMap) throws Exception {
-		try {
-			File confFile = new File(confPath);
-			FileInputStream fin = new FileInputStream(confFile);
-			BufferedReader reader = new BufferedReader(new InputStreamReader(
-					fin, "utf-8"));
+		// M-20: try-with-resources 关闭流(原 try 体内开流不关 → 每次 reload 漏 FD)。
+		File confFile = new File(confPath);
+		try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+				new FileInputStream(confFile), "utf-8"))) {
 			String line = null;
 			int lineNum = 0;
 			String ruleKey = null;
@@ -335,8 +331,6 @@ public class ContentTemplate implements LifecycleListener {
 					}
 				}
 			}
-		} catch (Exception ex) {
-			throw ex;
 		}
 	}
 

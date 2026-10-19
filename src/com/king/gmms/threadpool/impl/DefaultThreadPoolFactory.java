@@ -99,7 +99,10 @@ public class DefaultThreadPoolFactory implements ThreadPoolFactory {
 	 */
 	@Override
 	public ExecutorService newThreadPool(ThreadPoolProfile profile, ThreadFactory threadFactory, QueueTimeoutInterface timeoutHandler, long timeoutMillis) {
-		return null;
+		// H-24: 不再静默返回 null(调用方会无日志 NPE)。本工厂不支持带超时处理器的池，
+		// 该路径应使用 ExpiredThreadPoolFactory；如误接到此处则快速失败。
+		throw new UnsupportedOperationException(
+				"DefaultThreadPoolFactory does not support timeout-handler thread pools; use ExpiredThreadPoolFactory instead.");
 	}
 
 }

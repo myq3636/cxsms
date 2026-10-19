@@ -26,13 +26,16 @@ public class DBLockConnection extends DataManager{
 	}
 
 	public boolean getLock() throws Exception {
+		// H-13: fail-closed —— 任何错误一律视为"未获得锁"(不 NPE、不误判持锁)，
+		// 避免 HA 单例选举时两节点同时自认持有 lock1 而脑裂。
 		lockConnection = currentConnection();
-		ResultSet rs = doSelect(lockConnection, get_lock_SQL);
-		int lock = -1;
-		while (rs.next()) {
-			lock = rs.getInt(1);
+		try (Statement st = lockConnection.createStatement();
+				ResultSet rs = st.executeQuery(get_lock_SQL)) {
+			return rs.next() && rs.getInt(1) == 1;
+		} catch (Exception e) {
+			logger.warn("GET_LOCK failed -> treat as not acquired", e);
+			return false;
 		}
-		return lock == 1;
 	}
 
 	public boolean relLock() {

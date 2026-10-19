@@ -46,6 +46,8 @@ public class StreamQueueManager {
 	
 	public static final String STR_OUTBOUND_HTTP = "stream:outbound:http:tasks";
 	public static final String STR_CORE_RESULTS = "stream:core:results";
+	public static final String STR_DLQ_SUBMIT = "stream:dlq:submit";
+	public static final String STR_DLQ_REPORT = "stream:dlq:report";
 
 	// 全局活跃门铃 ZSet 键名
 	public static final String ZSET_MT_PENDING_ACTIVE = "zset:mt:pending:active";
@@ -139,14 +141,37 @@ public class StreamQueueManager {
 		int targetSsid = msg.getOSsID();
 		int shardId = calculateMqmShardId(msg, targetSsid);
 		String key = STR_MQM_SUBMIT_PREFIX + targetSsid + ":" + shardId;
-		return produce(key, msg, true);
+		return produce(key, msg, true, mqmFenceFields());
 	}
 
 	public boolean produceMqmReportMessage(GmmsMessage msg) {
 		int targetSsid = msg.getOSsID() > 0 ? msg.getOSsID() : msg.getRSsID();
 		int shardId = calculateMqmShardId(msg, targetSsid);
 		String key = STR_MQM_REPORT_PREFIX + targetSsid + ":" + shardId;
-		return produce(key, msg, false);
+		return produce(key, msg, false, mqmFenceFields());
+	}
+
+	/** C-9: 解析 stream 条目的 fence 字段；缺失/非法返回 -1(消费方按"缺失=接受"容忍)。 */
+	private static long parseStreamFence(String s) {
+		if (s == null || s.length() == 0) {
+			return -1L;
+		}
+		try {
+			return Long.parseLong(s.trim());
+		} catch (Exception e) {
+			return -1L;
+		}
+	}
+
+	/** C-9: 给 MQM 补偿消息盖上当前任期纪元(fence)；无有效任期则不盖(消费方按"缺失=接受"容忍)。 */
+	private Map<String, String> mqmFenceFields() {
+		long f = com.king.gmms.mqm.MqmActiveState.getFence();
+		if (f < 0L) {
+			return null;
+		}
+		Map<String, String> m = new HashMap<>(2);
+		m.put("fence", String.valueOf(f));
+		return m;
 	}
 
 	private int calculateMqmShardId(GmmsMessage msg, int targetSsid) {
@@ -216,6 +241,11 @@ public class StreamQueueManager {
 	 * 底层统一生产方法
 	 */
 	private boolean produce(String key, GmmsMessage msg, boolean isSubmitMq) {
+		return produce(key, msg, isSubmitMq, null);
+	}
+
+	/** 带附加 stream 字段的生产(如 C-9 fencing 的 fence 字段)；extraFields 可为 null。 */
+	private boolean produce(String key, GmmsMessage msg, boolean isSubmitMq, Map<String, String> extraFields) {
 		try {
 			if (isBlank(key)) {
 				logStreamTrace("STREAM-PUT", key, null, null, null, msg, isSubmitMq,
@@ -231,27 +261,39 @@ public class StreamQueueManager {
 			}
 			Map<String, String> body = new HashMap<>();
 			body.put("body", SerializableHandler.convertGmmsMessage2RedisMessage(msg));
-			
-			String msgId = isSubmitMq 
-				? redisClient.xaddToSubmitMq(key, body, getStreamMaxLen(), isApproximateTrimming())
-				: redisClient.xaddToReportMq(key, body, getStreamMaxLen(), isApproximateTrimming());
-				
+			if (extraFields != null && !extraFields.isEmpty()) {
+				body.putAll(extraFields); // C-9: 附加 fence 等 stream 字段
+			}
+
+			String zsetKey = getDoorbellZSet(key);
+			String msgId;
+			if (zsetKey != null) {
+				// 阶段1: XADD+ZADD(doorbell) 合并为单段 Lua 原子写 —— 降一次 RTT，
+				// 且根本不会产生"已写流未响铃"的孤儿(强化 C-4，无需写后回滚)。
+				java.util.List<String> fv = new java.util.ArrayList<String>(body.size() * 2);
+				for (Map.Entry<String, String> e : body.entrySet()) {
+					fv.add(e.getKey());
+					fv.add(e.getValue());
+				}
+				msgId = isSubmitMq
+					? redisClient.xaddWithDoorbellSubmitMq(key, zsetKey, System.currentTimeMillis(), getStreamMaxLen(), isApproximateTrimming(), fv)
+					: redisClient.xaddWithDoorbellReportMq(key, zsetKey, System.currentTimeMillis(), getStreamMaxLen(), isApproximateTrimming(), fv);
+			} else {
+				// 无对应 doorbell zset 的流(理论上不到此)：退回普通 XADD。
+				msgId = isSubmitMq
+					? redisClient.xaddToSubmitMq(key, body, getStreamMaxLen(), isApproximateTrimming())
+					: redisClient.xaddToReportMq(key, body, getStreamMaxLen(), isApproximateTrimming());
+			}
+
 			if (msgId != null) {
 				msg.setRedisStreamID(msgId);
-				String zsetKey = getDoorbellZSet(key);
-				Long doorbellResult = zsetKey == null ? null : zaddDoorbell(zsetKey, key, isSubmitMq);
-				if (zsetKey == null || doorbellResult == null || doorbellResult.longValue() < 0L) {
-					logStreamTrace("STREAM-PUT", key, null, null, msgId, msg, isSubmitMq,
-							"zset=" + zsetKey + " doorbell=" + doorbellResult + " result=fail reason=doorbell_failed");
-					incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_FAIL);
-					return false;
-				}
 				incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_OK);
 				logStreamTrace("STREAM-PUT", key, null, null, msgId, msg, isSubmitMq,
-						"zset=" + zsetKey + " doorbell=" + doorbellResult + " result=ok");
+						"zset=" + zsetKey + " result=ok");
 			} else {
+				// Lua 原子写：失败即未写流也未响铃，无孤儿、无需回滚。
 				logStreamTrace("STREAM-PUT", key, null, null, null, msg, isSubmitMq,
-						"result=fail reason=xadd_returned_null");
+						"zset=" + zsetKey + " result=fail reason=atomic_write_failed");
 				incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_FAIL);
 			}
 			return msgId != null;
@@ -439,6 +481,15 @@ public class StreamQueueManager {
 				if (!moduleMatched) {
 					return false;
 				}
+				if (parts.length >= 6) {
+					try {
+						int shardId = Integer.parseInt(parts[5]);
+						return GmmsUtility.getInstance().getMyShards().contains(shardId);
+					} catch (Exception e) {
+						logger.warn("Failed to parse DR shardId from streamKey: " + streamKey);
+						return false;
+					}
+				}
 				return true;
 			}
 		}
@@ -530,17 +581,18 @@ public class StreamQueueManager {
 		String rid = redisStreamId;
 		if (!isBlank(rid)) {
 			StreamEntryID id = new StreamEntryID(rid);
+			// 原子 XACK+XDEL：确认成功后在同一 Lua 中立即删除消息体，
+			// 避免两步之间崩溃导致 PEL 已确认但消息体残留，或与 auto-claim 竞争重复处理。
 			Long acked;
 			if (isSubmitMq) {
-				acked = redisClient.xackSubmitMq(key, groupName, id);
+				acked = redisClient.xackDelSubmitMq(key, groupName, id);
 			} else {
-				acked = redisClient.xackReportMq(key, groupName, id);
+				acked = redisClient.xackDelReportMq(key, groupName, id);
 			}
 			if (acked != null && acked.longValue() > 0) {
-				Long deleted = isSubmitMq ? redisClient.xdelSubmitMq(key, id) : redisClient.xdelReportMq(key, id);
 				incrementStreamCounter(MetricsNames.FLOW_IN, key, msg, MetricsNames.ACTION_ACK);
 				logStreamTrace("STREAM-ACK", key, groupName, null, rid, msg, isSubmitMq,
-						"acked=" + acked + " deleted=" + deleted + " result=ok");
+						"acked=" + acked + " deleted=" + acked + " result=ok");
 			} else {
 				incrementStreamCounter(MetricsNames.FLOW_IN, key, msg, MetricsNames.ACTION_ACK_FAIL);
 				logStreamTrace("STREAM-ACK", key, groupName, null, rid, msg, isSubmitMq,
@@ -574,18 +626,82 @@ public class StreamQueueManager {
 				GmmsMessage msg = SerializableHandler.convertRedisMssage2GmmsMessage(body);
 				if (msg != null) {
 					msg.setRedisStreamID(se.getID().toString());
+					msg.setRedisFence(parseStreamFence(se.getFields().get("fence"))); // C-9
 					msg.setRedisStreamMessageType(msg.getMessageType());
 					messages.add(msg);
 					incrementStreamCounter(MetricsNames.FLOW_IN, entry.getKey(), msg, MetricsNames.ACTION_READ);
 					logStreamTrace("STREAM-GET", entry.getKey(), groupName, consumerName,
 							se.getID().toString(), msg, isSubmitMq, "result=ok");
 				} else {
-					logStreamTraceWithoutMessage("STREAM-GET", entry.getKey(), groupName, consumerName,
-							se.getID().toString(), isSubmitMq, "result=fail reason=deserialize_failed body=" + body);
+					deadLetterDeserializeFailure("STREAM-GET", entry.getKey(), groupName, consumerName,
+							se.getID().toString(), se.getFields(), isSubmitMq, null);
 				}
 			}
 		}
 		return messages;
+	}
+
+	private void deadLetterDeserializeFailure(String event, String sourceStreamKey, String groupName,
+			String consumerName, String redisId, Map<String, String> fields, boolean isSubmitMq, String detail) {
+		String body = fields == null ? null : fields.get("body");
+		String dlqKey = isSubmitMq ? STR_DLQ_SUBMIT : STR_DLQ_REPORT;
+		Map<String, String> dlq = new HashMap<String, String>();
+		dlq.put("reason", "deserialize_failed");
+		dlq.put("event", safeText(event));
+		dlq.put("sourceStream", safeText(sourceStreamKey));
+		dlq.put("sourceGroup", safeText(groupName));
+		dlq.put("sourceConsumer", safeText(consumerName));
+		dlq.put("sourceRedisId", safeText(redisId));
+		dlq.put("body", safeText(body));
+		dlq.put("createdAt", String.valueOf(System.currentTimeMillis()));
+		if (fields != null) {
+			copyIfPresent(dlq, fields, "fence");
+			copyIfPresent(dlq, fields, "type");
+		}
+		if (!isBlank(detail)) {
+			dlq.put("detail", detail);
+		}
+
+		try {
+			String dlqId = isSubmitMq
+					? redisClient.xaddToSubmitMq(dlqKey, dlq, getStreamMaxLen(), isApproximateTrimming())
+					: redisClient.xaddToReportMq(dlqKey, dlq, getStreamMaxLen(), isApproximateTrimming());
+			if (isBlank(dlqId)) {
+				logStreamTraceWithoutMessage(event, sourceStreamKey, groupName, consumerName, redisId, isSubmitMq,
+						deadLetterLogDetail(detail, "result=fail reason=deserialize_failed dlq_write=null bodyLength="
+								+ bodyLength(body)));
+				return;
+			}
+			boolean acked = ackById(sourceStreamKey, groupName, redisId, null, isSubmitMq);
+			logStreamTraceWithoutMessage(event, sourceStreamKey, groupName, consumerName, redisId, isSubmitMq,
+					deadLetterLogDetail(detail, "result=dead_lettered reason=deserialize_failed dlq="
+							+ dlqKey + " dlqId=" + dlqId + " acked=" + acked + " bodyLength=" + bodyLength(body)));
+		} catch (Exception e) {
+			logger.error("Failed to dead-letter deserialize failure. event={}, stream={}, group={}, consumer={}, redisId={}, dlq={}, isSubmitMq={}",
+					event, sourceStreamKey, groupName, consumerName, redisId, dlqKey, isSubmitMq, e);
+			logStreamTraceWithoutMessage(event, sourceStreamKey, groupName, consumerName, redisId, isSubmitMq,
+					deadLetterLogDetail(detail, "result=fail reason=deserialize_failed dlq_write=exception bodyLength="
+							+ bodyLength(body)));
+		}
+	}
+
+	private void copyIfPresent(Map<String, String> target, Map<String, String> source, String key) {
+		String value = source.get(key);
+		if (value != null) {
+			target.put(key, value);
+		}
+	}
+
+	private String deadLetterLogDetail(String prefix, String suffix) {
+		return isBlank(prefix) ? suffix : prefix + " " + suffix;
+	}
+
+	private String safeText(String value) {
+		return value == null ? "" : value;
+	}
+
+	private int bodyLength(String body) {
+		return body == null ? 0 : body.length();
 	}
 
 	public void logNack(String streamKey, String groupName, String consumerName, GmmsMessage msg,
@@ -1069,6 +1185,11 @@ public class StreamQueueManager {
 				
 			if (streams != null) {
 				for (String streamKey : streams) {
+					// H-8: PEL 接管也必须遵守分片责任，只接管本节点负责 shard 内其他(死亡)消费者的 pending，
+					// 否则越权拉取非属主分片消息会破坏 SAR 多段/CSM 的分片有序性。与 scanBacklogPattern 一致。
+					if (!isResponsibleForStream(streamKey)) {
+						continue;
+					}
 					List<GmmsMessage> claimed = autoClaimBatch(streamKey, groupName, consumerName,
 							getAutoClaimIdleMs(), getAutoClaimBatchSize(), isSubmitMq);
 					if (claimed != null && !claimed.isEmpty()) {
@@ -1101,15 +1222,15 @@ public class StreamQueueManager {
 			GmmsMessage msg = SerializableHandler.convertRedisMssage2GmmsMessage(body);
 			if (msg != null) {
 				msg.setRedisStreamID(se.getID().toString());
+				msg.setRedisFence(parseStreamFence(se.getFields().get("fence"))); // C-9
 				msg.setRedisStreamMessageType(msg.getMessageType());
 				messages.add(msg);
 				logStreamTrace("STREAM-CLAIM", streamKey, groupName, consumerName,
 						se.getID().toString(), msg, isSubmitMq,
 						"minIdleMs=" + minIdleMs + " result=claimed");
 			} else {
-				logStreamTraceWithoutMessage("STREAM-CLAIM", streamKey, groupName, consumerName,
-						se.getID().toString(), isSubmitMq,
-						"minIdleMs=" + minIdleMs + " result=fail reason=deserialize_failed body=" + body);
+				deadLetterDeserializeFailure("STREAM-CLAIM", streamKey, groupName, consumerName,
+						se.getID().toString(), se.getFields(), isSubmitMq, "minIdleMs=" + minIdleMs);
 			}
 		}
 		return messages;

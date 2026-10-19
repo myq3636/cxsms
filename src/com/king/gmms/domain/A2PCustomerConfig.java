@@ -270,10 +270,9 @@ public class A2PCustomerConfig implements Comparable{
 	public static ArrayList<A2PCustomerConfig> parse(File file, String charset)
 			throws CustomerConfigurationException {
 		ArrayList<A2PCustomerConfig> blockList = new ArrayList<A2PCustomerConfig>();
-		try {
-			FileInputStream fin = new FileInputStream(file);
-			BufferedReader reader = new BufferedReader(new InputStreamReader(
-					fin, charset));
+		// M-20: try-with-resources 关闭流(原 try 体内开流不关 → 每次 reload 漏 FD)。
+		try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+				new FileInputStream(file), charset))) {
 			A2PCustomerConfig oneBlock = null;
 			String line = null;
 			int lineNum = 0;

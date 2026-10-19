@@ -25,6 +25,9 @@ public class SerializableHandler {
 	private static byte[] HEX_DECODE_TABLE = new byte[255];
 	private final static String separator = "`";
 	private final static String repl_sep = "@,<";
+	// 性能: ThreadLocal 复用 SimpleDateFormat(非线程安全)，消除每条消息 new 的 pattern 解析/Calendar 构建开销。
+	private final static ThreadLocal<SimpleDateFormat> DF =
+			ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd HH:mm:ss"));
 	
 	static {
 		HEX_DECODE_TABLE['0'] = 0;
@@ -129,7 +132,7 @@ public class SerializableHandler {
 		  public static GmmsMessage convertRedisMssage2GmmsMessage(String message){
 		    	GmmsMessage msg = null;
 		    	
-		    	SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+		    	SimpleDateFormat dateFormat = DF.get();
 		    	
 		    	if(message!=null){
 		    		try {
@@ -417,7 +420,7 @@ public class SerializableHandler {
 		  public static GmmsMessage convertRedisMssage2GmmsMessageForCorePrioritry(String message){
 		    	GmmsMessage msg = null;
 		    	
-		    	SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+		    	SimpleDateFormat dateFormat = DF.get();
 		    	
 		    	if(message!=null){
 		    		try {
@@ -700,9 +703,9 @@ public class SerializableHandler {
 		    }
 		  
 		  public static String convertGmmsMessage2RedisMessage(GmmsMessage msg) {
-				StringBuilder sb = new StringBuilder(10240);
+				StringBuilder sb = new StringBuilder(1024); // 性能: 典型记录远<1KB，自动扩容；避免每条预分配 10KB
 				
-				SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+				SimpleDateFormat dateFormat = DF.get();
 				
 				try {
 					sb.append(msg.getInTransID()).append(separator);
@@ -894,9 +897,9 @@ public class SerializableHandler {
 			}
 		  
 		  public static String convertGmmsMessage2RedisMessageForCorePriority(GmmsMessage msg) {
-				StringBuilder sb = new StringBuilder(10240);
+				StringBuilder sb = new StringBuilder(1024); // 性能: 典型记录远<1KB，自动扩容；避免每条预分配 10KB
 				
-				SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+				SimpleDateFormat dateFormat = DF.get();
 				
 				try {
 					sb.append(msg.getInTransID()).append(separator);

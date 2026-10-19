@@ -202,7 +202,7 @@ public class Convert {
 								if(value ==-1){
 									// mapping extended characters
 									if(temp==27){
-										int c = newContent[i+1];
+										int c = (i + 1 < newContent.length) ? newContent[i+1] : -1; // M-22: 悬挂转义防越界
 										switch(c){
 										case 10: value=12; break;
 										case 20: value=94; break;

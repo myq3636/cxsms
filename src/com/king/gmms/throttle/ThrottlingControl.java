@@ -82,7 +82,8 @@ public class ThrottlingControl {
 	public boolean isAllowedToReceive(int ssid) {
 		try {
 			A2PCustomerInfo server = custManager.getCustomerBySSID(ssid);
-			int throttlingNum = server.getConfigedIncomingThrottlingNum();
+			// 收侧 0=不限(与发侧/核心处理一致)：用原始配置值判定，不再回退 DefaultCustIncomingThreshold。
+			int throttlingNum = server.getIncomingThrottlingNum();
 			if (throttlingNum <= 0) {
 				return true;
 			}
@@ -91,10 +92,8 @@ public class ThrottlingControl {
 			String limitKey = "throttle:in:" + ssid + ":" + currentSecond;
 			Long currentCount = 1L;
 			if (gmmsUtility.getRedisClient() != null && gmmsUtility.getRedisClient().getStateRedis() != null) {
-				currentCount = gmmsUtility.getRedisClient().getStateRedis().incrString(limitKey);
-				if (currentCount != null && currentCount == 1L) {
-					gmmsUtility.getRedisClient().getStateRedis().setExpired(limitKey, 2);
-				}
+				// H-6: 原子 INCR+EXPIRE，避免计数 key 丢失 TTL 导致该 ssid:秒 桶永久限流。
+				currentCount = gmmsUtility.getRedisClient().getStateRedis().incrWithExpire(limitKey, 2);
 			}
 
 			// not pass throttling control
@@ -165,10 +164,8 @@ public class ThrottlingControl {
 			String limitKey = "throttle:out:" + ssid + ":" + currentSecond;
 			Long currentCount = 1L;
 			if (gmmsUtility.getRedisClient() != null && gmmsUtility.getRedisClient().getStateRedis() != null) {
-				currentCount = gmmsUtility.getRedisClient().getStateRedis().incrString(limitKey);
-				if (currentCount != null && currentCount == 1L) {
-					gmmsUtility.getRedisClient().getStateRedis().setExpired(limitKey, 2);
-				}
+				// H-6: 原子 INCR+EXPIRE，避免计数 key 丢失 TTL 导致该 ssid:秒 桶永久限流。
+				currentCount = gmmsUtility.getRedisClient().getStateRedis().incrWithExpire(limitKey, 2);
 			}
 
 			// not pass throttling control, process alert mail
@@ -193,10 +190,8 @@ public class ThrottlingControl {
 			String limitKey = "throttle:core:" + ssid + ":" + currentSecond;
 			Long currentCount = 1L;
 			if (gmmsUtility.getRedisClient() != null && gmmsUtility.getRedisClient().getStateRedis() != null) {
-				currentCount = gmmsUtility.getRedisClient().getStateRedis().incrString(limitKey);
-				if (currentCount != null && currentCount == 1L) {
-					gmmsUtility.getRedisClient().getStateRedis().setExpired(limitKey, 2);
-				}
+				// H-6: 原子 INCR+EXPIRE，避免计数 key 丢失 TTL 导致该 ssid:秒 桶永久限流。
+				currentCount = gmmsUtility.getRedisClient().getStateRedis().incrWithExpire(limitKey, 2);
 			}
 
 			// not pass throttling control, process alert mail
