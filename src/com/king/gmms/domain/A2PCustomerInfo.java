@@ -38,6 +38,8 @@ public abstract class A2PCustomerInfo {
 	private static SystemLogger log = SystemLogger
 			.getSystemLogger(A2PCustomerInfo.class);
 	protected int ssid = -1;
+	// retry policy parsed from cm.cfg, put into RetryPolicyManager when the customer is published
+	protected RetryPolicyInfo retryPolicyInfo = null;
 
 	/**
 	 * for A2P P2P peering
@@ -1118,6 +1120,10 @@ public abstract class A2PCustomerInfo {
 		return shortName;
 	}
 
+	public RetryPolicyInfo getRetryPolicyInfo() {
+		return retryPolicyInfo;
+	}
+
 	public int getReconnectInterval() {
 		return reconnectInterval;
 	}
@@ -2041,13 +2047,9 @@ public abstract class A2PCustomerInfo {
 
 		/** -------------- Start to load retry policy configure items ------------------**/
 		RetryPolicyManager policyManager = RetryPolicyManager.getInstance();
-    	RetryPolicyInfo policyInfo = null;
-    	Map<Integer, RetryPolicyInfo> map = policyManager.getSsid_policy_map();
-    	if(map.containsKey(ssid)){
-    		policyInfo = map.get(ssid);
-    	}else{
-    		policyInfo = new RetryPolicyInfo();
-    	}
+		// always a new object: A2PCustomerManager publishes it to RetryPolicyManager together with
+		// this customer, the policy in use is never modified while the new config is parsed
+		RetryPolicyInfo policyInfo = new RetryPolicyInfo();
 		A2PCustomerMultiValue serviceTypeIDPolicy = cfg.parseMultiValue("SMSOptionServiceTypeIDRetryPolicy");
         if(serviceTypeIDPolicy != null){
             for(Group g : serviceTypeIDPolicy.getAllGroups()){
@@ -2223,7 +2225,7 @@ public abstract class A2PCustomerInfo {
         	 policyInfo.setMoPolicyList(moList);        	 
         }
         
-        map.put(ssid, policyInfo);
+        this.retryPolicyInfo = policyInfo;
         
 		/** -------------- end of loading retry policy items ------------------**/
 

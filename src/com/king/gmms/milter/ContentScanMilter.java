@@ -31,12 +31,10 @@ import com.king.message.gmms.*;
  */
 public class ContentScanMilter extends LocalMilter {
 	private A2PCustomerManager gcm = super.gmmsUtility.getCustomerManager();
-	private Map<Integer, ArrayList<ContentScan>> contentScanInfo;
 	private static ContentScanMilter m_instance = null;
 
 	private ContentScanMilter() {
 		log = SystemLogger.getSystemLogger(LocalMilter.class.getName());
-		contentScanInfo = gcm.getContentScanInfo();
 	}
 
 	public synchronized static ContentScanMilter getInstance() {
@@ -60,6 +58,8 @@ public class ContentScanMilter extends LocalMilter {
 	public GmmsMessage processGMMS(GmmsMessage msg) {
 		try {
 			int ossid = msg.getOSsID();
+			// read on every message: a cm.cfg reload publishes a new map
+			Map<Integer, ArrayList<ContentScan>> contentScanInfo = gcm.getContentScanInfo();
 			if (ossid <= 0 || contentScanInfo == null
 					|| !contentScanInfo.containsKey(ossid))
 				return msg;
@@ -330,11 +330,7 @@ public class ContentScanMilter extends LocalMilter {
 	}
 
 	public Map getContentScanInfo() {
-		return contentScanInfo;
-	}
-
-	public void setContentScanInfo(ConcurrentHashMap contentScanInfo) {
-		this.contentScanInfo = contentScanInfo;
+		return gcm.getContentScanInfo();
 	}
 
 }

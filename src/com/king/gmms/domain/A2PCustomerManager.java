@@ -22,6 +22,14 @@ import java.util.Map.Entry;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -109,36 +117,29 @@ public class A2PCustomerManager implements LifecycleListener {
 			.getSystemLogger(A2PCustomerManager.class);
 
 	private String confFile = null;
-	private String confFileVersion = null; // cm.cfg file version
 	private String recipientRuleFileVersion = null; // recipientRule.cfg file version
-	private Map<String, A2PCustomerConfig> confBlockMap = new ConcurrentHashMap<String, A2PCustomerConfig>();
-	private Map<String, A2PCustomerConfig> confBlockMap4New = new ConcurrentHashMap<String, A2PCustomerConfig>();
 	private Map<String, A2PCustomerConfig> confBlockMap2Reload = new ConcurrentHashMap<String, A2PCustomerConfig>();
 	private Map<String, A2PCustomerConfig> confBlockMap2Remove = new ConcurrentHashMap<String, A2PCustomerConfig>();
 	private Map<String, A2PCustomerConfig> routingInfoMap = new ConcurrentHashMap<String, A2PCustomerConfig>();
 	private Map<String, A2PCustomerConfig> phonePrefixMap = new ConcurrentHashMap<String, A2PCustomerConfig>();
 	private Map<String, A2PCustomerConfig> vendorTemplatePrefixMap = new ConcurrentHashMap<String, A2PCustomerConfig>();
-	
-	// The short names stored here is standard.
-	private Map<String, Integer> shortName_ssid_map = new ConcurrentHashMap<String, Integer>();
-	private Map<String, Integer> check_shortName_ssid_map = new ConcurrentHashMap<String, Integer>();
-	private Map<String, Integer> shortName_custId_map = new ConcurrentHashMap<String, Integer>();
-	private Map<Integer, Integer> custId_ssid_map = new ConcurrentHashMap<Integer, Integer>();
 
-	// Customers which chlInit=true and serverID!=null
-	private ArrayList<A2PCustomerInfo> initServers = new ArrayList<A2PCustomerInfo>();
-	/**
-	 * cached customer iosmsSsid and ssid_map, Key: iosmsSsid
-	 */
-	private Map<Integer, Integer> iosmsSsid_ssid_map = new ConcurrentHashMap<Integer, Integer>();
-	// cached customer objects, Key: SSID
-	private Map<Integer, A2PCustomerInfo> ssid_cust_map = new ConcurrentHashMap<Integer, A2PCustomerInfo>();
-	// cached customer objects, key: SP ID
-	private Map<String, A2PCustomerInfo> spid_cust_map = new ConcurrentHashMap<String, A2PCustomerInfo>();
-	// cached customer objects, key: Server ID
-	private Map<String, A2PCustomerInfo> serverid_cust_map = new ConcurrentHashMap<String, A2PCustomerInfo>();
-	// Cache all the info of sms connectrelay between A2P and CP or DC,
-	private Map<Integer, Integer> smsConnectRelayinfo = new ConcurrentHashMap<Integer, Integer>();
+	// all customer indexes built from cm.cfg, published as a whole by the reload thread
+	private final AtomicReference<CustomerSnapshot> customers = new AtomicReference<CustomerSnapshot>(
+			new CustomerSnapshot().freeze());
+	// customer objects a connection factory replaced for its own module (SingleNodeCustomerInfo),
+	// kept apart from the snapshot so they never leak into a reload
+	private final Map<Integer, A2PCustomerInfo> connectionCustomers = new ConcurrentHashMap<Integer, A2PCustomerInfo>();
+	// all cm.cfg / routing reloads run on this thread, it is the only writer of the snapshot
+	private final ExecutorService reloadExecutor = Executors.newSingleThreadExecutor(new ThreadFactory() {
+		public Thread newThread(Runnable r) {
+			Thread t = new Thread(A2PThreadGroup.getInstance(), r, "CustomerReload");
+			t.setDaemon(true);
+			return t;
+		}
+	});
+	// a customer reload is queued and not started yet: further reload events are merged into it
+	private final AtomicBoolean customerReloadPending = new AtomicBoolean(false);
 	// Cache all the info of mms connectrelay between A2P and CP or DC,
 	private Map<Integer, Integer> smsIPConnectRelayinfo = new ConcurrentHashMap<Integer, Integer>();
 	// Cache all the info of sms connectrelay between A2P and CP or DC,
@@ -147,26 +148,13 @@ public class A2PCustomerManager implements LifecycleListener {
 	private Map<Integer, Integer> vpConnectRelayinfo = new ConcurrentHashMap<Integer, Integer>();
 
 	private Map<String, Boolean> policyInfo = new ConcurrentHashMap<String, Boolean>();
-	private Set<Integer> oWhitelistInfo = new HashSet<Integer>(); // Cache
+	private Set<Integer> oWhitelistInfo = Collections.newSetFromMap(new ConcurrentHashMap<Integer, Boolean>()); // Cache
 	// whitelist
-	private Set<Integer> rWhitelistInfo = new HashSet<Integer>(); // Cache
+	private Set<Integer> rWhitelistInfo = Collections.newSetFromMap(new ConcurrentHashMap<Integer, Boolean>()); // Cache
 	// whitelist
-
-	private Set<Integer> a2pInfo = new HashSet<Integer>(); // Cache all A2Ps
-	private Set<Integer> channelInfo = new HashSet<Integer>();
-	private Map<Integer, Integer> hubInfo = new ConcurrentHashMap<Integer, Integer>();
-	// Cache all operates
-	private Map<Integer, Integer> operatorInfo = new ConcurrentHashMap<Integer, Integer>();
-	// Cache all virtual operates
-	private Set<Integer> virtualOperatorInfo = new HashSet<Integer>();
-	// Cache all shortcodes
-	private Set<String> shortcodeInfo = new HashSet<String>();
-	private Map<String, Integer> shortcode_ssid_map = new ConcurrentHashMap<String, Integer>();
 
 	private Map<String, Integer> charsetRelay = new ConcurrentHashMap<String, Integer>();
 
-	// Key: SSID(IO-MMS),Value:List<phonePrefix Pattern>
-	private Map<Integer, List<Pattern>> ssidToPhonePrefix = new ConcurrentHashMap<Integer, List<Pattern>>();
 	//senderAddress replacement <ssid,<ossid_rssid,<prefix,<senderAddress, replaceTo>>>>
 	private Map<Integer, Map<String,Map<String,Map<String, String>>>> senderReplacementPrefix = new ConcurrentHashMap<Integer, Map<String,Map<String,Map<String, String>>>>();
 	private Map<Integer, List<Pattern>> senderReplacementPrefixRegex = new ConcurrentHashMap<Integer, List<Pattern>>();
@@ -175,30 +163,6 @@ public class A2PCustomerManager implements LifecycleListener {
 	private Map<Integer, Map<String,Map<String,Map<String, String>>>> templateReplacementPrefix = new ConcurrentHashMap<Integer, Map<String,Map<String,Map<String, String>>>>();
 	private Map<Integer, List<Pattern>> templateReplacementPrefixRegex = new ConcurrentHashMap<Integer, List<Pattern>>();
 	
-	// Cache the service type based on ssid.
-	private Map<Integer, String> ssid_serviceType = Collections
-			.synchronizedMap(new HashMap<Integer, String>());
-
-	// key: MNC&MCC, value: ssid
-	private Map<String, Integer> smsMncMcc = new ConcurrentHashMap<String, Integer>();
-	// private Map<String, Integer> mmsMncMcc = new HashMap<String, Integer> ();
-	// key:ssid, value: MNC&MCC
-	private Hashtable<Integer, String[]> ssidOfMncMcc = new Hashtable<Integer, String[]>();
-
-	private Set<Integer> oOpSupportSplitMsg = new HashSet<Integer>();
-	private Set<Integer> chlSupportSplitMsg = new HashSet<Integer>();
-	private Set<Integer> rOpSplitSuffix = new HashSet<Integer>();
-	private Map<Integer, String> rOpSupportLength = new ConcurrentHashMap<Integer, String>();
-	private Map<Integer, String> rOpSupportAsciiLength = new ConcurrentHashMap<Integer, String>();
-
-	private int currentA2P = 0;
-	private int peeringTcpVersion = 0;
-	private Set<Integer> currentA2Ps = new HashSet<Integer>();
-	private Set<Integer> rSsidsNotSupportDR = new HashSet<Integer>();
-
-	// cache the rop of VFKK with 2G or 3G
-	// Key (Integer) 2/3 (means 2G/3G) ,Value : (Interger) operator id
-	private Map<String, Integer> vfkkInfo = new ConcurrentHashMap<String, Integer>();
 	// cache (OOP,ROP),Rssid
 	private Map<String, Integer> routingRelayInfo = new ConcurrentHashMap<String, Integer>();
 	//<ossid,<prefix, rssid>
@@ -270,7 +234,6 @@ public class A2PCustomerManager implements LifecycleListener {
 	private Map<String, Integer> serviceTypeIDRelayInfo = new ConcurrentHashMap<String, Integer>();
 
 	// cache (ssid, DR mode)
-	private Map<Integer, Integer> deliveryreportMode = new ConcurrentHashMap<Integer, Integer>();
 	//<ssid,cc>
 	private Map<String, List<Pattern>> ssidPrefixListPatternForSenderBlackList = new ConcurrentHashMap<String, List<Pattern>>();
 	//<ssid, number>
@@ -367,15 +330,8 @@ public class A2PCustomerManager implements LifecycleListener {
 
 	private static final String CONF_SEPERATOR = "_";
 
-	private Map<String, List<String>> opRequiredCharsets = new ConcurrentHashMap<String, List<String>>();
-	private Map<Integer, String[]> customerLocalDNSPrefix = new ConcurrentHashMap<Integer, String[]>();
-	private Map<Integer, ArrayList<ContentScan>> contentScanInfo = new ConcurrentHashMap<Integer, ArrayList<ContentScan>>();
-	private ArrayList noticeInfo = new ArrayList();
 
-	private Set<Integer> rSsidNotSupportUDH = new HashSet<Integer>();
-	private Set<Integer> rSsidSupport7Bit = new HashSet<Integer>();
 
-	private Set<Integer> isSupportExpiredDR = new HashSet<Integer>();
 
 	private Map<String, String> connectionNodeMap = Collections
 			.synchronizedMap(new HashMap<String, String>());
@@ -386,13 +342,6 @@ public class A2PCustomerManager implements LifecycleListener {
 	private final Object serverInfoMapLock = new Object();
 	private String a2pIP = null;
 
-	private Set<Integer> partitionInfo = new HashSet<Integer>();
-
-	private Map<String, ArrayList<Integer>> protocol_ssid_map = new Hashtable<String, ArrayList<Integer>>();
-	// used by queryDR for commonHttp
-	private ArrayList<Integer> queryMsg_ssid_list = new ArrayList<Integer>();
-	private ArrayList<Integer> corePriority_ssid_list = new ArrayList<Integer>();
-
 	private Set<Integer> ssidsInStoreMode = Collections
 			.synchronizedSet(new HashSet<Integer>());
 	private Set<Integer> ssidsInRopBusyMode = Collections
@@ -400,7 +349,7 @@ public class A2PCustomerManager implements LifecycleListener {
 	private Set<Integer> ssidsInRopFailedMode = Collections
 			.synchronizedSet(new HashSet<Integer>());
 
-	private Set<Integer> ssidsInDRStoreMode = new HashSet<Integer>();
+	private Set<Integer> ssidsInDRStoreMode = Collections.newSetFromMap(new ConcurrentHashMap<Integer, Boolean>());
 	private LifecycleSupport lifecycle;
 
 	/**
@@ -409,12 +358,6 @@ public class A2PCustomerManager implements LifecycleListener {
 	 * */
 	protected Map<Integer, List<Integer>> allowRoutingInfoMap = new ConcurrentHashMap<Integer, List<Integer>>();
 
-	/**
-	 * allowRecLengthMap is used to store recipient length Key:Customer SSID
-	 * Value:List<Recipient length]>
-	 * */
-	protected Map<Integer, List<Integer>> recipientLengthMap = new ConcurrentHashMap<Integer, List<Integer>>();
-	
 	protected Map<String, RecipientAddressRule> recipientRuleMap = new ConcurrentHashMap<String, RecipientAddressRule>();
 	
 	private List<Pattern>  recipientRuleRegexs = new ArrayList<Pattern>();
@@ -442,16 +385,51 @@ public class A2PCustomerManager implements LifecycleListener {
 		lifecycle.addListener(Event.TYPE_CONTENT_BLACKLIST_RELOAD, this, 1);
 	}
 
-	public int OnEvent(Event event) {
+	/**
+	 * Every reload runs on reloadExecutor, one at a time. Each event arrives on its
+	 * own Notify Thread, which only hands the work over.
+	 */
+	public int OnEvent(final Event event) {
 		log.info("Event Received. Type: {}", event.getEventType());
+		if (event.getEventType() == Event.TYPE_CUSTOMER_RELOAD) {
+			// customer reload is notified asynchronously, nobody waits for its result
+			if (customerReloadPending.compareAndSet(false, true)) {
+				reloadExecutor.execute(new Runnable() {
+					public void run() {
+						// cleared before reloading: an event arriving meanwhile queues one more reload
+						customerReloadPending.set(false);
+						try {
+							loadCustomers();
+						} catch (Throwable t) {
+							log.error("customer reload failed", t);
+						}
+					}
+				});
+			} else {
+				log.info("customer reload already queued, event merged");
+			}
+			return 0;
+		}
+		Future<Integer> result = reloadExecutor.submit(new Callable<Integer>() {
+			public Integer call() {
+				return handleEvent(event);
+			}
+		});
+		try {
+			return result.get();
+		} catch (Exception e) {
+			log.error("reload failed, event type: " + event.getEventType(), e);
+			return 1;
+		}
+	}
+
+	private int handleEvent(Event event) {
 		if (event.getEventType() == Event.TYPE_ROUTINFO_RELOAD) {
 			String action = getRoutingReloadAction(event);
 			if (action == null) {
 				return 1;
 			}
 			return loadRoutingInfo(action);
-		} else if (event.getEventType() == Event.TYPE_CUSTOMER_RELOAD) {
-			return loadCustomers();
 		}else if (event.getEventType() == Event.TYPE_PHONEPREFIX_RELOAD) {
 			return loadPhonePrefix();
 		}else if (event.getEventType() == Event.TYPE_RECEIPIENT_RULE_RELOAD) {
@@ -2578,9 +2556,6 @@ public class A2PCustomerManager implements LifecycleListener {
 				return;
 			}
 
-			// get cm.cfg information
-			initConfBlocks();
-
 			// get routingInfo from cfg
 			initRoutingInfoBlocks();
 
@@ -2597,9 +2572,6 @@ public class A2PCustomerManager implements LifecycleListener {
 
 			contentTpl = initContentTemplate();
 
-			// Will use currentA2P and vpConnectRelayinfo
-			initCurrentA2Ps();
-			
 			//load senderWhitelist.cfg
 			loadSsidSenderWhitelist(true);
 			loadSsidSenderBlacklist(true);
@@ -2618,28 +2590,6 @@ public class A2PCustomerManager implements LifecycleListener {
 					"OPModeConfigMonitor").start();
 		} catch (CustomerConfigurationException ce) {
 			log.error("Failed to initCustomerConfigure!{}", ce.getMessage());
-		}
-	}
-
-	private void initConfBlocks() throws CustomerConfigurationException {
-		File conf = new File(confFile);
-		confBlockMap = A2PCustomerConfig.parse(conf);
-		confFileVersion = getFileCheckSum(conf);
-		initConfBlockMaps();
-
-	}	
-
-	private void initConfBlockMaps() throws CustomerConfigurationException {
-		for (A2PCustomerConfig block : confBlockMap.values()) {
-			try {
-				int ssid = block.getMandatoryInt("CCBSSID");
-				block.setSsid(ssid);
-				this.shortName_ssid_map.put(block.getShortNameWithoutService(),ssid);
-				this.check_shortName_ssid_map.put(block.getShortNameWithoutService(), ssid);
-			} catch (Exception e) {// modified by Jianming in v1.0.1
-				log.error("Exception ignored:" + e.getMessage(), e);
-				continue;
-			}
 		}
 	}
 
@@ -2722,28 +2672,52 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 
 	/**
-	 * reload customers
-	 * 
+	 * reload customers: build a new snapshot from cm.cfg and publish it in one step.
+	 * Runs on reloadExecutor only.
+	 *
 	 * @return
 	 */
 	private int loadCustomers() {
-		try {
-			boolean success = compareConfBlocks();
-			if (!success) {
-				return 1;
-			}
-			if (!confBlockMap2Remove.isEmpty()
-					|| !confBlockMap2Reload.isEmpty()) {
-				this.reloadCustomerInfo();
-			}
-		} catch (Exception e) {
-			log.error("loadCustomers error:", e);
+		File conf = new File(confFile);
+		String md5Sum = this.getFileCheckSum(conf);
+		CustomerSnapshot old = cs();
+		if (md5Sum == null || (md5Sum.equals(old.confFileVersion) && old.complete)) {
+			log.warn("No need to load cm.cfg or md5Sum error. confFileVersion={}, md5Sum={}",
+					new Object[] { old.confFileVersion, md5Sum });
 			return 1;
-		} finally {
-			confBlockMap2Remove.clear();
-			confBlockMap2Reload.clear();
 		}
-		return 0;
+		log.info("ConfBlock change, confFileVersion={}, md5Sum={}", new Object[] { old.confFileVersion, md5Sum });
+		Map<String, A2PCustomerConfig> blocks;
+		try {
+			blocks = A2PCustomerConfig.parse(conf);
+		} catch (Exception e) {
+			// nothing published: every customer keeps its current config
+			log.error("parse cm.cfg failed, keep the current customers", e);
+			return 1;
+		}
+		// A2P will check each customer info is right by traversing
+		// routingInfoMap and phonePrefixMap
+		try {
+			this.initRoutingInfoBlocks();
+		} catch (CustomerConfigurationException e1) {
+			log.error("init RoutinfInfoBlocks error in loadCustomers() function.", e1);
+		}
+		try {
+			this.initPhonePrefixBlocks();
+		} catch (CustomerConfigurationException e1) {
+			log.error("init PhonePrefixInfoBlocks error in loadCustomers() function.", e1);
+		}
+
+		CustomerChanges changes = buildSnapshot(old, blocks, md5Sum);
+		if (!customers.compareAndSet(old, changes.snapshot.freeze())) {
+			// only reloadExecutor publishes, so this means someone bypassed it
+			log.error("customer snapshot changed during reload, discard generation {}", changes.snapshot.generation);
+			return 1;
+		}
+		log.info("customer snapshot {} published, changed customers: {}, failed customers: {}",
+				new Object[] { changes.snapshot.generation, changes.changed.size(), changes.failed });
+		applyCustomerChanges(changes);
+		return changes.failed.isEmpty() ? 0 : 1;
 	}
 
 	/**
@@ -2778,51 +2752,211 @@ public class A2PCustomerManager implements LifecycleListener {
 		}
 	}
 
-	/**
-	 * compareConfBlocks
-	 * 
-	 * @throws CustomerConfigurationException
-	 */
-	private boolean compareConfBlocks() throws CustomerConfigurationException {
-		File conf = new File(confFile);
-		String md5Sum = this.getFileCheckSum(conf);
-		if (md5Sum == null || this.confFileVersion.equals(md5Sum)) {
-			log.warn("No need to load cm.cfg or md5Sum error. confFileVersion={}, md5Sum={}",new Object[] { confFileVersion, md5Sum });
-			return false;
-		} else {
-			if (log.isInfoEnabled()) {
-				log.info("ConfBlock change, confFileVersion={}, md5Sum={}",new Object[] { confFileVersion, md5Sum });
-			}
-			this.confBlockMap4New = A2PCustomerConfig.parse(conf);
-			this.confFileVersion = md5Sum;
+	/** A built snapshot plus the customers that differ from the previous one. */
+	private static final class CustomerChanges {
+		final CustomerSnapshot snapshot;
+		/** {old, new}: old is null for an added customer, new is null for a removed one */
+		final List<A2PCustomerInfo[]> changed = new ArrayList<A2PCustomerInfo[]>();
+		/** shortNames whose new config could not be loaded; they keep the old config */
+		final List<String> failed = new ArrayList<String>();
+
+		CustomerChanges(CustomerSnapshot snapshot) {
+			this.snapshot = snapshot;
 		}
+	}
 
-		check_shortName_ssid_map.clear();
-		for (A2PCustomerConfig newCust : confBlockMap4New.values()) {
-			A2PCustomerConfig oldCust = this.confBlockMap.remove(newCust.getShortName());// remove
-			if (oldCust != null) {
-				if (newCust.compareTo(oldCust) != 0) {// changed
-					confBlockMap2Reload.put(newCust.getShortName(), newCust);
-					confBlockMap2Remove.put(oldCust.getShortName(), oldCust);
-				}
-			} else {// added
-				confBlockMap2Reload.put(newCust.getShortName(), newCust);
-			}
+	/**
+	 * Build a new snapshot from the parsed cm.cfg blocks. Only reads {@code old};
+	 * nothing outside the new snapshot is changed, so a failure here leaves the
+	 * running customers untouched. Customers whose block did not change reuse
+	 * their parsed A2PCustomerInfo.
+	 */
+	private CustomerChanges buildSnapshot(CustomerSnapshot old, Map<String, A2PCustomerConfig> blocks,
+			String version) {
+		CustomerSnapshot b = new CustomerSnapshot();
+		b.generation = old.generation + 1;
+		CustomerChanges changes = new CustomerChanges(b);
 
+		// shortName -> ssid of every customer in the new cm.cfg, used to resolve references between customers
+		for (A2PCustomerConfig block : blocks.values()) {
 			try {
-				int ssid = newCust.getMandatoryInt("CCBSSID");
-				newCust.setSsid(ssid);
-				check_shortName_ssid_map.put(newCust.getShortNameWithoutService(), ssid);
+				int ssid = block.getMandatoryInt("CCBSSID");
+				block.setSsid(ssid);
+				b.shortName_ssid_map.put(block.getShortNameWithoutService(), ssid);
 			} catch (Exception e) {
 				log.error("Exception ignored:" + e.getMessage(), e);
-				continue;
 			}
 		}
-		confBlockMap2Remove.putAll(confBlockMap);// remove others
-		confBlockMap.clear();
-		confBlockMap = confBlockMap4New;
+		// a parsed A2PCustomerInfo does not depend on other customers (assignValue never resolves
+		// shortNames), references between customers are rebuilt below by indexing every customer
+		Set<Integer> usedSsids = new HashSet<Integer>();
+		Set<String> loadedNames = new HashSet<String>();
+		// pass 0 keeps the unchanged customers, pass 1 loads the changed and added ones, so a
+		// changed customer that collides with an unchanged one on CCBSSID is the one that fails
+		for (int pass = 0; pass < 2; pass++) {
+			for (A2PCustomerConfig block : blocks.values()) {
+				String shortName = block.getShortName();
+				A2PCustomerConfig oldBlock = old.confBlockMap.get(shortName);
+				A2PCustomerInfo oldCust = oldBlock == null ? null : old.ssid_cust_map.get(oldBlock.getSSID());
+				boolean unchanged = oldCust != null && block.compareTo(oldBlock) == 0;
+				if (unchanged != (pass == 0)) {
+					continue;
+				}
 
-		return true;
+				A2PCustomerConfig useBlock = block;
+				A2PCustomerInfo cust = null;
+				if (unchanged) {
+					cust = oldCust;
+				} else {
+					try {
+						cust = parseCustomer(block, b.shortName_ssid_map);
+						if (!usedSsids.add(cust.getSSID())) {
+							throw new CustomerConfigurationException("duplicated CCBSSID " + cust.getSSID());
+						}
+					} catch (Exception e) {
+						log.error("load customer failed, shortName={}, keep its current config", shortName, e);
+						changes.failed.add(shortName);
+						if (oldCust == null || !usedSsids.add(oldCust.getSSID())) {
+							continue;
+						}
+						useBlock = oldBlock;
+						cust = oldCust;
+					}
+				}
+				if (cust == oldCust) {
+					usedSsids.add(cust.getSSID());
+				}
+				try {
+					indexCustomer(b, useBlock, cust);
+				} catch (Exception e) {
+					log.error("index customer failed, shortName={}", shortName, e);
+					changes.failed.add(shortName);
+				}
+				b.confBlockMap.put(shortName, useBlock);
+				loadedNames.add(cust.getShortName());
+				if (cust != oldCust) {
+					changes.changed.add(new A2PCustomerInfo[] { oldCust, cust });
+				}
+			}
+		}
+		// names of customers that failed to load must not resolve
+		b.shortName_ssid_map.keySet().retainAll(loadedNames);
+
+		for (Map.Entry<String, A2PCustomerConfig> e : old.confBlockMap.entrySet()) {
+			if (!blocks.containsKey(e.getKey())) {
+				A2PCustomerInfo oldCust = old.ssid_cust_map.get(e.getValue().getSSID());
+				if (oldCust != null) {
+					changes.changed.add(new A2PCustomerInfo[] { oldCust, null });
+				}
+			}
+		}
+
+		// needs currentA2P, which is known once all customers are indexed
+		for (A2PCustomerConfig block : b.confBlockMap.values()) {
+			initConnectedRelayInfo(b, block);
+		}
+		initCurrentA2Ps(b);
+		if (b.currentA2P <= 0) {
+			log.error("Error getting the SSID of Current A2P by serviceIP:{}", a2pIP);
+		}
+		b.confFileVersion = version;
+		b.complete = changes.failed.isEmpty();
+		return changes;
+	}
+
+	/**
+	 * Side effects of a published snapshot, only for the customers that changed:
+	 * connection maps, sessions, retry policy, routing ALLOW, throttling.
+	 */
+	private void applyCustomerChanges(CustomerChanges changes) {
+		StringBuffer cmString = new StringBuffer().append("begin reload cm.cfg on:" + new Date() + "\r\n");
+		Set<String> rmShortName = new HashSet<String>();
+		Set<Integer> ssids = new HashSet<Integer>();
+		Map<Integer, RetryPolicyInfo> retryPolicies = RetryPolicyManager.getInstance().getSsid_policy_map();
+
+		for (A2PCustomerInfo[] pair : changes.changed) {
+			A2PCustomerInfo oldCust = pair[0];
+			A2PCustomerInfo newCust = pair[1];
+			if (oldCust != null) {
+				int oldSsid = oldCust.getSSID();
+				if (newCust == null) {
+					rmShortName.add(oldCust.getShortName());
+				}
+				if (newCust == null || newCust.getSSID() != oldSsid) {
+					retryPolicies.remove(oldSsid);
+				}
+				// each step on its own: one failing must not skip the others or the next customers
+				try {
+					clearConnectionMap(oldCust);
+					int removedServerInfo = clearServerInfoMapBySsid(oldSsid);
+					if (removedServerInfo > 0) {
+						log.info("clearCustomerInfo removed stale serverInfoMap entries. ssid={}, removed={}",
+								oldSsid, removedServerInfo);
+					}
+					breakCustomerSessions(oldCust);
+				} catch (Exception e) {
+					log.error("break customer sessions error, ssid={}", oldSsid, e);
+				}
+				// a factory that failed to clean up must not keep shadowing the new config
+				connectionCustomers.remove(oldSsid);
+				try {
+					ThrottlingControl.getInstance().clearThrottlingControlCache(oldSsid);
+					DuplicateMessageCheck.getInstance().clearCache(oldSsid);
+				} catch (Exception e) {
+					log.error("clear throttling/duplicate cache error, ssid={}", oldSsid, e);
+				}
+				try {
+					clearConnectionManagement(oldSsid);
+				} catch (Exception e) {
+					log.error("clear connection management error, ssid={}", oldSsid, e);
+				}
+			}
+			if (newCust != null) {
+				int ssid = newCust.getSSID();
+				ssids.add(ssid);
+				if (newCust.getRetryPolicyInfo() != null) {
+					retryPolicies.put(ssid, newCust.getRetryPolicyInfo());
+				}
+				try {
+					A2PCustomerConfig routingBlock = routingInfoMap.get(newCust.getShortName());
+					if (routingBlock != null) {
+						initPolicyInfo(routingBlock);
+					}
+				} catch (Exception e) {
+					log.error("init routing ALLOW policy error, ssid={}", ssid, e);
+				}
+				try {
+					// customer reload runs asynchronously, so the rate is updated here once the new config is published
+					DistributedThrottlingManager.getInstance().updateRate(ssid, newCust.getOutgoingThrottlingNum());
+				} catch (Exception e) {
+					log.error("update dynamic throttling rate error, ssid={}", ssid, e);
+				}
+				try {
+					initConnectionMap(newCust);
+					reloadConnectionManagement(ssid);
+					createCustomerSessions(newCust);
+				} catch (Exception e) {
+					log.error("init customer sessions error, ssid={}", ssid, e);
+				}
+			}
+		}
+		if (log.isInfoEnabled()) {
+
+			if (rmShortName.size() == 0) {
+				cmString.append("No customers remove!\r\n");
+			} else {
+				cmString.append("Remove customers shortName list as follows:\r\n");
+			}
+			for (String shortName : rmShortName) {
+				cmString.append(shortName).append("\r\n");
+			}
+			cmString.append("Add or Modify customers list as follows: \r\n");
+			// String fileName =
+			// System.getProperty("a2p_home")+"/conf/"+System.getProperty("module")+"_tempCm.cfg";
+			writerCust2File(cmString.toString(), ssids, GmmsUtility
+					.getInstance().getCmTempFile());
+		}
+		logServerInfoMapSummary("reload");
 	}
 
 	/**
@@ -2912,222 +3046,6 @@ public class A2PCustomerManager implements LifecycleListener {
 		phonePrefixMap.clear();
 		phonePrefixMap = phonePrefixConfBlockMap4New;
 		return true;
-	}
-
-	/**
-	 * init all customer blocks
-	 * 
-	 * @throws CustomerConfigurationException
-	 */
-	private void initCustomerInfo() throws CustomerConfigurationException {
-		initCustomerInfo(this.confBlockMap);
-	}
-
-	/**
-	 * clear old blocks reload new customer blocks
-	 * 
-	 * @param customerBlockMap
-	 * @throws CustomerConfigurationException
-	 */
-	private void reloadCustomerInfo() {
-		StringBuffer cmString = new StringBuffer().append("begin reload cm.cfg on:" + new Date() + "\r\n");
-		Set<String> rmShortName = new HashSet<String>();
-		Set<Integer> ssids = new HashSet<Integer>();
-
-		// A2P will check each customer info is right by traversing
-		// routingInfoMap and phonePrefixMap
-		try {
-			this.initRoutingInfoBlocks();
-		} catch (CustomerConfigurationException e1) {
-			log.error("init RoutinfInfoBlocks error in reloadCustomerInfo() function.",e1.getMessage());
-		}
-		try {
-			this.initPhonePrefixBlocks();
-		} catch (CustomerConfigurationException e1) {
-			log.error("init PhonePrefixInfoBlocks error in reloadCustomerInfo() function.",e1.getMessage());
-		}
-
-		// remove customers:
-		for (A2PCustomerConfig block : this.confBlockMap2Remove.values()) {
-			clearCustomerInfo(block);
-			// clear for ConnectionManagement
-			clearConnectionManagement(block.getSSID());
-			this.smsConnectRelayinfo.remove(block.getSSID());
-			// clear phonePrefix info
-			//clearSsidtoPhonePrefix(block.getSSID());
-			String shortName = block.getShortName();
-			rmShortName.add(shortName);
-			//update customers:
-			if (this.confBlockMap2Reload.containsKey(shortName)) {
-				A2PCustomerConfig newBlock = confBlockMap2Reload.remove(shortName);
-				this.loadCustomerInfo(newBlock);
-				int ssid = newBlock.getSSID();
-				initConnectedRelayInfo(newBlock);
-				ssids.add(block.getSSID());
-				// map.put(block.getSSID(), ssid_cust_map.get(block.getSSID()));
-				// reload for sessions
-				this.reloadConnectionManagement(block.getSSID());
-				this.createCustomerSessions(block);
-				// 客户配置 reload 时同步刷新 Stream 出站限速(方案A 冗余；acquire 也会自对齐)。
-				DistributedThrottlingManager.getInstance().updateRate(ssid, newBlock.getInt("SMSOptionOutgoingThrottlingNum", 10));
-//				RetryPolicyManager.getInstance().updateRetryPolicy(block.getSSID());
-				rmShortName.remove(shortName);
-				if ("partition".equalsIgnoreCase(newBlock.getString("A2PPlayerType"))) {
-					int o_ssid = getVPConnectingRelaySsid(ssid);
-					if (o_ssid >0 && o_ssid == currentA2P){
-						currentA2Ps.add(ssid);
-					}
-				}
-			}
-		}
-		//new added customers:
-		for (A2PCustomerConfig block : this.confBlockMap2Reload.values()) {
-			this.loadCustomerInfo(block);
-			Integer ssid = this.shortName_ssid_map.get(block.getShortNameWithoutService());
-			ssids.add(block.getSSID());
-			initConnectedRelayInfo(block);
-			// reload for sessions
-			this.reloadConnectionManagement(ssid);
-			this.createCustomerSessions(block);
-			if ("partition".equalsIgnoreCase(block.getString("A2PPlayerType"))) {
-				int o_ssid = getVPConnectingRelaySsid(ssid);
-				if (o_ssid >0 && o_ssid == currentA2P){
-					currentA2Ps.add(ssid);
-				}
-			}			
-		}
-		if (log.isInfoEnabled()) {
-
-			if (rmShortName.size() == 0) {
-				cmString.append("No customers remove!\r\n");
-			} else {
-				cmString.append("Remove customers shortName list as follows:\r\n");
-			}
-			for (String shortName : rmShortName) {
-				cmString.append(shortName).append("\r\n");
-			}
-			cmString.append("Add or Modify customers list as follows: \r\n");
-			// String fileName =
-			// System.getProperty("a2p_home")+"/conf/"+System.getProperty("module")+"_tempCm.cfg";
-			writerCust2File(cmString.toString(), ssids, GmmsUtility
-					.getInstance().getCmTempFile());
-		}
-		logServerInfoMapSummary("reload");
-	}
-
-	private void clearCustomerInfo(A2PCustomerConfig block) {
-		A2PCustomerInfo cust = null;
-		String spID = null;
-		String serverID = null;
-		try {
-			Integer ssid = this.shortName_ssid_map.get(block
-					.getShortNameWithoutService());
-			if (ssid == null) {
-				log.warn("clearCustomerInfo with null map for ", block
-						.getShortNameWithoutService());
-				return;
-			}
-			cust = this.ssid_cust_map.get(ssid);
-			// clear ConnectionMap
-			clearConnectionMap(cust);
-			int removedServerInfo = clearServerInfoMapBySsid(cust.getSSID());
-			if (removedServerInfo > 0) {
-				log.info("clearCustomerInfo removed stale serverInfoMap entries. ssid={}, removed={}",
-						cust.getSSID(), removedServerInfo);
-			}
-			// at first to clear customer connection
-			breakCustomerSessions(cust);
-			// clear maps
-			this.shortName_ssid_map.remove(cust.getShortName());
-			this.shortName_custId_map.remove(cust.getShortName());
-			this.ssid_cust_map.remove(cust.getSSID());
-			this.ssid_serviceType.remove(cust.getSSID());
-			
-			// clear retry policy map
-			Map<Integer, RetryPolicyInfo> map = RetryPolicyManager.getInstance().getSsid_policy_map();
-			RetryPolicyInfo rcust = map.remove(cust.getSSID());
-			if(rcust != null){
-				rcust.getSenderPrefixPolicyMap().clear();
-				rcust.getServiceTypeIDPolicyMap().clear();
-				if(rcust.getMoPolicyList() != null) rcust.getMoPolicyList().clear();
-				if(rcust.getMtPolicyList() != null) rcust.getMtPolicyList().clear();
-			}		
-			if (cust.getIosmsSsid() > 0) {
-				iosmsSsid_ssid_map.remove(cust.getIosmsSsid());
-			}
-			if (cust.getCustomerId() > 0) {
-				custId_ssid_map.remove(cust.getCustomerId());
-			}
-
-			// Common init for IO-SMS, GMMS, IO-MMS
-			clearMCCMNCMap(block);
-
-			clearRequiredCharsets(block);
-
-			// Init role map
-			clearRoleMap(cust);
-
-			// clearSsidtoPhonePrefix(block);
-
-			spID = block.getString("SPID");
-			if (spID != null)
-				this.spid_cust_map.remove(spID);
-
-			serverID = block.getString("ServerID");
-			if (serverID != null) {
-				this.serverid_cust_map.remove(serverID);
-				// InitServers: ServerID!=null and ChlInit=true
-				if (block.getBool("ChlInit", false)) {// TODO: for modify
-					this.initServers.remove(cust);
-				}
-			}
-
-			clearShortCodeInfo(block);
-
-			clearSupportSplitMsg(cust, block);
-
-			clearRMap(cust, block);
-
-			clearDCNotSupportDR(block);
-
-			clearVfkkInfo(block);
-
-			clearDRModeInfo(block);
-
-			clearCustomerLocalDNSPrefix(block);
-
-			clearContentScan(block);
-
-			clearNotSupportUDH(block);
-
-			clearSupport7Bit(block);
-
-			clearSupportExpiredDR(block);
-
-			clearCurrentA2P(block);
-			
-			clearCorePrioritySSIDList(block);
-
-			clearProtocolSSIDMap(block);
-
-			clearQueryMsgSSIDList(block);
-
-			clearNoticeInfo(cust);
-			// clear ThrottlingControl at last
-			ThrottlingControl.getInstance().clearThrottlingControlCache(
-					cust.getSSID());
-
-			DuplicateMessageCheck.getInstance().clearCache(cust.getSSID());
-
-			// clear Recipient number length info
-			this.clearRecipientLengthInfo(cust.getSSID());
-
-		} catch (Exception e) {// added by Jianming in v1.0.1
-			if (log.isInfoEnabled()) {
-				log.info("clear CustomerInfo error,ignored!", e);
-			}
-
-		}
 	}
 
 	/**
@@ -3230,24 +3148,13 @@ public class A2PCustomerManager implements LifecycleListener {
 	/**
 	 * createCustomerSessions
 	 * 
-	 * @param block
+	 * @param custInfo customer of the published snapshot
 	 */
-	private void createCustomerSessions(A2PCustomerConfig block) {
+	private void createCustomerSessions(A2PCustomerInfo custInfo) {
 		String module = System.getProperty("module");
 		String moduleType = ModuleManager.getInstance().getFullModuleType(
 				module);
-		Integer ssid = shortName_ssid_map.get(block
-				.getShortNameWithoutService());
-		if (ssid == null) {
-			log.warn("Failed to get shortname {} for {}", block
-					.getShortNameWithoutService(), ssid);
-			return;
-		}
-		A2PCustomerInfo custInfo = ssid_cust_map.get(ssid);
-		if (custInfo == null) {
-			log.warn("Failed to get custInfo for {}", ssid);
-			return;
-		}
+		int ssid = custInfo.getSSID();
 		if ("SMPP".equalsIgnoreCase(custInfo.getProtocol())) {
 			if (SystemConstants.MULTISMPPCLIENT_MODULE_TYPE
 					.equalsIgnoreCase(moduleType)) {
@@ -3338,21 +3245,27 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 
 	/**
-	 * init Customer Info
-	 * 
-	 * @param customerBlockMap
+	 * init all customer blocks: build and publish the first snapshot
+	 *
 	 * @throws CustomerConfigurationException
 	 */
-	private void initCustomerInfo(
-			Map<String, A2PCustomerConfig> customerBlockMap) {
-		for (A2PCustomerConfig block : customerBlockMap.values()) {
-			initCustomerInfo(block, false);
+	private void initCustomerInfo() throws CustomerConfigurationException {
+		File conf = new File(confFile);
+		Map<String, A2PCustomerConfig> blocks = A2PCustomerConfig.parse(conf);
+		CustomerChanges changes = buildSnapshot(cs(), blocks, getFileCheckSum(conf));
+		customers.set(changes.snapshot.freeze());
+		if (!changes.failed.isEmpty()) {
+			log.error("customers not loaded at startup: {}", changes.failed);
+		}
+
+		Map<Integer, RetryPolicyInfo> retryPolicies = RetryPolicyManager.getInstance().getSsid_policy_map();
+		for (A2PCustomerInfo cust : cs().ssid_cust_map.values()) {
+			initConnectionMap(cust);
+			if (cust.getRetryPolicyInfo() != null) {
+				retryPolicies.put(cust.getSSID(), cust.getRetryPolicyInfo());
+			}
 		}
 		logServerInfoMapSummary("startup");
-		
-		for (A2PCustomerConfig block : customerBlockMap.values()) {
-			initConnectedRelayInfo(block);
-		}
 
 		for (A2PCustomerConfig block : phonePrefixMap.values()) {
 			initSenderReplacementPrefix(block);
@@ -3393,166 +3306,98 @@ public class A2PCustomerManager implements LifecycleListener {
 			}
 		}		
 
-		if (currentA2P <= 0) {
-			log.error("Error getting the SSID of Current A2P by serviceIP:{}",
-					a2pIP);
-		}
-	}
-
-	private void loadCustomerInfo(A2PCustomerConfig config) {
-		initCustomerInfo(config, true);
-
-		/*A2PCustomerConfig phonePrefixBlock = phonePrefixMap.get(config
-				.getShortName());
-		if (phonePrefixBlock != null) {
-			try {
-				initSsidtoPhonePrefix(phonePrefixBlock);
-			} catch (Exception e) {
-				log.info("Init phonePrefix info error when reload cm.cfg, ssid={} {} Ignored {}",
-								phonePrefixBlock.getSSID(), phonePrefixBlock
-										.getShortName(), e);
-			}
-		}*/
-
-		A2PCustomerConfig block = routingInfoMap.get(config.getShortName());
-		if (block != null) {
-			try {
-				initPolicyInfo(block);
-			} catch (Exception e) {
-				log.info("Init PolicyInfo error when reload cm.cfg, ssid={} {} Ignored {}",
-								block.getSSID(), block.getShortName(), e);
-			}
-		}
-		if (currentA2P <= 0) {
-			log.error("Error getting the SSID of Current A2P by serviceIP:{}",
-					a2pIP);
-		}
 	}
 
 	/**
-	 * initCustomerInfo by block
-	 * 
-	 * @param block
+	 * Parse one cm.cfg block into a customer object. Writes nothing outside the
+	 * returned object, so it can run before the snapshot is published.
 	 */
-	private void initCustomerInfo(A2PCustomerConfig block, boolean isReload) {
-		A2PCustomerInfo cust = null;
-		try {
-			int ssid = block.getMandatoryInt("CCBSSID");
-			block.setSsid(ssid);
-			String connectionType = block.getString("ConnectionType");
-			if ("MN".equalsIgnoreCase(connectionType)) {
-				cust = new MultiNodeCustomerInfo();
-				cust.assignValue(block, shortName_ssid_map);
-				initConnectionMap(cust);
-			} else if ("MC".equalsIgnoreCase(connectionType)) {
-				cust = new SingleNodeCustomerInfo();
-				cust.assignValue(block, shortName_ssid_map);
-				initConnectionMap(cust);
-			} else {
-				cust = new A2PSingleConnectionInfo();
-				cust.assignValue(block, shortName_ssid_map);
-			}
-
-			if (isReload) {
-				this.shortName_ssid_map.put(cust.getShortName(), cust.getSSID());
-			}
-
-			this.shortName_custId_map.put(cust.getShortName(), cust.getCustomerId());
-
-			this.ssid_cust_map.put(cust.getSSID(), cust);
-
-			this.ssid_serviceType.put(cust.getSSID(), cust.getService());
-
-			if (cust.getIosmsSsid() > 0) {
-				iosmsSsid_ssid_map.put(cust.getIosmsSsid(), cust.getSSID());
-			}
-			if (cust.getCustomerId() > 0) {
-				custId_ssid_map.put(cust.getCustomerId(), cust.getSSID());
-			}
-
-			// Common init for IO-SMS, GMMS, IO-MMS
-			initMCCMNCMap(block);
-
-			initRequiredCharsets(block);
-
-			// Init role map
-			initRoleMap(cust);
-
-			// initSsidtoPhonePrefix(block);
-
-			String spID = block.getString("SPID");
-			if (spID != null)
-				this.spid_cust_map.put(spID, cust);
-
-			String serverID = block.getString("ServerID");
-			if (serverID != null) {
-				this.serverid_cust_map.put(serverID, cust);
-				// InitServers: ServerID!=null and ChlInit=true
-				if (block.getBool("ChlInit", false))
-					this.initServers.add(cust);
-			}
-
-			initShortCodeInfo(block);
-
-			initSupportSplitMsg(cust, block);
-
-			initRMap(cust, block);
-
-			initDCNotSupportDR(block);
-
-			initVfkkInfo(block);
-
-			initDRModeInfo(block);
-
-			initCustomerLocalDNSPrefix(block);
-
-			initContentScan(block);
-
-			initNotSupportUDH(block);
-
-			initSupport7Bit(block);
-
-			initSupportExpiredDR(block);
-
-			initCurrentA2P(block);
-			
-			initCorePrioritySSIDList(block);
-
-			initProtocolSSIDMap(block);
-
-			initQueryMsgSSIDList(block);
-
-			initNoticeInfo(cust);
-
-			initRecipientLen(recipientLengthMap,ssid);
-			initSsidtoPhonePrefix(block);			
-
-		} catch (Exception e) {// added by Jianming in v1.0.1
-			if (log.isInfoEnabled()) {
-				log.info("initCustomerInfo error,ignored!", e);
-			}
-
+	private A2PCustomerInfo parseCustomer(A2PCustomerConfig block, Map<String, Integer> shortNameSsidMap)
+			throws CustomerConfigurationException {
+		int ssid = block.getMandatoryInt("CCBSSID");
+		block.setSsid(ssid);
+		String connectionType = block.getString("ConnectionType");
+		A2PCustomerInfo cust;
+		if ("MN".equalsIgnoreCase(connectionType)) {
+			cust = new MultiNodeCustomerInfo();
+		} else if ("MC".equalsIgnoreCase(connectionType)) {
+			cust = new SingleNodeCustomerInfo();
+		} else {
+			cust = new A2PSingleConnectionInfo();
 		}
+		cust.assignValue(block, shortNameSsidMap);
+		return cust;
 	}
 
-	public void initNoticeInfo(A2PCustomerInfo cust) {
+	/**
+	 * Add one customer to the indexes of a snapshot that is being built.
+	 */
+	private void indexCustomer(CustomerSnapshot b, A2PCustomerConfig block, A2PCustomerInfo cust) {
+		int ssid = cust.getSSID();
+		b.shortName_ssid_map.put(cust.getShortName(), ssid);
+		b.shortName_custId_map.put(cust.getShortName(), cust.getCustomerId());
+		b.ssid_cust_map.put(ssid, cust);
+		b.ssid_serviceType.put(ssid, cust.getService());
+		if (cust.getIosmsSsid() > 0) {
+			b.iosmsSsid_ssid_map.put(cust.getIosmsSsid(), ssid);
+		}
+		if (cust.getCustomerId() > 0) {
+			b.custId_ssid_map.put(cust.getCustomerId(), ssid);
+		}
+
+		// Common init for IO-SMS, GMMS, IO-MMS
+		initMCCMNCMap(b, block);
+
+		initRequiredCharsets(b, block);
+
+		// Init role map
+		initRoleMap(b, cust);
+
+		String spID = block.getString("SPID");
+		if (spID != null)
+			b.spid_cust_map.put(spID, cust);
+
+		String serverID = block.getString("ServerID");
+		if (serverID != null) {
+			b.serverid_cust_map.put(serverID, cust);
+			// InitServers: ServerID!=null and ChlInit=true
+			if (block.getBool("ChlInit", false))
+				b.initServers.add(cust);
+		}
+
+		initShortCodeInfo(b, block);
+		initSupportSplitMsg(b, cust, block);
+		initRMap(b, cust, block);
+		initDCNotSupportDR(b, block);
+		initVfkkInfo(b, block);
+		initDRModeInfo(b, block);
+		initCustomerLocalDNSPrefix(b, block);
+		initContentScan(b, block);
+		initNotSupportUDH(b, block);
+		initSupport7Bit(b, block);
+		initSupportExpiredDR(b, block);
+		initCurrentA2P(b, block);
+		initCorePrioritySSIDList(b, block);
+		initProtocolSSIDMap(b, block);
+		initQueryMsgSSIDList(b, block);
+		initNoticeInfo(b, cust);
+		initRecipientLen(b, ssid);
+		initSsidtoPhonePrefix(b, block);
+	}
+
+	/** shortName -> ssid inside a snapshot that is being built */
+	private int ssidByShortName(CustomerSnapshot b, String customerNameshort) {
+		Integer ssid = customerNameshort == null ? null : b.shortName_ssid_map.get(customerNameshort);
+		return ssid == null ? -1 : ssid.intValue();
+	}
+
+	private void initNoticeInfo(CustomerSnapshot b, A2PCustomerInfo cust) {
 
 		String shortName = cust.getShortName();
 		ArrayList<String> prefixes = cust.getNoticePrefix();
 		if (prefixes != null) {
 			for (int i = 0; i < prefixes.size(); i++) {
-				noticeInfo.add(shortName + "." + prefixes.get(i).trim());
-			}
-		}
-	}
-
-	public void clearNoticeInfo(A2PCustomerInfo cust) {
-
-		String shortName = cust.getShortName();
-		ArrayList<String> prefixes = cust.getNoticePrefix();
-		if (prefixes != null) {
-			for (int i = 0; i < prefixes.size(); i++) {
-				noticeInfo.remove(shortName + "." + prefixes.get(i).trim());
+				b.noticeInfo.add(shortName + "." + prefixes.get(i).trim());
 			}
 		}
 	}
@@ -3601,8 +3446,8 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 
 	public boolean allowSplit(GmmsMessage msg) {
-		return chlSupportSplitMsg.contains(msg.getRSsID())
-				&& oOpSupportSplitMsg.contains(msg.getOoperator());
+		return cs().chlSupportSplitMsg.contains(msg.getRSsID())
+				&& cs().oOpSupportSplitMsg.contains(msg.getOoperator());
 	}
 
 	/**
@@ -3611,9 +3456,9 @@ public class A2PCustomerManager implements LifecycleListener {
 	 */
 	private int getRopSupportAsciiLength(int ssid) {
 		int length = 0;
-		if (this.rOpSupportAsciiLength.containsKey(ssid)) {
+		if (cs().rOpSupportAsciiLength.containsKey(ssid)) {
 			try {
-				length = Integer.parseInt(rOpSupportAsciiLength.get(ssid));
+				length = Integer.parseInt(cs().rOpSupportAsciiLength.get(ssid));
 			} catch (Exception ex) {
 				log.warn(ex, ex);
 			}
@@ -3671,9 +3516,9 @@ public class A2PCustomerManager implements LifecycleListener {
 			}
 		}
 
-		if (rOpSupportLength.containsKey(ssid)) {
+		if (cs().rOpSupportLength.containsKey(ssid)) {
 			try {
-				int messageSupportedLength = Integer.parseInt(rOpSupportLength
+				int messageSupportedLength = Integer.parseInt(cs().rOpSupportLength
 						.get(ssid));
 				if (messageSupportedLength >= MSG_SPLIT_LENGTH_MIN) {
 					return messageSupportedLength;
@@ -3688,89 +3533,53 @@ public class A2PCustomerManager implements LifecycleListener {
 
 	public boolean supportSplitSuffix(GmmsMessage msg) {
 		int rop = msg.getRSsID();
-		if (rOpSplitSuffix.contains(new Integer(rop))) {
+		if (cs().rOpSplitSuffix.contains(new Integer(rop))) {
 			return true;
 		} else {
 			rop = msg.getRoperator();
-			return rOpSplitSuffix.contains(new Integer(rop));
+			return cs().rOpSplitSuffix.contains(new Integer(rop));
 		}
 	}
 
-	private void initProtocolSSIDMap(A2PCustomerConfig cfg) {
+	private void initProtocolSSIDMap(CustomerSnapshot b, A2PCustomerConfig cfg) {
 		String protocol = cfg.getString("Protocol");
 		if (protocol == null)
 			return;
 
-		if (this.protocol_ssid_map.get(protocol.trim().toLowerCase()) != null) {
-			ArrayList<Integer> ssids = this.protocol_ssid_map.get(protocol
-					.trim().toLowerCase());
+		String key = protocol.trim().toLowerCase();
+		List<Integer> ssids = b.protocol_ssid_map.get(key);
+		if (ssids == null) {
+			ssids = new ArrayList<Integer>();
+			b.protocol_ssid_map.put(key, ssids);
+		}
+		if (!ssids.contains(cfg.getSSID())) {
 			ssids.add(cfg.getSSID());
-		} else {
-			ArrayList<Integer> ssids = new ArrayList<Integer>();
-			ssids.add(cfg.getSSID());
-			this.protocol_ssid_map.put(protocol.trim().toLowerCase(), ssids);
 		}
 	}
 
-	private void clearProtocolSSIDMap(A2PCustomerConfig cfg) {
-		String protocol = cfg.getString("Protocol");
-		if (protocol == null)
-			return;
-
-		if (this.protocol_ssid_map.get(protocol.trim().toLowerCase()) != null) {
-			ArrayList<Integer> ssids = this.protocol_ssid_map.get(protocol
-					.trim().toLowerCase());
-			int index = ssids.indexOf(cfg.getSSID());
-			if (index >= 0) {
-				ssids.remove(index);
-			}
-		}
-	}
-
-	private void initQueryMsgSSIDList(A2PCustomerConfig cfg) {
+	private void initQueryMsgSSIDList(CustomerSnapshot b, A2PCustomerConfig cfg) {
 		String queryMsgFlag = cfg.getString(
 				"SMSOptinIsSupportHttpQueryMessage", "");
 		if ("".equalsIgnoreCase(queryMsgFlag))
 			return;
-		if (this.queryMsg_ssid_list == null) {
-			queryMsg_ssid_list = new ArrayList<Integer>();
+		if (!b.queryMsg_ssid_list.contains(cfg.getSSID())) {
+			b.queryMsg_ssid_list.add(cfg.getSSID());
 		}
-		queryMsg_ssid_list.add(cfg.getSSID());
 	}
 
-	private void clearQueryMsgSSIDList(A2PCustomerConfig cfg) {
-		String queryMsgFlag = cfg.getString(
-				"SMSOptinIsSupportHttpQueryMessage", "");
-		if ("".equalsIgnoreCase(queryMsgFlag))
-			return;
-		if (this.queryMsg_ssid_list != null && !queryMsg_ssid_list.isEmpty()) {
-			queryMsg_ssid_list.remove(Integer.valueOf(cfg.getSSID()));
-		}
-	}
 	
-	private void initCorePrioritySSIDList(A2PCustomerConfig cfg) {
+	private void initCorePrioritySSIDList(CustomerSnapshot b, A2PCustomerConfig cfg) {
 		String queryMsgFlag = cfg.getString(
 				"SMSOptionCoreProcessorThrottlingNum", "");
 		if ("".equalsIgnoreCase(queryMsgFlag))
 			return;
-		if (this.corePriority_ssid_list == null) {
-			corePriority_ssid_list = new ArrayList<Integer>();
+		if (!b.corePriority_ssid_list.contains(cfg.getSSID())) {
+			b.corePriority_ssid_list.add(cfg.getSSID());
 		}
-		corePriority_ssid_list.add(cfg.getSSID());
-		log.info("core priority ssid is: {}", corePriority_ssid_list);
+		log.info("add core priority ssid: {}", cfg.getSSID());
 	}
 	
-	private void clearCorePrioritySSIDList(A2PCustomerConfig cfg) {
-		String corePriorityFlag = cfg.getString(
-				"SMSOptionCoreProcessorThrottlingNum", "");
-		if ("".equalsIgnoreCase(corePriorityFlag))
-			return;
-		if (this.corePriority_ssid_list != null && !corePriority_ssid_list.isEmpty()) {
-			corePriority_ssid_list.remove(Integer.valueOf(cfg.getSSID()));
-		}
-	}
-
-	private void initSsidtoPhonePrefix(A2PCustomerConfig cfg) {
+	private void initSsidtoPhonePrefix(CustomerSnapshot b, A2PCustomerConfig cfg) {
 		List<Pattern> list = new ArrayList<Pattern>();
 
 		int ssid = cfg.getSSID();
@@ -3782,7 +3591,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			prefixes = cfg.parseMultiValue("PhonePrefix");
 			this.constructPhonePrefixPattern(prefixes, list, ssid);
 		}
-		ssidToPhonePrefix.put(ssid, list);
+		b.ssidToPhonePrefix.put(ssid, list);
 	}
 	
 	private void initSenderReplacementPrefix(A2PCustomerConfig cfg) {
@@ -3986,10 +3795,6 @@ public class A2PCustomerManager implements LifecycleListener {
 		}
 	}
 
-	private void clearRecipientLengthInfo(int ssid) {
-		recipientLengthMap.remove(ssid);
-	}
-
 	// private void clearAllowRoutingInfo(int ssid){
 	// allowRoutingInfoMap.remove(ssid);
 	// for(List<Integer> list:allowRoutingInfoMap.values()){
@@ -4063,7 +3868,7 @@ public class A2PCustomerManager implements LifecycleListener {
     }
 
 	private void clearSsidtoPhonePrefix(int ssid) {
-		//ssidToPhonePrefix.remove(ssid);
+		//cs().ssidToPhonePrefix.remove(ssid);
 		senderReplacementPrefix.remove(ssid);
 		senderReplacementPrefixRegex.remove(ssid);
 	}
@@ -4074,7 +3879,7 @@ public class A2PCustomerManager implements LifecycleListener {
 		int recLength = rec.length();
 		try {
 			// get Allow Customer SSID
-			List<Pattern> listPrefix = ssidToPhonePrefix.get(ossid);
+			List<Pattern> listPrefix = cs().ssidToPhonePrefix.get(ossid);
 			if (listPrefix != null && listPrefix.size()>0) {
 				for (Pattern pattern : listPrefix) {
 					if (pattern != null) {
@@ -4092,7 +3897,7 @@ public class A2PCustomerManager implements LifecycleListener {
 
 			if (checkPhonePrefix) {
 				// check length
-				List<Integer> list = recipientLengthMap.get(ossid);
+				List<Integer> list = cs().recipientLengthMap.get(ossid);
 				if (list != null) {
 					if (list.contains(recLength)) {
 						checkLength = true;
@@ -4133,7 +3938,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			List<Integer> allowList = this.allowRoutingInfoMap.get(ossid);
 			for (int rssid : allowList) {
 				// check phonePrefix
-				List<Pattern> listPrefix = ssidToPhonePrefix.get(rssid);
+				List<Pattern> listPrefix = cs().ssidToPhonePrefix.get(rssid);
 				if (listPrefix != null) {
 					for (Pattern pattern : listPrefix) {
 						if (pattern != null) {
@@ -4149,7 +3954,7 @@ public class A2PCustomerManager implements LifecycleListener {
 
 				if (checkPhonePrefix) {
 					// check length
-					List<Integer> list = recipientLengthMap.get(rssid);
+					List<Integer> list = cs().recipientLengthMap.get(rssid);
 					if (list != null) {
 						if (list.contains(recLength)) {
 							checkLength = true;
@@ -4314,8 +4119,8 @@ public class A2PCustomerManager implements LifecycleListener {
 
 	public int getVFKKssid(String nameshort) {
 		try {
-			if (vfkkInfo.containsKey(nameshort)) {
-				return vfkkInfo.get(nameshort);
+			if (cs().vfkkInfo.containsKey(nameshort)) {
+				return cs().vfkkInfo.get(nameshort);
 			} else {
 				return 0;
 			}
@@ -4377,43 +4182,16 @@ public class A2PCustomerManager implements LifecycleListener {
 	/**
 	 * 1. A2PPlayerType=Partition => vpConnectRelayinfo, else: 2. The value ends
 	 * with "(IP)" => smsIPConnectRelayInfo, else 3. The value ends with "(SS7)"
-	 * => smsSS7ConnectRelayInfo, else 4. ==> smsConnectRelayinfo
+	 * => smsSS7ConnectRelayInfo, else 4. ==> b.smsConnectRelayinfo
 	 * 
 	 * @param cfg
 	 *            A2PCustomerConfig
 	 */
-	private void initConnectedRelayInfo(A2PCustomerConfig cfg) {
+	private void initConnectedRelayInfo(CustomerSnapshot b, A2PCustomerConfig cfg) {
 		if (!"A2P".equalsIgnoreCase(cfg.getString("A2PPlayerType"))) {
-			this.smsConnectRelayinfo.put(cfg.getSSID(), currentA2P);
+			b.smsConnectRelayinfo.put(cfg.getSSID(), b.currentA2P);
 		}
 		
-	}
-
-	private void clearMCCMNCMap(A2PCustomerConfig cfg) {
-		String values = cfg.getString("MCCMNC");
-		int ssid = cfg.getSSID();
-		if (values != null) {
-			String[] mccmncs = values.split(",");
-			String mccmnc = null;
-			Map<String, Integer> map = null;
-			map = smsMncMcc;
-
-			for (int i = 0; i < mccmncs.length; i++) {
-				mccmnc = mccmncs[i];
-				if (mccmnc == null || mccmnc.trim().length() != 6) {
-					if (log.isInfoEnabled()) {
-						log.info("Error mccmnc configure: {} for {}", mccmnc,
-								cfg.getShortName());
-					}
-
-					continue;
-				}
-				String mcc = mccmnc.trim().substring(0, 3);
-				String mnc = mccmnc.trim().substring(3);
-				map.remove(mnc + "_" + mcc);
-				ssidOfMncMcc.remove(ssid);
-			}
-		}
 	}
 
 	/**
@@ -4423,7 +4201,7 @@ public class A2PCustomerManager implements LifecycleListener {
 	 *            A2PCustomerConfig
 	 */
 
-	private void initMCCMNCMap(A2PCustomerConfig cfg) {
+	private void initMCCMNCMap(CustomerSnapshot b, A2PCustomerConfig cfg) {
 		String values = cfg.getString("MCCMNC");
 		String service = cfg.getString("Service");
 		int ssid = cfg.getSSID();
@@ -4436,11 +4214,11 @@ public class A2PCustomerManager implements LifecycleListener {
 			Map<String, Integer> map = null;
 			// if ("IO-SMS".equalsIgnoreCase(service) ||
 			// "GMMS".equalsIgnoreCase(service))
-			// map = this.smsMncMcc;
+			// map = b.smsMncMcc;
 			// else
 			// map = this.mmsMncMcc;
 
-			map = smsMncMcc;
+			map = b.smsMncMcc;
 
 			for (int i = 0; i < mccmncs.length; i++) {
 				mccmnc = mccmncs[i];
@@ -4456,8 +4234,8 @@ public class A2PCustomerManager implements LifecycleListener {
 				String mcc = mccmnc.trim().substring(0, 3);
 				String mnc = mccmnc.trim().substring(3);
 
-				if (ssidOfMncMcc.containsKey(ssid)) { // ssid already in hashmap
-					temp = ssidOfMncMcc.get(ssid);
+				if (b.ssidOfMncMcc.containsKey(ssid)) { // ssid already in hashmap
+					temp = b.ssidOfMncMcc.get(ssid);
 					if (!mcc.equalsIgnoreCase(temp[1])) {
 						log.warn("Two different MCC values for SSID {}", ssid);
 						continue;
@@ -4466,7 +4244,7 @@ public class A2PCustomerManager implements LifecycleListener {
 
 				map.put(mnc + "_" + mcc, ssid);
 
-				ssidOfMncMcc.put(ssid, new String[] { mnc, mcc });
+				b.ssidOfMncMcc.put(ssid, new String[] { mnc, mcc });
 			}
 		}
 
@@ -4480,7 +4258,7 @@ public class A2PCustomerManager implements LifecycleListener {
 	private void initPolicyInfo(A2PCustomerConfig cfg) {
 		A2PCustomerMultiValue allows = cfg.parseMultiValue("ALLOW");
 		if (allows != null) {
-			A2PCustomerInfo info = ssid_cust_map.get(cfg.getSSID());
+			A2PCustomerInfo info = cs().ssid_cust_map.get(cfg.getSSID());
 			if (info == null) {
 				log.warn("can not get customer info by ssid:{}", cfg.getSSID());
 				return;
@@ -4500,8 +4278,8 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 
 	@SuppressWarnings("unchecked")
-	private void initRecipientLen(Map<Integer, List<Integer>> map, int recSsid) {
-		A2PCustomerInfo recinfo = ssid_cust_map.get(recSsid);
+	private void initRecipientLen(CustomerSnapshot b, int recSsid) {
+		A2PCustomerInfo recinfo = b.ssid_cust_map.get(recSsid);
 		if (recinfo == null) {
 			return;
 		}
@@ -4509,17 +4287,17 @@ public class A2PCustomerManager implements LifecycleListener {
 				.getRecUserPhoneLens() : recinfo.getRecNumberLens());
 
 		if (lens == null || lens.isEmpty()) {
-			if (!map.containsKey(recSsid)) {
+			if (!b.recipientLengthMap.containsKey(recSsid)) {
 				List<Integer> list = new ArrayList<Integer>();
 				for (int i = 6; i <= 15; i++) {
 					list.add(i);
 				}
-				map.put(recSsid, list);
+				b.recipientLengthMap.put(recSsid, list);
 			} else {
-				List<Integer> list = map.get(recSsid);
+				List<Integer> list = b.recipientLengthMap.get(recSsid);
 				if (list == null) {
 					list = new ArrayList<Integer>();
-					map.put(recSsid, list);
+					b.recipientLengthMap.put(recSsid, list);
 				}
 				for (int i = 6; i <= 15; i++) {
 					if (!list.contains(i)) {
@@ -4529,10 +4307,10 @@ public class A2PCustomerManager implements LifecycleListener {
 			}
 		} else {
 			List<Integer> newLens = new ArrayList<Integer>(lens);
-			List<Integer> oldLens = map.get(recSsid);
+			List<Integer> oldLens = b.recipientLengthMap.get(recSsid);
 
 			if (oldLens == null) {
-				map.put(recSsid, newLens);
+				b.recipientLengthMap.put(recSsid, newLens);
 			} else {
 				for (Integer len : newLens) {
 					if (!oldLens.contains(len)) {
@@ -4553,10 +4331,10 @@ public class A2PCustomerManager implements LifecycleListener {
 	 * @return boolean
 	 */
 	public boolean vpOnSameA2P(int c_A2P, int r_A2P) {
-		return (partitionInfo.contains(r_A2P) && c_A2P == getVPConnectingRelaySsid(r_A2P))
-				|| (partitionInfo.contains(c_A2P) && r_A2P == getVPConnectingRelaySsid(c_A2P))
-				|| (partitionInfo.contains(c_A2P)
-						&& partitionInfo.contains(r_A2P) && getVPConnectingRelaySsid(r_A2P) == getVPConnectingRelaySsid(c_A2P));
+		return (cs().partitionInfo.contains(r_A2P) && c_A2P == getVPConnectingRelaySsid(r_A2P))
+				|| (cs().partitionInfo.contains(c_A2P) && r_A2P == getVPConnectingRelaySsid(c_A2P))
+				|| (cs().partitionInfo.contains(c_A2P)
+						&& cs().partitionInfo.contains(r_A2P) && getVPConnectingRelaySsid(r_A2P) == getVPConnectingRelaySsid(c_A2P));
 	}
 
 	private String getShortNameByValue(String value) {
@@ -4572,7 +4350,7 @@ public class A2PCustomerManager implements LifecycleListener {
 
 	private void loadPolicyInfo(A2PCustomerConfig cfg,
 			Map<String, Boolean> policy, Map<Integer, List<Integer>> allowMap) throws Exception {
-		A2PCustomerInfo info = ssid_cust_map.get(cfg.getSSID());
+		A2PCustomerInfo info = cs().ssid_cust_map.get(cfg.getSSID());
 		if (info == null) {
 			log.warn("can not reload customer info by ssid:{}", cfg.getSSID());
 			return;
@@ -4594,9 +4372,9 @@ public class A2PCustomerManager implements LifecycleListener {
 		}
 	}
 
-	private void initRoleMap(A2PCustomerInfo cust) {
+	private void initRoleMap(CustomerSnapshot b, A2PCustomerInfo cust) {
 		if ("A2P".equalsIgnoreCase(cust.getA2PPlayerType())) {
-			a2pInfo.add(cust.getSSID());
+			b.a2pInfo.add(cust.getSSID());
 		}
 		// else if ("ASG".equalsIgnoreCase(cust.getA2PPlayerType()) ||
 		// "KingSMSHub".equalsIgnoreCase(cust.getA2PPlayerType())) {
@@ -4607,106 +4385,58 @@ public class A2PCustomerManager implements LifecycleListener {
 		// }
 		else if ("operator".equalsIgnoreCase(cust.getA2PPlayerType())) {
 			// Note: TransparencyMode default value is set to 0;
-			operatorInfo.put(cust.getSSID(), cust.getTransparencyMode());
+			b.operatorInfo.put(cust.getSSID(), cust.getTransparencyMode());
 		} else if ("VirtualOperator".equalsIgnoreCase(cust.getA2PPlayerType())) {
 			// Note: TransparencyMode default value is set to 0;
-			operatorInfo.put(cust.getSSID(), cust.getTransparencyMode());
-			virtualOperatorInfo.add(cust.getSSID());
+			b.operatorInfo.put(cust.getSSID(), cust.getTransparencyMode());
+			b.virtualOperatorInfo.add(cust.getSSID());
 		} else if ("channel".equalsIgnoreCase(cust.getA2PPlayerType())) {
-			channelInfo.add(cust.getSSID());
+			b.channelInfo.add(cust.getSSID());
 		} else if ("3rdPartyHUB".equalsIgnoreCase(cust.getA2PPlayerType())
 				|| "3rdHUB".equalsIgnoreCase(cust.getA2PPlayerType())) {
 			// Note: TransparencyMode default value is set to 0;
-			hubInfo.put(cust.getSSID(), cust.getTransparencyMode());
+			b.hubInfo.put(cust.getSSID(), cust.getTransparencyMode());
 		} else if ("partition".equalsIgnoreCase(cust.getA2PPlayerType())) {
-			partitionInfo.add(cust.getSSID());
+			b.partitionInfo.add(cust.getSSID());
 		}
 	}
 
-	private void clearRoleMap(A2PCustomerInfo cust) {
-		if ("A2P".equalsIgnoreCase(cust.getA2PPlayerType())) {
-			a2pInfo.remove(cust.getSSID());
-		} else if ("operator".equalsIgnoreCase(cust.getA2PPlayerType())) {
-			// Note: TransparencyMode default value is set to 0;
-			operatorInfo.remove(cust.getSSID());
-		} else if ("VirtualOperator".equalsIgnoreCase(cust.getA2PPlayerType())) {
-			// Note: TransparencyMode default value is set to 0;
-			operatorInfo.remove(cust.getSSID());
-			virtualOperatorInfo.remove(cust.getSSID());
-		} else if ("channel".equalsIgnoreCase(cust.getA2PPlayerType())) {
-			channelInfo.remove(cust.getSSID());
-		} else if ("3rdPartyHUB".equalsIgnoreCase(cust.getA2PPlayerType())
-				|| "3rdHUB".equalsIgnoreCase(cust.getA2PPlayerType())) {
-			// Note: TransparencyMode default value is set to 0;
-			hubInfo.remove(cust.getSSID());
-		} else if ("partition".equalsIgnoreCase(cust.getA2PPlayerType())) {
-			partitionInfo.remove(cust.getSSID());
-		}
-	}
-
-	private void initShortCodeInfo(A2PCustomerConfig cfg) {
+	private void initShortCodeInfo(CustomerSnapshot b, A2PCustomerConfig cfg) {
 		A2PCustomerMultiValue shortCodeValue = cfg.parseMultiValue("ShortCode");
 		if (shortCodeValue != null) {
 			if (shortCodeValue.getAttr("code") != null) {
 				String code = shortCodeValue.getAttr("code").getStringValue();
 				if (code != null) {
-					this.shortcodeInfo.add(code);
-					this.shortcode_ssid_map.put(code, cfg.getSSID());
+					b.shortcodeInfo.add(code);
+					b.shortcode_ssid_map.put(code, cfg.getSSID());
 				}
 				if (log.isDebugEnabled()) {
-					log.debug("shortcode_ssid_map get ssid:{} by ShortCode:{}",shortcode_ssid_map.get(code), code);
+					log.debug("shortcode_ssid_map get ssid:{} by ShortCode:{}",b.shortcode_ssid_map.get(code), code);
 				}
 			}
 		}
 	}
 
-	private void clearShortCodeInfo(A2PCustomerConfig cfg) {
-		A2PCustomerMultiValue shortCodeValue = cfg.parseMultiValue("ShortCode");
-		if (shortCodeValue != null) {
-			if (shortCodeValue.getAttr("code") != null) {
-				String code = shortCodeValue.getAttr("code").getStringValue();
-				if (code != null) {
-					this.shortcodeInfo.remove(code);
-					this.shortcode_ssid_map.remove(code);
-				}
-			}
-		}
-	}
-
-	private void initCurrentA2P(A2PCustomerConfig cfg) {
+	private void initCurrentA2P(CustomerSnapshot b, A2PCustomerConfig cfg) {
 		if ("A2P".equalsIgnoreCase(cfg.getString("A2PPlayerType"))) {
 			String chlURL = cfg.getString("ChlURL");
 			if (a2pIP != null && chlURL != null && chlURL.trim().length() > 0) {
 				if (chlURL.indexOf(a2pIP) >= 0) {
-					currentA2P = cfg.getSSID();
-					currentA2Ps.add(currentA2P);
+					b.currentA2P = cfg.getSSID();
+					b.currentA2Ps.add(b.currentA2P);
 
 					String PeeringTcpVersionStr = cfg
 							.getString("PeeringTcpVersion");
 					if (PeeringTcpVersionStr != null) {
-						peeringTcpVersion = getPeeringTcpVersionInt(PeeringTcpVersionStr);
+						b.peeringTcpVersion = getPeeringTcpVersionInt(PeeringTcpVersionStr);
 					}
 				}
 			}
 		}
 	}
 
-	private void clearCurrentA2P(A2PCustomerConfig cfg) {
-		if ("A2P".equalsIgnoreCase(cfg.getString("A2PPlayerType"))) {
-			String chlURL = cfg.getString("ChlURL");
-			if (a2pIP != null && chlURL != null && chlURL.trim().length() > 0) {
-				if (chlURL.indexOf(a2pIP) >= 0) {
-					currentA2P = cfg.getSSID();
-					currentA2Ps.remove(currentA2P);
-				}
-			}
-		} else if ("partition".equalsIgnoreCase(cfg.getString("A2PPlayerType"))) {
-			currentA2Ps.remove(cfg.getSSID());
-		}
-	}
-
-	private void initCurrentA2Ps() {
-		if (currentA2P <= 0)
+	private void initCurrentA2Ps(CustomerSnapshot b) {
+		if (b.currentA2P <= 0)
 			return;
 
 		ArrayList<Integer> al = new ArrayList<Integer>(this.vpConnectRelayinfo
@@ -4714,42 +4444,26 @@ public class A2PCustomerManager implements LifecycleListener {
 
 		for (Integer self : al) {
 			int o_ssid = getVPConnectingRelaySsid(self);
-			if (o_ssid == currentA2P)
-				this.currentA2Ps.add(self);
+			if (o_ssid == b.currentA2P)
+				b.currentA2Ps.add(self);
 		}
 	}
 
-	private void initSupportSplitMsg(A2PCustomerInfo cust, A2PCustomerConfig cfg) {
+	private void initSupportSplitMsg(CustomerSnapshot b, A2PCustomerInfo cust, A2PCustomerConfig cfg) {
 		String playerType = cust.getA2PPlayerType();
 		if ("Operator".equalsIgnoreCase(playerType)
 				|| "VirtualOperator".equalsIgnoreCase(playerType)
 				|| "3rdpartyhub".equalsIgnoreCase(playerType)) {
 			if ("yes".equalsIgnoreCase(cfg.getString("SupportMsgSplit", "yes"))) {
-				this.oOpSupportSplitMsg.add(cust.getSSID());
+				b.oOpSupportSplitMsg.add(cust.getSSID());
 			}
 		}
 		if ("yes".equalsIgnoreCase(cfg.getString("ChlMsgSplit"))) {
-			this.chlSupportSplitMsg.add(cust.getSSID());
+			b.chlSupportSplitMsg.add(cust.getSSID());
 		}
 	}
 
-	private void clearSupportSplitMsg(A2PCustomerInfo cust,
-			A2PCustomerConfig cfg) {
-		String playerType = cust.getA2PPlayerType();
-		if ("Operator".equalsIgnoreCase(playerType)
-				|| "VirtualOperator".equalsIgnoreCase(playerType)
-				|| "3rdpartyhub".equalsIgnoreCase(playerType)) {
-			if ("yes".equalsIgnoreCase(cfg.getString("SupportMsgSplit", "yes"))) {
-				this.oOpSupportSplitMsg.remove(cust.getSSID());
-			}
-		}
-
-		if ("yes".equalsIgnoreCase(cfg.getString("ChlMsgSplit"))) {
-			this.chlSupportSplitMsg.remove(cust.getSSID());
-		}
-	}
-
-	private void initRMap(A2PCustomerInfo cust, A2PCustomerConfig cfg) {
+	private void initRMap(CustomerSnapshot b, A2PCustomerInfo cust, A2PCustomerConfig cfg) {
 		String playerType = cust.getA2PPlayerType();
 		if ("Operator".equalsIgnoreCase(playerType)
 				|| "OperatorAndChannel".equalsIgnoreCase(playerType)
@@ -4757,39 +4471,18 @@ public class A2PCustomerManager implements LifecycleListener {
 
 			String t = cfg.getString("SplitSuffix", "no");
 			if ("yes".equalsIgnoreCase(t)) {
-				this.rOpSplitSuffix.add(cfg.getSSID());
+				b.rOpSplitSuffix.add(cfg.getSSID());
 			}
 
 			t = cfg.getString("SMSOptionAsciiMsgSplitLen");
 			if (t != null)
-				this.rOpSupportAsciiLength.put(cfg.getSSID(), t);
+				b.rOpSupportAsciiLength.put(cfg.getSSID(), t);
 
 			t = cfg.getString("MsgSplitLen");
 			if (t != null)
-				this.rOpSupportLength.put(cfg.getSSID(), t);
+				b.rOpSupportLength.put(cfg.getSSID(), t);
 		}
 
-	}
-
-	private void clearRMap(A2PCustomerInfo cust, A2PCustomerConfig cfg) {
-		String playerType = cust.getA2PPlayerType();
-		if ("Operator".equalsIgnoreCase(playerType)
-				|| "OperatorAndChannel".equalsIgnoreCase(playerType)
-				|| "3rdpartyhub".equalsIgnoreCase(playerType)) {
-
-			String t = cfg.getString("SplitSuffix", "no");
-			if ("yes".equalsIgnoreCase(t)) {
-				this.rOpSplitSuffix.remove(cfg.getSSID());
-			}
-
-			t = cfg.getString("SMSOptionAsciiMsgSplitLen");
-			if (t != null)
-				this.rOpSupportAsciiLength.remove(cfg.getSSID());
-
-			t = cfg.getString("MsgSplitLen");
-			if (t != null)
-				this.rOpSupportLength.remove(cfg.getSSID());
-		}
 	}
 
 	private void initCharsetRelay(A2PCustomerConfig cfg) {
@@ -4843,82 +4536,49 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 
 	public String getCurrentA2Ps() {
-		String a2ps = currentA2Ps.toString();
+		String a2ps = cs().currentA2Ps.toString();
 		return a2ps.substring(1, a2ps.length() - 1);
 	}
 
 	public boolean inCurrentA2P(int ssid) {
-		return currentA2Ps.contains(ssid);
+		return cs().currentA2Ps.contains(ssid);
 	}
 
 	public int getCurrentA2P() {
-		return currentA2P;
+		return cs().currentA2P;
 	}
 
-	private void initDCNotSupportDR(A2PCustomerConfig cfg) {
+	private void initDCNotSupportDR(CustomerSnapshot b, A2PCustomerConfig cfg) {
 		String t = cfg.getString("ChlIsSupportDeliveryReport");
 		if ("No".equalsIgnoreCase(t))
-			this.rSsidsNotSupportDR.add(cfg.getSSID());
+			b.rSsidsNotSupportDR.add(cfg.getSSID());
 	}
 
-	private void clearDCNotSupportDR(A2PCustomerConfig cfg) {
-		String t = cfg.getString("ChlIsSupportDeliveryReport");
-		if ("No".equalsIgnoreCase(t))
-			this.rSsidsNotSupportDR.remove(cfg.getSSID());
-	}
-
-	private void initNotSupportUDH(A2PCustomerConfig cfg) {
+	private void initNotSupportUDH(CustomerSnapshot b, A2PCustomerConfig cfg) {
 		String t = cfg.getString("SmsOptionIsSupportUDH");
 		if ("No".equalsIgnoreCase(t))
-			this.rSsidNotSupportUDH.add(cfg.getSSID());
+			b.rSsidNotSupportUDH.add(cfg.getSSID());
 	}
 
-	private void clearNotSupportUDH(A2PCustomerConfig cfg) {
-		String t = cfg.getString("SmsOptionIsSupportUDH");
-		if ("No".equalsIgnoreCase(t))
-			this.rSsidNotSupportUDH.remove(cfg.getSSID());
-	}
-
-	private void initSupport7Bit(A2PCustomerConfig cfg) {
+	private void initSupport7Bit(CustomerSnapshot b, A2PCustomerConfig cfg) {
 		String t = cfg.getString("SmsOptionIsSupport7Bit");
 		if ("yes".equalsIgnoreCase(t))
-			this.rSsidSupport7Bit.add(cfg.getSSID());
+			b.rSsidSupport7Bit.add(cfg.getSSID());
 	}
 
-	private void clearSupport7Bit(A2PCustomerConfig cfg) {
-		String t = cfg.getString("SmsOptionIsSupport7Bit");
-		if ("yes".equalsIgnoreCase(t))
-			this.rSsidSupport7Bit.remove(cfg.getSSID());
-	}
-
-	private void initSupportExpiredDR(A2PCustomerConfig cfg) {
+	private void initSupportExpiredDR(CustomerSnapshot b, A2PCustomerConfig cfg) {
 		String t = cfg.getString("SmsOptionIsSupportExpiredDR");
 		if ("yes".equalsIgnoreCase(t))
-			this.isSupportExpiredDR.add(cfg.getSSID());
+			b.isSupportExpiredDR.add(cfg.getSSID());
 	}
 
-	private void clearSupportExpiredDR(A2PCustomerConfig cfg) {
-		String t = cfg.getString("SmsOptionIsSupportExpiredDR");
-		if ("yes".equalsIgnoreCase(t))
-			this.isSupportExpiredDR.remove(cfg.getSSID());
-	}
-
-	private void initVfkkInfo(A2PCustomerConfig cfg) {
+	private void initVfkkInfo(CustomerSnapshot b, A2PCustomerConfig cfg) {
 		String VFKK_2G = "VFKK2G_JP";
 		String VFKK_3G = "Jphone_JP";
 
 		if (cfg.getShortName().startsWith(VFKK_2G)
 				|| cfg.getShortName().startsWith(VFKK_3G))
-			vfkkInfo.put(cfg.getShortName(), cfg.getSSID());
-	}
-
-	private void clearVfkkInfo(A2PCustomerConfig cfg) {
-		String VFKK_2G = "VFKK2G_JP";
-		String VFKK_3G = "Jphone_JP";
-
-		if (cfg.getShortName().startsWith(VFKK_2G)
-				|| cfg.getShortName().startsWith(VFKK_3G))
-			vfkkInfo.remove(cfg.getShortName());
+			b.vfkkInfo.put(cfg.getShortName(), cfg.getSSID());
 	}
 
 	private int getPeeringTcpVersionInt(String peeringTcpVersionStr) {
@@ -6678,16 +6338,16 @@ public class A2PCustomerManager implements LifecycleListener {
 		}
 	}
 
-	private void initRequiredCharsets(A2PCustomerConfig cfg) {
+	private void initRequiredCharsets(CustomerSnapshot b, A2PCustomerConfig cfg) {
 		A2PCustomerMultiValue value = cfg.parseMultiValue("RequiredCharsets");
 		if (value != null) {
 			int r_ssid = cfg.getSSID();
 			for (Group g : value.getAllGroups()) {
 				String r_relay = g.getAttr("R_RELAY").getStringValue();
-				int o_ssid = this.getSSidbyCustomerNameshort(getShortNameByValue(r_relay));
+				int o_ssid = ssidByShortName(b, getShortNameByValue(r_relay));
 				String charsets = g.getAttr("Charset").getStringValue();
 				if (o_ssid > 0 && charsets != null) {
-					this.opRequiredCharsets.put(o_ssid + "_" + r_ssid, Arrays
+					b.opRequiredCharsets.put(o_ssid + "_" + r_ssid, Arrays
 							.asList(charsets.split(",")));
 					if (log.isTraceEnabled()) {
 						log.trace("opRequiredCharsets.put: {}_{},{}", o_ssid,
@@ -6699,30 +6359,10 @@ public class A2PCustomerManager implements LifecycleListener {
 		}
 	}
 
-	private void clearRequiredCharsets(A2PCustomerConfig cfg) {
-		A2PCustomerMultiValue value = cfg.parseMultiValue("RequiredCharsets");
-		if (value != null) {
-			int r_ssid = cfg.getSSID();
-			for (Group g : value.getAllGroups()) {
-				String r_relay = g.getAttr("R_RELAY").getStringValue();
-				int o_ssid = this.getSSidbyCustomerNameshort(getShortNameByValue(r_relay));
-				String charsets = g.getAttr("Charset").getStringValue();
-				if (o_ssid > 0 && charsets != null) {
-					this.opRequiredCharsets.remove(o_ssid + "_" + r_ssid);
-					if (log.isTraceEnabled()) {
-						log.trace("opRequiredCharsets.remove: {}_{}", o_ssid,
-								r_ssid);
-					}
-
-				}
-			}
-		}
-	}
-
 	public int getDRMode(int ssid) {
 		try {
-			if (deliveryreportMode.containsKey(ssid)) {
-				return deliveryreportMode.get(ssid);
+			if (cs().deliveryreportMode.containsKey(ssid)) {
+				return cs().deliveryreportMode.get(ssid);
 			} else {
 				return -1;
 			}
@@ -6732,78 +6372,56 @@ public class A2PCustomerManager implements LifecycleListener {
 		}
 	}
 
-	private void initDRModeInfo(A2PCustomerConfig cfg) {
+	private void initDRModeInfo(CustomerSnapshot b, A2PCustomerConfig cfg) {
 		int t = cfg.getInt("DeliveryReportMode", -1);
 		if (t > -1)
-			deliveryreportMode.put(cfg.getSSID(), t);
+			b.deliveryreportMode.put(cfg.getSSID(), t);
 	}
 
-	private void clearDRModeInfo(A2PCustomerConfig cfg) {
-		int t = cfg.getInt("DeliveryReportMode", -1);
-		if (t > -1)
-			deliveryreportMode.remove(cfg.getSSID());
-	}
-
-	private void initCustomerLocalDNSPrefix(A2PCustomerConfig cfg) {
+	private void initCustomerLocalDNSPrefix(CustomerSnapshot b, A2PCustomerConfig cfg) {
 		String dns = cfg.getString("LocalDNSPrefix");
 		if (dns != null) {
 			String[] prefixes = dns.split(",");
-			this.customerLocalDNSPrefix.put(cfg.getSSID(), prefixes);
+			b.customerLocalDNSPrefix.put(cfg.getSSID(), prefixes);
 		}
 	}
 
-	private void clearCustomerLocalDNSPrefix(A2PCustomerConfig cfg) {
-		String dns = cfg.getString("LocalDNSPrefix");
-		if (dns != null) {
-			String[] prefixes = dns.split(",");
-			this.customerLocalDNSPrefix.remove(cfg.getSSID());
-		}
-	}
-
-	private void initContentScan(A2PCustomerConfig cfg) {
+	private void initContentScan(CustomerSnapshot b, A2PCustomerConfig cfg) {
 
 		int ossid = cfg.getSSID();
 		A2PCustomerMultiValue v = cfg.parseMultiValue("ContentScan");
 		if (v != null) {
-
+			// build a new list and publish it once: ContentScanMilter iterates the published list
+			ArrayList<ContentScan> contentScan = new ArrayList<ContentScan>();
+			if (b.contentScanInfo.get(ossid) != null) {
+				contentScan.addAll(b.contentScanInfo.get(ossid));
+			}
 			for (Group g : v.getAllGroups()) {
 				String rPrefix = g.getAttr("Prefix").getStringValue();
 				String oCharset = g.getAttr("Charset").getStringValue();
 				String charset = g.getAttr("Except").getStringValue();
-				ContentScan cs = new ContentScan(oCharset, rPrefix, charset);
-
-				ArrayList<ContentScan> contentScan;
-				if (contentScanInfo != null
-						&& contentScanInfo.get(ossid) != null) {
-					contentScan = contentScanInfo.get(ossid);
-					contentScan.add(cs);
-				} else {
-					contentScan = new ArrayList<ContentScan>();
-					contentScan.add(cs);
-				}
-				contentScanInfo.put(ossid, contentScan);
+				contentScan.add(new ContentScan(oCharset, rPrefix, charset));
 			}
-		}
-	}
-
-	private void clearContentScan(A2PCustomerConfig cfg) {
-		int ossid = cfg.getSSID();
-		A2PCustomerMultiValue v = cfg.parseMultiValue("ContentScan");
-		if (v != null) {
-			contentScanInfo.remove(ossid);
+			b.contentScanInfo.put(ossid, contentScan);
 		}
 	}
 
 	public A2PCustomerInfo getCustomerByServerID(String serverId) {
-		return serverid_cust_map.get(serverId);
+		return cs().serverid_cust_map.get(serverId);
 	}
 
 	public A2PCustomerInfo getCustomerBySSID(int ssid) {
-		return ssid_cust_map.get(ssid);
+		A2PCustomerInfo cust = connectionCustomers.get(ssid);
+		return cust != null ? cust : cs().ssid_cust_map.get(ssid);
+	}
+
+	/** the customer snapshot currently published */
+	private CustomerSnapshot cs() {
+		return customers.get();
 	}
 
 	public A2PCustomerInfo getCustomerBySpID(String spid) {
-		return spid_cust_map.get(spid);
+		return cs().spid_cust_map.get(spid);
 	}
 
 	public String getIpByConnection(String connectionID) {
@@ -7052,15 +6670,15 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 
 	public String[] getMncMccbySsid(int ssid) {
-		if (ssidOfMncMcc.containsKey(ssid))
-			return ssidOfMncMcc.get(ssid);
+		if (cs().ssidOfMncMcc.containsKey(ssid))
+			return cs().ssidOfMncMcc.get(ssid);
 		return null;
 	}
 
 	public int getSmsSsidByMncMcc(String mncmcc) {
 		try {
-			if (smsMncMcc.containsKey(mncmcc)) {
-				return smsMncMcc.get(mncmcc);
+			if (cs().smsMncMcc.containsKey(mncmcc)) {
+				return cs().smsMncMcc.get(mncmcc);
 			} else {
 				return -1;
 			}
@@ -7073,7 +6691,7 @@ public class A2PCustomerManager implements LifecycleListener {
 	// Priority
 	public int getConnectedRelay(int ssid, String gmmsMsgType) {
 		try {
-			return smsConnectRelayinfo.get(ssid);
+			return cs().smsConnectRelayinfo.get(ssid);
 		} catch (Exception e) {
 			if (log.isInfoEnabled()) {
 				log.info("Failed to get getConnectedRelay by ({},{}", ssid,
@@ -7085,54 +6703,54 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 
 	public boolean isA2P(int ssid) {
-		return a2pInfo.contains(ssid);
+		return cs().a2pInfo.contains(ssid);
 	}
 
 	public boolean isChannel(Integer ssid) {
-		return channelInfo.contains(ssid);
+		return cs().channelInfo.contains(ssid);
 	}
 
 	public boolean isHub(Integer ssid) {
-		return hubInfo.containsKey(ssid);
+		return cs().hubInfo.containsKey(ssid);
 	}
 
 	public boolean isPartition(Integer ssid) {
-		return partitionInfo.contains(ssid);
+		return cs().partitionInfo.contains(ssid);
 	}
 
 	public boolean isOperator(Integer ssid) {
-		return operatorInfo.containsKey(ssid);
+		return cs().operatorInfo.containsKey(ssid);
 	}
 
 	public boolean isVirtualOperator(Integer ssid) {
-		return virtualOperatorInfo.contains(ssid);
+		return cs().virtualOperatorInfo.contains(ssid);
 	}
 
 	public boolean isNotDRSupport(int ssid) {
-		return rSsidsNotSupportDR.contains(ssid);
+		return cs().rSsidsNotSupportDR.contains(ssid);
 	}
 
 	public String getNoDRRssidsString() {
-		if (rSsidsNotSupportDR == null || rSsidsNotSupportDR.size() == 0)
+		if (cs().rSsidsNotSupportDR == null || cs().rSsidsNotSupportDR.size() == 0)
 			return "0";
-		String text = rSsidsNotSupportDR.toString();
+		String text = cs().rSsidsNotSupportDR.toString();
 		return text.substring(1, text.length() - 1);
 	}
 
-	public ArrayList getNoticeInfo() {
-		return this.noticeInfo;
+	public List<String> getNoticeInfo() {
+		return cs().noticeInfo;
 	}
 
 	public int getPeeringTcpVersion() {
-		return peeringTcpVersion;
+		return cs().peeringTcpVersion;
 	}
 
 	public List<String> getRequiredCharsets(int rssid, int rop) {
-		return opRequiredCharsets.get(rssid + "_" + rop);
+		return cs().opRequiredCharsets.get(rssid + "_" + rop);
 	}
 
 	public boolean isRssidNotSupportDR(int rSsID) {
-		return rSsidsNotSupportDR.contains(rSsID);
+		return cs().rSsidsNotSupportDR.contains(rSsID);
 	}
 
 	public void setBlackList(BlackList bl) {
@@ -7145,10 +6763,10 @@ public class A2PCustomerManager implements LifecycleListener {
 
 	public int getTransparency(int ssid) {
 		if (this.isHub(ssid)) {
-			return hubInfo.get(ssid);
+			return cs().hubInfo.get(ssid);
 		}
 		if (this.isOperator(ssid)) {
-			return operatorInfo.get(ssid);
+			return cs().operatorInfo.get(ssid);
 		}
 		return 0;
 	}
@@ -7211,20 +6829,11 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 
 	public Map<Integer, String[]> getCustomerLocalDNSPrefix() {
-		return customerLocalDNSPrefix;
-	}
-
-	public void setCustomerLocalDNSPrefix(
-			ConcurrentHashMap<Integer, String[]> customerLocalDNSPrefix) {
-		this.customerLocalDNSPrefix = customerLocalDNSPrefix;
-	}
-
-	public void setContentScanInfo(ConcurrentHashMap contentScanInfo) {
-		this.contentScanInfo = contentScanInfo;
+		return cs().customerLocalDNSPrefix;
 	}
 
 	public Map<Integer, ArrayList<ContentScan>> getContentScanInfo() {
-		return contentScanInfo;
+		return cs().contentScanInfo;
 	}
 
 	/**
@@ -7235,8 +6844,8 @@ public class A2PCustomerManager implements LifecycleListener {
 	 */
 	public int getSSidbyCustomerNameshort(String customerNameshort) {
 		try {
-			if (this.shortName_ssid_map.containsKey(customerNameshort)) {
-				return this.shortName_ssid_map.get(customerNameshort).intValue();
+			if (cs().shortName_ssid_map.containsKey(customerNameshort)) {
+				return cs().shortName_ssid_map.get(customerNameshort).intValue();
 			} else {
 				return -1;
 			}
@@ -7249,8 +6858,8 @@ public class A2PCustomerManager implements LifecycleListener {
 
 	public int getCustIdbyCustomerNameshort(String customerNameshort) {
 		try {
-			if (this.shortName_custId_map.containsKey(customerNameshort)) {
-				return this.shortName_custId_map.get(customerNameshort).intValue();
+			if (cs().shortName_custId_map.containsKey(customerNameshort)) {
+				return cs().shortName_custId_map.get(customerNameshort).intValue();
 			} else {
 				return -1;
 			}
@@ -7265,7 +6874,7 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 
 	public String getShortNamebySSID(int ssid) {
-		A2PCustomerInfo cst = this.ssid_cust_map.get(ssid);
+		A2PCustomerInfo cst = cs().ssid_cust_map.get(ssid);
 		if (cst != null)
 			return cst.getShortName();
 
@@ -7280,15 +6889,20 @@ public class A2PCustomerManager implements LifecycleListener {
 		if (protocol == null || protocol.trim().length() == 0)
 			return null;
 
-		return this.protocol_ssid_map.get(protocol.trim().toLowerCase());
+		List<Integer> ssids = cs().protocol_ssid_map.get(protocol.trim().toLowerCase());
+		return ssids == null ? null : new ArrayList<Integer>(ssids);
 	}
 
 	public List<A2PCustomerInfo> getAllCustomerInfos() {
-		return new ArrayList<A2PCustomerInfo>(this.ssid_cust_map.values());
+		List<A2PCustomerInfo> all = new ArrayList<A2PCustomerInfo>();
+		for (A2PCustomerInfo cust : cs().ssid_cust_map.values()) {
+			all.add(getCustomerBySSID(cust.getSSID()));
+		}
+		return all;
 	}
 
 	public ArrayList<Integer> getSsidByQueryMsg() {
-		return this.queryMsg_ssid_list;
+		return new ArrayList<Integer>(cs().queryMsg_ssid_list);
 	}
 
 	public String getNodeIDByConnectionID(String connectionID) {
@@ -7353,31 +6967,31 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 
 	public boolean isSupportExpiredDR(int ssid) {
-		return this.isSupportExpiredDR.contains(ssid);
+		return cs().isSupportExpiredDR.contains(ssid);
 	}
 
 	public String getServiceNameBySsid(int oSsid) {
-		return ssid_serviceType.get(oSsid);
+		return cs().ssid_serviceType.get(oSsid);
 	}
 
 	public boolean isNotSupportUDH(int ssid) {
-		return this.rSsidNotSupportUDH.contains(ssid);
+		return cs().rSsidNotSupportUDH.contains(ssid);
 	}
 
 	public boolean isSupport7Bit(int ssid) {
-		return this.rSsidSupport7Bit.contains(ssid);
+		return cs().rSsidSupport7Bit.contains(ssid);
 	}
 
 	public A2PCustomerInfo[] getInitServers() {
-		return (A2PCustomerInfo[]) initServers.toArray(new A2PCustomerInfo[0]);
+		return (A2PCustomerInfo[]) cs().initServers.toArray(new A2PCustomerInfo[0]);
 	}
 
 	public Map<String, Integer> getAllShortcode() {
-		return this.shortcode_ssid_map;
+		return cs().shortcode_ssid_map;
 	}
 
 	public boolean isShortcode(String address) {
-		for (String shortCode : shortcodeInfo) {
+		for (String shortCode : cs().shortcodeInfo) {
 			if (address.startsWith(shortCode)) {
 				return true;
 			}
@@ -7385,13 +6999,18 @@ public class A2PCustomerManager implements LifecycleListener {
 		return false;
 	}
 
-	public synchronized void addCustomerInfoBySsid(int ssid,
+	/**
+	 * Used by connection factories to replace a customer with the object they built for
+	 * their module. Kept apart from the cm.cfg snapshot, getCustomerBySSID returns it first.
+	 */
+	public void addCustomerInfoBySsid(int ssid,
 			A2PCustomerInfo cusInfo) {
-		ssid_cust_map.put(ssid, cusInfo);
+		connectionCustomers.put(ssid, cusInfo);
 	}
 
-	public synchronized void clearCustomerInfoBySsid(int ssid) {
-		ssid_cust_map.remove(ssid);
+	/** Drop the object a connection factory put; the cm.cfg customer stays loaded. */
+	public void clearCustomerInfoBySsid(int ssid) {
+		connectionCustomers.remove(ssid);
 	}
 
 	public boolean isPolicyControlPermit(GmmsMessage message) {
@@ -7441,7 +7060,7 @@ public class A2PCustomerManager implements LifecycleListener {
 
 		// int ssid = getSmsSsidByMncMcc("001_321");
 		// System.out.println(ssid);
-		// System.out.println(this.opRequiredCharsets.get("1071_1232"));
+		// System.out.println(cs().opRequiredCharsets.get("1071_1232"));
 		// MultiNodeCustomerInfo cust =
 		// (MultiNodeCustomerInfo)this.getCustomerBySSID(851);
 		// Map m = cust.getNodeMap();
@@ -7580,16 +7199,16 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 
 	public int getSsidByIosmsSsid(int iosmsSsid) {
-		if (this.iosmsSsid_ssid_map.containsKey(iosmsSsid)) {
-			return this.iosmsSsid_ssid_map.get(iosmsSsid);
+		if (cs().iosmsSsid_ssid_map.containsKey(iosmsSsid)) {
+			return cs().iosmsSsid_ssid_map.get(iosmsSsid);
 		}
 
 		return -1;
 	}
 
 	public int getSsidByCustID(int custID) {
-		if (this.custId_ssid_map.containsKey(custID)) {
-			return this.custId_ssid_map.get(custID);
+		if (cs().custId_ssid_map.containsKey(custID)) {
+			return cs().custId_ssid_map.get(custID);
 		}
 
 		return -1;
@@ -8714,7 +8333,7 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 
 	public String getConfFileVersion() {
-		return confFileVersion;
+		return cs().confFileVersion;
 	}
 
 	
@@ -8747,7 +8366,10 @@ public class A2PCustomerManager implements LifecycleListener {
 			bw.write(rcm);
 			bw.flush();
 			for (int ssid : ssids) {
-				A2PCustomerInfo info = this.ssid_cust_map.get(ssid);
+				A2PCustomerInfo info = cs().ssid_cust_map.get(ssid);
+				if (info == null) {
+					continue;
+				}
 				bw.write(new StringBuffer().append("[").append(
 						info.getShortName()).append("] \r\n").append(info)
 						.append("\r\n").toString());
@@ -8769,13 +8391,10 @@ public class A2PCustomerManager implements LifecycleListener {
 
 	}
 
-	public ArrayList<Integer> getCorePriority_ssid_list() {
-		return corePriority_ssid_list;
+	public List<Integer> getCorePriority_ssid_list() {
+		return cs().corePriority_ssid_list;
 	}
 
-	public void setCorePriority_ssid_list(ArrayList<Integer> corePriority_ssid_list) {
-		this.corePriority_ssid_list = corePriority_ssid_list;
-	}
 	
 	public String getRandomValue(String text){	
 		try {

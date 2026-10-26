@@ -24,8 +24,6 @@ public class CorePrioritrySender implements Runnable{
 			.getSystemLogger(CorePrioritrySender.class);
 	protected ExecutorService senderThreadPool;
 	private String moduleName;
-	private List<Integer> priorityList = new ArrayList<Integer>();
-	private int allPercent=0;
 	
 	public CorePrioritrySender(ExecutorService pool, String moduleName) {
 		this.senderThreadPool = pool;
@@ -42,7 +40,7 @@ public class CorePrioritrySender implements Runnable{
 		while (true) {						
 			try {
 				A2PCustomerManager manager = GmmsUtility.getInstance().getCustomerManager();
-				ArrayList<Integer> ssidList = manager.getCorePriority_ssid_list();
+				List<Integer> ssidList = manager.getCorePriority_ssid_list();
 				if (ssidList == null || ssidList.isEmpty()) {
 					Thread.sleep(50);
 					continue;
@@ -57,9 +55,12 @@ public class CorePrioritrySender implements Runnable{
 	}
 
 	private void doSendMsg(A2PCustomerManager manager,
-			ArrayList<Integer> ssidList) {
+			List<Integer> ssidList) {
 		for (Integer ssid : ssidList) {
 			A2PCustomerInfo cst = manager.getCustomerBySSID(ssid);
+			if (cst == null) {
+				continue;
+			}
 			Map<Integer,Integer> priorityMap = cst.getPriorityPercentMap();
 			if(cst.isNeedCheckSession()){
 				ConnectionManagementForCore connectionManager = ConnectionManagementForCore.getInstance();
@@ -73,8 +74,9 @@ public class CorePrioritrySender implements Runnable{
 			}
 			
 			int outgoingThrottleNum = cst.getCoreProcessorThrottlingNum();
-			priorityList.clear();
-			allPercent = 0;
+			// locals, not fields: the same instance may run in several pool threads
+			List<Integer> priorityList = new ArrayList<Integer>();
+			int allPercent = 0;
 			if (priorityMap!=null && !priorityMap.isEmpty()) {
 				for (Integer priority : priorityMap.keySet()) {
 					priorityList.add(priority);

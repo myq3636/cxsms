@@ -79,19 +79,8 @@ public class RedisControlSubscriber extends JedisPubSub implements Runnable {
 					} else {
 						log.warn("Lifecycle event completed with non-zero result: {} args: {} result: {}", event.getClass().getSimpleName(), eventArgs, result);
 					}
-					
-					// V4.1 分布式流控动态重载 Hook
-					if (eventType == Event.TYPE_CUSTOMER_RELOAD && isInteger(eventArgs)) {
-						try {
-							int ssid = Integer.parseInt(eventArgs);
-							com.king.gmms.domain.A2PCustomerInfo cst = GmmsUtility.getInstance().getCustomerManager().getCustomerBySSID(ssid);
-							if (cst != null) {
-								com.king.gmms.throttle.DistributedThrottlingManager.getInstance().updateRate(ssid, cst.getOutgoingThrottlingNum());
-							}
-						} catch (Exception e) {
-							log.error("Failed to update dynamic throttling rate for args: " + eventArgs, e);
-						}
-					}
+					// customer reload is asynchronous: A2PCustomerManager updates the distributed throttling rate
+					// for the reloaded ssids itself once the new config is loaded
 				}
 			} else {
 				log.warn("Unknown control command: {}", message);
