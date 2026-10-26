@@ -11,3 +11,6 @@
 # 保留 docs 目录
 !/docs/
 !/docs/**
+# 保留 jar 目录
+!/jar/
+!/jar/**
