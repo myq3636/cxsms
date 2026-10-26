@@ -38,7 +38,6 @@ import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
 import com.king.message.gmms.MessageStoreManager;
 import com.king.redis.RedisClient;
-import com.mysql.jdbc.log.Log;
 
 public class ZhiDingMessagerDeliveryReportHttpHandler extends HttpHandler {
 	private static SystemLogger log = SystemLogger

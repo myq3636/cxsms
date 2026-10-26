@@ -41,7 +41,6 @@ import com.king.message.gmms.GmmsStatus;
 import com.king.message.gmms.MessageIdGenerator;
 import com.king.message.gmms.MessageStoreManager;
 import com.king.redis.RedisClient;
-import com.mysql.jdbc.log.Log;
 
 public class SynDeliveryReportHttpHandler extends HttpHandler {
 	private static SystemLogger log = SystemLogger

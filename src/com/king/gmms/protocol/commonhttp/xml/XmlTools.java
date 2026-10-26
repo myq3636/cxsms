@@ -18,7 +18,6 @@ import org.dom4j.io.SAXReader;
 import org.dom4j.io.XMLWriter;
 import org.dom4j.tree.DefaultElement;
 
-import com.sun.tools.internal.xjc.XJCFacade;
 
 public class XmlTools {
 	 private static List<String> eleList = new ArrayList<String>();
@@ -150,7 +149,17 @@ public class XmlTools {
 		//生成代码   
 		String[] args = new String[argsList.size()];   
 		try{
-			XJCFacade.main(argsList.toArray(args));
+			// JDK 11+ no longer ships xjc: use jaxb-xjc (com.sun.tools.xjc) when it is on the classpath,
+			// fall back to the class bundled with old JDKs
+			Class<?> xjc;
+			try {
+				xjc = Class.forName("com.sun.tools.xjc.XJCFacade");
+			} catch (ClassNotFoundException e) {
+				xjc = Class.forName("com.sun.tools.internal.xjc.XJCFacade");
+			}
+			xjc.getMethod("main", String[].class).invoke(null, (Object) argsList.toArray(args));
+		}catch(ClassNotFoundException e){
+			System.out.println("xjc not found, add jaxb-xjc to the classpath to generate classes");
 		}catch(Throwable t){
 			t.printStackTrace();
 		}
