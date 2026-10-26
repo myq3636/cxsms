@@ -17,7 +17,7 @@
 1. reload 只影响有变更的客户，其他客户的数据与连接不被触碰。
 2. reload 任何环节失败，线上仍按旧配置递送，并可在下次 reload 自动重试。
 
-**约束**：运行环境 Java 1.7.0_201（无 lambda、record、`Map` 默认方法）；`A2PCustomerManager` 有 149 个调用文件，对外接口需保持兼容。
+**约束**：目标 JDK 17（2026-10-26 确定；事故时线上运行的是 1.7.0_201 的旧包），可以使用 lambda、record、`Map` 默认方法；`A2PCustomerManager` 有 149 个调用文件，对外接口需保持兼容。
 
 ## 现状诊断
 
@@ -130,12 +130,11 @@ final class RoutingSnapshot {
 	int resolve(RouteKey key, GmmsMessage msg, Set<Integer> exclude);
 }
 
-final class RouteKey {                  // Java 7：普通 final 类 + equals/hashCode
-	final RouteKind kind;               // CUSTOMER, SENDER, CONTENT_KEYWORD, OP, OP_SENDER, OP_CONTENT, NUMBER, DEFAULT
-	final Tier tier;                    // PRIMARY, SECONDARY
-	final int backupLevel;              // 0 = 主路由，1..9 = 备份
-	final int ossid;
-}
+record RouteKey(
+	RouteKind kind,     // CUSTOMER, SENDER, CONTENT_KEYWORD, OP, OP_SENDER, OP_CONTENT, NUMBER, DEFAULT
+	Tier tier,          // PRIMARY, SECONDARY
+	int backupLevel,    // 0 = 主路由，1..9 = 备份
+	int ossid) {}
 ```
 
 - **删掉约 30 个按单个属性存放的集合**（`rSsidSupport7Bit`、`deliveryreportMode`、`rSsidNotSupportUDH` 等）。`isSupport7Bit(ssid)` 改为读 `bySsid.get(ssid).content()`。只有「按值反查 ssid」的才单独建索引。
@@ -166,7 +165,7 @@ flowchart TB
 
 本次事故中的两条几乎同时的 RELOAD_CUSTOMER，在这个流程里会被合并或顺序执行，不会互相覆盖。
 
-**执行器与合并事件**（Java 7）
+**执行器与合并事件**
 
 ```java
 private final ExecutorService reloadExecutor = Executors.newSingleThreadExecutor();
@@ -221,7 +220,7 @@ private void reloadCustomers() {
 | CAS 发布失败 | 不变，丢弃本次结果 | 不更新 | error 日志；说明有人绕过执行器写入，需排查 |
 | 会话重建失败 | 新配置已生效，只影响该客户连接 | 已更新 | 记入待重连列表，由执行器延时重试 |
 
-「版本号不更新」指 `confFileVersion` 保持旧值；部分客户失败时，成功的客户仍会发布，但下次 reload 会重新比较并只重试失败的那些。
+「版本号不更新」的实现方式：快照记录真实的 `confFileVersion`（对外 `getConfFileVersion()` 始终返回 md5），另有 `complete` 标记；有客户失败时 `complete = false`，下次 reload 即使 md5 相同也会重新比较，只重试失败的客户。
 
 ## 外部调用方改造
 
@@ -229,7 +228,7 @@ private void reloadCustomers() {
 
 | 调用方 | 现状 | 改造 |
 | --- | --- | --- |
-| `AbstractConnectionFactory`（`initSingleConnectionInfo` / `clearSingleConnectionInfo`） | 把转换出的 `SingleNodeCustomerInfo` 写回 `ssid_cust_map`，或直接删除 | 转换结果放在工厂自己的 map；删除 `addCustomerInfoBySsid` / `clearCustomerInfoBySsid`。**前提条件，不可省** |
+| `AbstractConnectionFactory`（`initSingleConnectionInfo` / `clearSingleConnectionInfo`） | 把转换出的 `SingleNodeCustomerInfo` 写回 `ssid_cust_map`，或直接删除 | 已实现（第 2 步）：`addCustomerInfoBySsid` / `clearCustomerInfoBySsid` 改为写 Manager 内的覆盖层 `connectionCustomers`，不再触碰快照；`getCustomerBySSID` 先查覆盖层再查快照。工厂代码未改，后续可再把覆盖层移入工厂 |
 | 会话工厂（MultiSmppClient / Peering2 / CommonHttp 等） | 可能长期持有 CustomerInfo 对象 | 使用时按 ssid 从快照取 Profile；只有连接配置变化才重建会话 |
 | `getSsidByProtocol`（71 处）、`getSsidByQueryMsg`、`getCorePriority_ssid_list` | 返回共享 `ArrayList` | 返回快照中的不可变列表；签名仍为 `ArrayList` 的过渡期返回 `new ArrayList<Integer>(list)` |
 | `ContentScanMilter` | 构造时缓存 map 引用 | 每次处理时从快照读 |
@@ -245,7 +244,7 @@ private void reloadCustomers() {
 
 0. **短期止血（已在工作区）**：`OnEvent` 加 `reloadLock`；`corePriority_ssid_list` 改 `CopyOnWriteArrayList`；单个客户异常隔离。另补：3782 行日志只打印当前 ssid；`getSsidByProtocol` 返回副本；普通 `HashSet` 换成 `Collections.newSetFromMap(new ConcurrentHashMap)`。
 1. **对比测试基线**：用生产 cm.cfg、routingInfo.cfg 和一批样例消息，导出 Manager 所有 public 查询的返回值为基准文件。仓库目前没有测试，这一步是后续每步的验收依据。
-2. **单线程执行器 + `CustomerSnapshot`**：引入 `ConfigReloadCoordinator` 与 `AtomicReference<ConfigSnapshot>`；Manager 查询方法委派到快照；删除全部 `clear*` 方法。同步完成「连接工厂不再写客户 map」。
+2. **单线程执行器 + `CustomerSnapshot`（已完成，2026-10-26）**：执行器与 `AtomicReference<CustomerSnapshot>` 暂时放在 `A2PCustomerManager` 内，`ConfigReloadCoordinator` 留到第 6 步拆分时再独立；Manager 查询方法读快照；删除全部 `clear*` 方法；连接工厂改写覆盖层。`assignValue` 不再写 `RetryPolicyManager`，改为挂在客户对象上，发布后由 Manager 放入。经核实 `assignValue` 不解析其他客户的 shortName，未变客户直接复用已解析对象。
 3. **拆出 `CustomerRuntime`**。
 4. **拆 `assignValue`**：按小节做 Parser；RetryPolicy 收回 Profile。
 5. **`ConnectionConfig` 取代 4 个子类**，消除 186 处转型。
