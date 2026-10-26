@@ -8,3 +8,6 @@
 
 # 如果有 .gitignore 文件本身需要提交，也可以保留
 !.gitignore
+# 保留 docs 目录
+!/docs/
+!/docs/**
