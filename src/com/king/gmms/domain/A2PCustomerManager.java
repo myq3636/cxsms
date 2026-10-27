@@ -966,8 +966,8 @@ public class A2PCustomerManager implements LifecycleListener {
 				matcher = pattern.matcher(recipientAddress);
 				while (matcher != null && matcher.find()) {
 					String key = matcher.group();
-					log.trace(msg, "match cc {}", key);
 					if (recipientAddress.startsWith(key)) {
+						log.trace(msg, "match cc {}", key);
 						if(doSenderBlacklistRegex(msg, ""+ssid, key, msg.getSenderAddress())){
 							return true;
 						}
@@ -1063,8 +1063,8 @@ public class A2PCustomerManager implements LifecycleListener {
 				matcher = pattern.matcher(recipientAddress);
 				while (matcher != null && matcher.find()) {
 					String key = matcher.group();
-					log.trace(msg, "match cc {}", key);
 					if (recipientAddress.startsWith(key)) {
+						log.trace(msg, "match cc {}", key);
 						if(doContentBlacklistRegex(msg, ""+ssid, key, msg.getTextContent())){
 							return true;
 						}
@@ -1126,8 +1126,8 @@ public class A2PCustomerManager implements LifecycleListener {
 				matcher = pattern.matcher(recipientAddress);
 				while (matcher != null && matcher.find()) {
 					String key = matcher.group();
-					log.trace(msg, "match cc {}", key);
 					if (recipientAddress.startsWith(key)) {
+						log.trace(msg, "match cc {}", key);
 						result = false;
 						if(doContentWhitelistRegex(msg, ""+ssid, key, msg.getTextContent())){
 							return true;
@@ -1182,8 +1182,8 @@ public class A2PCustomerManager implements LifecycleListener {
 				matcher = pattern.matcher(recipientAddress);
 				while (matcher != null && matcher.find()) {
 					String key = matcher.group();
-					log.trace(msg, "match cc {}", key);
 					if (recipientAddress.startsWith(key)) {
+						log.trace(msg, "match cc {}", key);
 						result = false;
 						if(doContentWhitelistRegex(msg, ""+ssid, key, msg.getTextContent())){
 							return true;
