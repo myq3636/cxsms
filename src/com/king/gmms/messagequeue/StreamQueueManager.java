@@ -481,7 +481,10 @@ public class StreamQueueManager {
 				if (!moduleMatched) {
 					return false;
 				}
-				if (parts.length >= 6) {
+				// The stream already names the owning server module, so the shard suffix only
+				// spreads one customer's DRs over parallel workers. Filter by MyShards only when
+				// several nodes share one module name and split the shards between them.
+				if (parts.length >= 6 && isServerDrShardFilterEnabled()) {
 					try {
 						int shardId = Integer.parseInt(parts[5]);
 						return GmmsUtility.getInstance().getMyShards().contains(shardId);
@@ -963,6 +966,10 @@ public class StreamQueueManager {
 
 	private boolean isApproximateTrimming() {
 		return Boolean.parseBoolean(GmmsUtility.getInstance().getCommonProperty("RedisStreamTrimApproximate", "true"));
+	}
+
+	public boolean isServerDrShardFilterEnabled() {
+		return Boolean.parseBoolean(GmmsUtility.getInstance().getCommonProperty("ServerDrStreamShardFilter", "false").trim());
 	}
 
 	private boolean isBackPressureEnabled() {

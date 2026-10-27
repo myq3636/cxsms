@@ -1,8 +1,10 @@
 package com.king.gmms.messagequeue;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -99,7 +101,31 @@ public class DRStreamConsumer {
 
         logger.info("Server DR-to-customer consumer started. Group: {}, Consumer: {}, Config: {}",
             groupName, consumerName, consumerConfig.summary());
+        logShardCoverage();
         queueManager.reRingExistingStreams(StreamQueueManager.STR_DR_PENDING_PREFIX + "*", false);
+    }
+
+    /** DR streams of a shard outside MyShards are never consumed while the shard filter is on. */
+    private void logShardCoverage() {
+        if (!queueManager.isServerDrShardFilterEnabled()) {
+            logger.info("Server DR-to-customer consumes all DR shards of module {}", System.getProperty("module", ""));
+            return;
+        }
+        int totalShards = GmmsUtility.getInstance().getTotalShards();
+        Set<Integer> myShards = GmmsUtility.getInstance().getMyShards();
+        List<Integer> uncovered = new ArrayList<Integer>();
+        for (int i = 0; i < totalShards; i++) {
+            if (!myShards.contains(i)) {
+                uncovered.add(i);
+            }
+        }
+        if (uncovered.isEmpty()) {
+            logger.info("Server DR-to-customer shard filter on. totalShards={}, myShards={}", totalShards, myShards);
+        } else {
+            logger.warn("Server DR-to-customer shard filter on and shards {} are not consumed by this node. "
+                + "Make sure another node with the same module name owns them. totalShards={}, myShards={}",
+                uncovered, totalShards, myShards);
+        }
     }
 
     public synchronized void stop() {
