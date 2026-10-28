@@ -81,6 +81,45 @@ public class RedisStreamConsumerConfig {
         }
     }
 
+    /**
+     * Pool that grows to WorkerMaxPoolSize before queueing (core = max, idle threads time out):
+     * a plain pool only adds threads above the core size once its queue is full. A full pool
+     * rejects (AbortPolicy): the dispatcher gives the stream back instead of running it itself.
+     */
+    public ThreadPoolExecutor newElasticWorkerPool() {
+        int max = elasticMaxPoolSize();
+        ThreadPoolExecutor pool = new ThreadPoolExecutor(max, max, 60L, java.util.concurrent.TimeUnit.SECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<Runnable>(workerQueueSize()),
+                new ThreadPoolExecutor.AbortPolicy());
+        pool.allowCoreThreadTimeOut(true);
+        return pool;
+    }
+
+    /** Hot reload of WorkerMaxPoolSize for a pool from {@link #newElasticWorkerPool}. */
+    public void applyElasticWorkerPool(ThreadPoolExecutor pool) {
+        if (pool == null) {
+            return;
+        }
+        int max = elasticMaxPoolSize();
+        try {
+            if (pool.getMaximumPoolSize() < max) {
+                pool.setMaximumPoolSize(max);
+                pool.setCorePoolSize(max);
+            } else if (pool.getMaximumPoolSize() > max) {
+                pool.setCorePoolSize(max);
+                pool.setMaximumPoolSize(max);
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to apply redis stream consumer pool config. consumer={}, max={}",
+                    consumerName, max, e);
+        }
+    }
+
+    /** WorkerMaxPoolSize alone: an elastic pool has no separate core size. */
+    private int elasticMaxPoolSize() {
+        return positiveInt("WorkerMaxPoolSize", defaultMaxPoolSize);
+    }
+
     public String summary() {
         return "role=" + role + ", consumer=" + consumerName
                 + ", core=" + workerCorePoolSize()

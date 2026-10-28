@@ -1247,6 +1247,29 @@ public class RedisConnection {
 		}
 	}
 
+	/**
+	 * XCLAIM ... JUSTID: take the ids for consumer and reset their idle time without counting a
+	 * delivery. Returns the ids still pending (acked or deleted ones are left out).
+	 */
+	public List<String> xclaimJustIds(String key, String group, String consumer, List<String> ids) {
+		List<String> out = new ArrayList<String>();
+		if (ids == null || ids.isEmpty()) {
+			return out;
+		}
+		StreamEntryID[] arr = new StreamEntryID[ids.size()];
+		for (int i = 0; i < arr.length; i++) {
+			arr[i] = new StreamEntryID(ids.get(i));
+		}
+		try (Jedis jedis = pool.getResource()) {
+			for (StreamEntryID id : jedis.xclaimJustId(key, group, consumer, 0L, XClaimParams.xClaimParams(), arr)) {
+				if (id != null) {
+					out.add(id.toString());
+				}
+			}
+		}
+		return out;
+	}
+
 	/** All keys matching pattern, by SCAN (non blocking, unlike KEYS). */
 	public Set<String> scanAll(String pattern) {
 		Set<String> keys = new LinkedHashSet<String>();

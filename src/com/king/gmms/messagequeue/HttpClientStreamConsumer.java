@@ -6,9 +6,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.connectionpool.session.Session;
@@ -77,8 +76,10 @@ public class HttpClientStreamConsumer {
 			this.zsetKey = zsetKey;
 			this.streamPrefix = streamPrefix;
 			this.submitMq = submitMq;
+			// HTTP sends are synchronous (up to connect + read timeout each): small batches, so the
+			// entries read with it are not idle long enough for auto-claim to hand them out again
 			this.consumerConfig = RedisStreamConsumerConfig.load("Client", configPrefix,
-					submitMq ? 50 : 20, submitMq ? 100 : 50, 5000, 100, 50);
+					submitMq ? 50 : 20, submitMq ? 100 : 50, 5000, 10, 50);
 		}
 
 		private synchronized void start() {
@@ -86,11 +87,7 @@ public class HttpClientStreamConsumer {
 				return;
 			}
 			running = true;
-			workerPool = new ThreadPoolExecutor(
-					consumerConfig.workerCorePoolSize(), consumerConfig.workerMaxPoolSize(),
-					60L, TimeUnit.SECONDS,
-					new LinkedBlockingQueue<Runnable>(consumerConfig.workerQueueSize()),
-					new ThreadPoolExecutor.CallerRunsPolicy());
+			workerPool = consumerConfig.newElasticWorkerPool();
 			dispatcherThread = Executors.newSingleThreadExecutor();
 			dispatcherThread.execute(new Runnable() {
 				public void run() {
@@ -131,7 +128,14 @@ public class HttpClientStreamConsumer {
 					String streamKey = queueManager.popResponsibleDoorbell(zsetKey, submitMq);
 					if (streamKey != null) {
 						if (processingMap.putIfAbsent(streamKey, Boolean.TRUE) == null) {
-							workerPool.submit(new FetchAndProcessTask(streamKey));
+							try {
+								workerPool.submit(new FetchAndProcessTask(streamKey));
+							} catch (RejectedExecutionException full) {
+								// all workers busy: give the stream back instead of running it on the dispatcher
+								processingMap.remove(streamKey);
+								queueManager.triggerDoorbell(streamKey, submitMq);
+								Thread.sleep(consumerConfig.dispatcherIdleSleepMs());
+							}
 						} else {
 							pendingDoorbellMap.put(streamKey, Boolean.TRUE);
 						}
@@ -191,7 +195,7 @@ public class HttpClientStreamConsumer {
 				return;
 			}
 			lastPoolConfigRefreshMs = now;
-			consumerConfig.applyWorkerPool(workerPool);
+			consumerConfig.applyElasticWorkerPool(workerPool);
 		}
 
 		private void processMessage(String streamKey, GmmsMessage msg) {
@@ -199,18 +203,40 @@ public class HttpClientStreamConsumer {
 			String processMessageType = submitMq ? "submit" : "dr";
 			int targetSsid = -1;
 			String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
+			// vendor submits are sent at most once (ClientSendMarker); DRs pushed to HTTP customers are not
+			boolean useMarker = submitMq && ClientSendMarker.enabled();
+			boolean markerHeld = false;
 			try {
 				targetSsid = resolveTargetSsid(msg);
 				incrementReceivedFromStreamMetric(targetSsid);
+				if (useMarker) {
+					ClientSendMarker.Claim c;
+					try {
+						c = ClientSendMarker.claim(msg, ClientSendMarker.owner(consumerName));
+					} catch (Exception e) {
+						logger.error(msg, "HTTP send marker not available, left pending", e);
+						queueManager.logNack(streamKey, groupName, consumerName, msg, submitMq, "send_marker_error");
+						return;
+					}
+					if (c == ClientSendMarker.Claim.ACK_ONLY) {
+						ClientSendMarker.ackFailed(streamKey, groupName, sourceRedisId, msg);
+					}
+					if (c != ClientSendMarker.Claim.SEND) {
+						return;
+					}
+					markerHeld = true;
+				}
 				Session session = clientFactory.getSession(targetSsid);
 				if (session == null) {
-					failToCoreAndAck(streamKey, msg, targetSsid, "http session not found, ssid=" + targetSsid);
+					failToCoreAndAck(streamKey, msg, targetSsid, "http session not found, ssid=" + targetSsid, markerHeld);
 					return;
 				}
 				boolean success = session.submit(msg);
 				if (success) {
 					incrementSuccessMetric(targetSsid);
-					boolean acked = queueManager.ackById(streamKey, groupName, sourceRedisId, msg, submitMq);
+					markerHeld = false;
+					boolean acked = useMarker ? ClientSendMarker.ackSent(streamKey, groupName, sourceRedisId, msg)
+							: queueManager.ackById(streamKey, groupName, sourceRedisId, msg, submitMq);
 					if (!acked) {
 						logger.warn(msg,
 								"HTTP client stream ack failed after send success. streamKey={}, sourceRedisId={}, currentRedisId={}",
@@ -218,10 +244,14 @@ public class HttpClientStreamConsumer {
 					}
 					return;
 				}
-				failToCoreAndAck(streamKey, msg, targetSsid, "http submit returned false, ssid=" + targetSsid);
+				failToCoreAndAck(streamKey, msg, targetSsid, "http submit returned false, ssid=" + targetSsid, markerHeld);
 			} catch (Exception e) {
 				logger.error(msg, "HTTP client stream message processing failed", e);
-				failToCoreAndAck(streamKey, msg, targetSsid, "exception:" + e.getClass().getSimpleName());
+				if (useMarker && !markerHeld) {
+					// sent (only the ack failed) or the marker was settled: the redelivery only acks
+					return;
+				}
+				failToCoreAndAck(streamKey, msg, targetSsid, "exception:" + e.getClass().getSimpleName(), markerHeld);
 			} finally {
 				MetricsCollector.getInstance().recordTime(MetricsNames.build(MetricsNames.COMPONENT_CONSUMER,
 						MetricsNames.FLOW_PROCESS, processMessageType, MetricsNames.ACTION_LATENCY),
@@ -276,7 +306,8 @@ public class HttpClientStreamConsumer {
 			}
 		}
 
-		private void failToCoreAndAck(String streamKey, GmmsMessage msg, int targetSsid, String reason) {
+		private void failToCoreAndAck(String streamKey, GmmsMessage msg, int targetSsid, String reason,
+				boolean markerHeld) {
 			boolean resultProduced = false;
 			String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
 			boolean alreadyResponse = isResponseMessage(msg);
@@ -307,10 +338,17 @@ public class HttpClientStreamConsumer {
 				logger.error(msg, "Failed to produce HTTP failure result", e);
 			} finally {
 				if (resultProduced) {
-					queueManager.ackById(streamKey, groupName, sourceRedisId, msg, submitMq);
+					if (markerHeld) {
+						ClientSendMarker.ackFailed(streamKey, groupName, sourceRedisId, msg);
+					} else {
+						queueManager.ackById(streamKey, groupName, sourceRedisId, msg, submitMq);
+					}
 				} else {
 					if (msg != null) {
 						msg.setRedisStreamID(sourceRedisId);
+					}
+					if (markerHeld) {
+						ClientSendMarker.release(msg);
 					}
 					queueManager.logNack(streamKey, groupName, consumerName, msg, submitMq,
 							"failure_result_not_produced:" + reason);

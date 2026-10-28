@@ -19,12 +19,12 @@ import com.king.message.gmms.GmmsStatus;
 import redis.clients.jedis.StreamEntryID;
 
 /**
- * Releases MTs of rate limited channels (CoreOutboundTps > 0 in the channel's cm.cfg block).
+ * Releases MTs of rate limited channels (SMSOptionCoreProcessorThrottlingNum > 0 in the channel's cm.cfg block).
  *
  * <p>Routing puts such an MT into stream:core:hold:{rssid} instead of its outbound stream; the
  * backlog stays in Core and the Client only ever sees what the channel can take. This thread
- * moves held MTs to their outbound stream at CoreOutboundTps per second, per Core node (local
- * RateLimiter, not shared). A full hold queue (CoreOutboundTps x CoreHoldMaxSeconds entries)
+ * moves held MTs to their outbound stream at SMSOptionCoreProcessorThrottlingNum per second, per Core node (local
+ * RateLimiter, not shared). A full hold queue (SMSOptionCoreProcessorThrottlingNum x CoreHoldMaxSeconds entries)
  * rejects new MTs with Throttled; an MT that expires or waits longer than CoreHoldMaxSeconds
  * is failed with EXPIRED instead of being sent. Both go through the normal failed-submit
  * handling (CDR, DR to the customer, retry policy).
@@ -54,10 +54,10 @@ public class ChannelReleaseDispatcher {
 		return StreamQueueManager.STR_CORE_HOLD_PREFIX + rssid;
 	}
 
-	/** Whether MTs to this channel are held (CoreOutboundTps > 0). */
+	/** Whether MTs to this channel are held (SMSOptionCoreProcessorThrottlingNum > 0). */
 	public boolean holds(GmmsMessage msg) {
 		return GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(msg.getMessageType())
-				&& channel(msg.getRSsID()) != null && channel(msg.getRSsID()).getCoreOutboundTps() > 0;
+				&& channel(msg.getRSsID()) != null && channel(msg.getRSsID()).getCoreProcessorThrottlingNum() > 0;
 	}
 
 	/**
@@ -66,7 +66,7 @@ public class ChannelReleaseDispatcher {
 	 */
 	public boolean offer(GmmsMessage msg) {
 		A2PCustomerInfo channel = channel(msg.getRSsID());
-		long cap = (long) channel.getCoreOutboundTps() * channel.getCoreHoldMaxSeconds();
+		long cap = (long) channel.getCoreProcessorThrottlingNum() * channel.getCoreHoldMaxSeconds();
 		long backlog = backlog(msg.getRSsID());
 		if (backlog >= cap) {
 			log.warn(msg, "Channel {} hold queue full ({} >= {}), MT failed with Throttled",
@@ -81,7 +81,7 @@ public class ChannelReleaseDispatcher {
 				cached[0]++;
 			}
 			log.info(msg, "MT held for channel {} (backlog ~{}, {} TPS per Core)", msg.getRSsID(), backlog + 1,
-					channel.getCoreOutboundTps());
+					channel.getCoreProcessorThrottlingNum());
 		}
 		return held;
 	}
@@ -155,7 +155,7 @@ public class ChannelReleaseDispatcher {
 			}
 		}
 		A2PCustomerInfo channel = channel(rssid);
-		int tps = channel == null ? 0 : channel.getCoreOutboundTps();
+		int tps = channel == null ? 0 : channel.getCoreProcessorThrottlingNum();
 		int permits = 0;
 		if (tps <= 0) {
 			// limit removed (or channel gone): drain what is left

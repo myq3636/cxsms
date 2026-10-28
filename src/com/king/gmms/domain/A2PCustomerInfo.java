@@ -182,10 +182,12 @@ public abstract class A2PCustomerInfo {
 	protected volatile boolean applyInThrottleFlag = true;
 	
 	protected int outgoingThrottlingNum = 0;
-	/** per Core node release rate towards this channel; 0 = not held, sent at once */
-	protected int coreOutboundTps = 0;
 	/** longest wait in the Core hold queue of this channel */
 	protected int coreHoldMaxSeconds = 21600;
+	/**
+	 * SMSOptionCoreProcessorThrottlingNum: per Core node release rate towards this channel
+	 * (ChannelReleaseDispatcher); 0 = not held, sent at once
+	 */
 	protected int coreProcessorThrottlingNum = 0;
 
 	protected boolean needAntiSpam = false; // default
@@ -854,10 +856,6 @@ public abstract class A2PCustomerInfo {
 	
 	public int getIncomingThrottlingNum() {
 		return incomingThrottlingNum;
-	}
-
-	public int getCoreOutboundTps() {
-		return coreOutboundTps;
 	}
 
 	public int getCoreHoldMaxSeconds() {
@@ -1815,7 +1813,6 @@ public abstract class A2PCustomerInfo {
 		incomingThrottlingNum = cfg.getInt("SMSOptionIncomingThrottlingNum", 0);
 
 		outgoingThrottlingNum = cfg.getInt("SMSOptionOutgoingThrottlingNum", 0);
-		coreOutboundTps = cfg.getInt("CoreOutboundTps", 0);
 		coreHoldMaxSeconds = cfg.getInt("CoreHoldMaxSeconds", 21600);
 		coreProcessorThrottlingNum = cfg.getInt("SMSOptionCoreProcessorThrottlingNum", 0);
 
@@ -2862,7 +2859,7 @@ public abstract class A2PCustomerInfo {
 		.append(prefix).append("SMSOptionOTTContentAddOaddr:").append(this.ottContentAddOaddr)
 		.append(prefix).append("OutClientPull:").append(this.outClientPull)
 		.append(prefix).append("SMSOptionOutgoingThrottlingNum:").append(this.outgoingThrottlingNum)
-		.append(prefix).append("CoreOutboundTps:").append(this.coreOutboundTps)
+		.append(prefix).append("SMSOptionCoreProcessorThrottlingNum:").append(this.coreProcessorThrottlingNum)
 		.append(prefix).append("CoreHoldMaxSeconds:").append(this.coreHoldMaxSeconds)
 		.append(prefix).append("SMSOptionOriNumberLenList:").append(this.oriNumberLens)
 		.append(prefix).append("SMSOptionParseOoperator:").append(this.parseOoperator)

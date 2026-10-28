@@ -1545,6 +1545,18 @@ public class StreamQueueManager {
 		}
 	}
 
+	/**
+	 * Keep entries this consumer read but put off (window full, no rate permit): reset their idle
+	 * time so auto-claim leaves them alone, without counting a delivery. Errors are thrown.
+	 *
+	 * @return the ids still pending (acked or deleted meanwhile are left out)
+	 */
+	public List<String> keepPending(String streamKey, String groupName, String consumerName,
+			List<String> ids, boolean isSubmitMq) {
+		com.king.redis.RedisConnection c = isSubmitMq ? redisClient.getSubmitMqRedis() : redisClient.getReportMqRedis();
+		return c.xclaimJustIds(streamKey, groupName, consumerName, ids);
+	}
+
 	public List<GmmsMessage> autoClaimBatch(String streamKey, String groupName, String consumerName, 
 			long minIdleMs, int count, boolean isSubmitMq) {
 		if (count <= 0) {

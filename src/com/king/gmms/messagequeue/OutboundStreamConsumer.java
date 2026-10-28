@@ -1,12 +1,15 @@
 package com.king.gmms.messagequeue;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -29,8 +32,12 @@ import redis.clients.jedis.StreamEntryID;
 /**
  * V5.2 Client-side outbound consumer.
  *
- * Reads routed MT messages, sends them through SMPP client sessions, and keeps
- * stream entries pending when the selected session submit window is full.
+ * Reads routed MT messages and sends them through SMPP client sessions. Each entry is sent at most
+ * once ({@link ClientSendMarker}). When the session window is full or the channel has no rate permit
+ * (OutgoingThrottlingNum, per Client node, local Guava limiter, non-blocking), the rest of the batch
+ * is put off for this stream: the worker is released, the entries stay pending for this consumer
+ * (idle time reset, not re-delivered) and are processed again after the delay; no other task reads
+ * the stream meanwhile.
  */
 public class OutboundStreamConsumer {
     private static final SystemLogger logger = SystemLogger.getSystemLogger(OutboundStreamConsumer.class);
@@ -50,12 +57,14 @@ public class OutboundStreamConsumer {
     private ThreadPoolExecutor workerPool;
     private final ConcurrentHashMap<String, Boolean> processingMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> pendingDoorbellMap = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Boolean> windowRetryMap = new ConcurrentHashMap<String, Boolean>();
+    /** streams with entries put off (window full / no permit), processed again after a delay */
+    private final Map<String, List<GmmsMessage>> deferred = new HashMap<String, List<GmmsMessage>>();
     private final RedisStreamConsumerConfig consumerConfig;
 
     private enum ProcessResult {
         DONE,
-        WINDOW_FULL
+        WINDOW_FULL,
+        THROTTLED
     }
 
     private OutboundStreamConsumer() {
@@ -73,11 +82,7 @@ public class OutboundStreamConsumer {
         if (running) return;
         running = true;
 
-        workerPool = new ThreadPoolExecutor(
-            consumerConfig.workerCorePoolSize(), consumerConfig.workerMaxPoolSize(), 60L, TimeUnit.SECONDS, 
-            new LinkedBlockingQueue<Runnable>(consumerConfig.workerQueueSize()), 
-            new ThreadPoolExecutor.CallerRunsPolicy()
-        );
+        workerPool = consumerConfig.newElasticWorkerPool();
 
         dispatcherThread = Executors.newSingleThreadExecutor();
         dispatcherThread.execute(this::dispatcherLoop);
@@ -87,8 +92,9 @@ public class OutboundStreamConsumer {
                 StreamQueueManager.STR_MT_ROUTED_PREFIX + "*", groupName, consumerName, true, queueManager,
                 new RedisStreamAutoClaimRunner.MessageProcessor() {
                     public void process(String streamKey, GmmsMessage msg) {
-                        if (processMessage(streamKey, msg) == ProcessResult.WINDOW_FULL) {
-                            scheduleWindowRetry(streamKey);
+                        ProcessResult r = processMessage(streamKey, msg);
+                        if (r != ProcessResult.DONE) {
+                            defer(streamKey, java.util.Collections.singletonList(msg), retryDelayMs(r, msg));
                         }
                     }
                 }));
@@ -111,12 +117,20 @@ public class OutboundStreamConsumer {
         while (running) {
             try {
                 refreshWorkerPoolConfig();
-                // 鐩戝惉 Routed 娲昏穬闃熷垪闂ㄩ搩
                 String streamKey = queueManager.popResponsibleDoorbell(StreamQueueManager.ZSET_MT_ROUTED_ACTIVE, true);
                 if (streamKey != null) {
-                    // 閬垮厤閲嶅璋冨害鍚屼竴涓?streamKey
-                    if (processingMap.putIfAbsent(streamKey, true) == null) {
-                        workerPool.submit(new FetchAndProcessTask(streamKey));
+                    if (isDeferred(streamKey)) {
+                        // its put-off entries go first; the task started for them re-rings afterwards
+                        pendingDoorbellMap.put(streamKey, true);
+                    } else if (processingMap.putIfAbsent(streamKey, true) == null) {
+                        try {
+                            workerPool.submit(new FetchAndProcessTask(streamKey, null));
+                        } catch (RejectedExecutionException full) {
+                            // all workers busy: give the stream back instead of running it on the dispatcher
+                            processingMap.remove(streamKey);
+                            queueManager.triggerDoorbell(streamKey, true);
+                            Thread.sleep(consumerConfig.dispatcherIdleSleepMs());
+                        }
                     } else {
                         pendingDoorbellMap.put(streamKey, true);
                     }
@@ -134,42 +148,167 @@ public class OutboundStreamConsumer {
 
     private class FetchAndProcessTask implements Runnable {
         private final String streamKey;
+        /** entries of this stream put off earlier, processed before reading new ones */
+        private final List<GmmsMessage> carried;
 
-        public FetchAndProcessTask(String streamKey) {
+        public FetchAndProcessTask(String streamKey, List<GmmsMessage> carried) {
             this.streamKey = streamKey;
+            this.carried = carried;
         }
 
         @Override
         public void run() {
+            boolean yielded = false;
             try {
                 queueManager.createGroup(streamKey, groupName, true);
-
+                if (carried != null && !processCarried()) {
+                    return;
+                }
+                StreamTaskBudget budget = new StreamTaskBudget("Client");
                 while (running) {
                     Map<String, StreamEntryID> query = new HashMap<>();
                     query.put(streamKey, StreamEntryID.UNRECEIVED_ENTRY);
-                    
-                    // 鎵归噺鎷夊彇
-                    List<GmmsMessage> messages = queueManager.consumeBatch(groupName, consumerName, consumerConfig.batchSize(), query, true);
-
+                    List<GmmsMessage> messages = queueManager.consumeBatch(groupName, consumerName,
+                            batchSize(streamKey), query, true);
                     if (messages == null || messages.isEmpty()) {
                         break; 
                     }
-
-                    for (GmmsMessage msg : messages) {
-                        if (processMessage(streamKey, msg) == ProcessResult.WINDOW_FULL) {
-                            scheduleWindowRetry(streamKey);
-                            break;
-                        }
+                    if (!processAll(messages)) {
+                        return;
+                    }
+                    if (budget.spent()) {
+                        yielded = true;
+                        break;
                     }
                 }
             } catch (Exception e) {
                 logger.error("Error processing Outbound stream: " + streamKey, e);
             } finally {
                 processingMap.remove(streamKey);
-                if (pendingDoorbellMap.remove(streamKey) != null && queueManager.streamLength(streamKey, true) > 0) {
+                boolean rung = pendingDoorbellMap.remove(streamKey) != null;
+                if ((rung || yielded) && !isDeferred(streamKey) && queueManager.streamLength(streamKey, true) > 0) {
                     queueManager.triggerDoorbell(streamKey, true);
                 }
             }
+        }
+
+        /** Put-off entries: keep the ones still pending (idle reset) and process them. */
+        private boolean processCarried() {
+            List<String> ids = new ArrayList<String>();
+            for (GmmsMessage m : carried) {
+                ids.add(m.getRedisStreamID());
+            }
+            Set<String> still;
+            try {
+                still = new HashSet<String>(queueManager.keepPending(streamKey, groupName, consumerName, ids, true));
+            } catch (Exception e) {
+                logger.warn("Client outbound put-off entries not reclaimed, retried later. streamKey={}", streamKey, e);
+                defer(streamKey, carried, 1000L);
+                return false;
+            }
+            List<GmmsMessage> live = new ArrayList<GmmsMessage>();
+            for (GmmsMessage m : carried) {
+                if (still.contains(m.getRedisStreamID())) {
+                    live.add(m);
+                }
+            }
+            return processAll(live);
+        }
+
+        /** false when the rest was put off (window full / no permit): the task ends. */
+        private boolean processAll(List<GmmsMessage> messages) {
+            for (int i = 0; i < messages.size(); i++) {
+                GmmsMessage msg = messages.get(i);
+                ProcessResult r = processMessage(streamKey, msg);
+                if (r != ProcessResult.DONE) {
+                    defer(streamKey, new ArrayList<GmmsMessage>(messages.subList(i, messages.size())),
+                            retryDelayMs(r, msg));
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    /** Batch read per stream: at most about one second of the channel rate when it is limited. */
+    private int batchSize(String streamKey) {
+        int batch = consumerConfig.batchSize();
+        int tps = DistributedThrottlingManager.getInstance().tps(rssidOf(streamKey));
+        return tps > 0 ? Math.max(1, Math.min(batch, tps)) : batch;
+    }
+
+    /** stream:mt:routed:{rssid}:{shard} */
+    private static int rssidOf(String streamKey) {
+        try {
+            String rest = streamKey.substring(StreamQueueManager.STR_MT_ROUTED_PREFIX.length());
+            return Integer.parseInt(rest.substring(0, rest.indexOf(':')));
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    private long retryDelayMs(ProcessResult r, GmmsMessage msg) {
+        return r == ProcessResult.THROTTLED
+                ? DistributedThrottlingManager.getInstance().retryAfterMs(msg.getRSsID())
+                : getWindowFullRetryMs();
+    }
+
+    private boolean isDeferred(String streamKey) {
+        synchronized (deferred) {
+            return deferred.containsKey(streamKey);
+        }
+    }
+
+    /** Put entries of a stream off for delayMs, merged with any already put off. */
+    private void defer(final String streamKey, List<GmmsMessage> messages, long delayMs) {
+        boolean schedule;
+        synchronized (deferred) {
+            List<GmmsMessage> list = deferred.get(streamKey);
+            schedule = list == null;
+            if (schedule) {
+                list = new ArrayList<GmmsMessage>();
+                deferred.put(streamKey, list);
+            }
+            list.addAll(messages);
+        }
+        if (schedule) {
+            scheduleDeferred(streamKey, delayMs);
+        }
+    }
+
+    private void scheduleDeferred(final String streamKey, long delayMs) {
+        if (windowRetryThread == null || windowRetryThread.isShutdown()) {
+            return;   // stopping: the entries stay pending for auto-claim
+        }
+        windowRetryThread.schedule(new Runnable() {
+            public void run() {
+                resumeDeferred(streamKey);
+            }
+        }, delayMs, TimeUnit.MILLISECONDS);
+    }
+
+    /** Delay over: a task processes the put-off entries, then goes on reading the stream. */
+    private void resumeDeferred(String streamKey) {
+        if (processingMap.putIfAbsent(streamKey, true) != null) {
+            scheduleDeferred(streamKey, 20L);    // the task that put them off is still finishing
+            return;
+        }
+        List<GmmsMessage> list;
+        synchronized (deferred) {
+            list = deferred.remove(streamKey);
+        }
+        if (list == null) {
+            processingMap.remove(streamKey);
+            return;
+        }
+        try {
+            MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(
+                    MetricsNames.COMPONENT_STREAM, MetricsNames.FLOW_PROCESS,
+                    null, MetricsNames.ACTION_RETRY_CLAIM), list.size());
+            workerPool.submit(new FetchAndProcessTask(streamKey, list));
+        } catch (RejectedExecutionException full) {
+            processingMap.remove(streamKey);
+            defer(streamKey, list, 100L);
         }
     }
 
@@ -179,7 +318,7 @@ public class OutboundStreamConsumer {
             return;
         }
         lastPoolConfigRefreshMs = now;
-        consumerConfig.applyWorkerPool(workerPool);
+        consumerConfig.applyElasticWorkerPool(workerPool);
     }
 
     private ProcessResult processMessage(String streamKey, GmmsMessage msg) {
@@ -190,10 +329,6 @@ public class OutboundStreamConsumer {
             MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
                     MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
             return handleMessageSending(msg, streamKey);
-        } catch (Exception e) {
-            logger.error(msg, "Error processing outbound stream message", e);
-            handleFailure(msg, "Internal error during outbound processing", streamKey);
-            return ProcessResult.DONE;
         } finally {
             MetricsCollector.getInstance().recordTime(MetricsNames.timer(MetricsNames.COMPONENT_CONSUMER,
                     MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_LATENCY),
@@ -203,94 +338,90 @@ public class OutboundStreamConsumer {
 
     private ProcessResult handleMessageSending(GmmsMessage msg, String streamKey) {
         String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
+        boolean useMarker = ClientSendMarker.enabled();
+        boolean markerHeld = false;
+        boolean sent = false;
         try {
             Session session = MultiSmppClientFactory.getInstance().getSession(msg);
-            
-            if (session != null && isConnected(session)) {
-                int ssid = msg.getRSsID();
-                SmppSubmitResult submitResult;
-                if (session instanceof MultiSmppSession) {
-                    MultiSmppSession smppSession = (MultiSmppSession) session;
-                    if (!smppSession.hasClientSubmitWindow()) {
-                        recordWindowFull(msg);
-                        queueManager.logNack(streamKey, groupName, consumerName, msg, true, "client_submit_window_full");
-                        return ProcessResult.WINDOW_FULL;
+            if (session == null || !isConnected(session)) {
+                if (useMarker) {
+                    ClientSendMarker.Claim c = ClientSendMarker.claim(msg, ClientSendMarker.owner(consumerName));
+                    if (c != ClientSendMarker.Claim.SEND) {
+                        return settle(c, msg, streamKey, sourceRedisId);
                     }
-                    DistributedThrottlingManager.getInstance().acquire(ssid);
-                    submitResult = smppSession.submitClientOutbound(msg);
-                } else {
-                    DistributedThrottlingManager.getInstance().acquire(ssid);
-                    submitResult = session.submit(msg) ? SmppSubmitResult.SENT : SmppSubmitResult.FAILED;
+                    markerHeld = true;
                 }
-                if (submitResult == SmppSubmitResult.WINDOW_FULL) {
-                    recordWindowFull(msg);
-                    queueManager.logNack(streamKey, groupName, consumerName, msg, true, "client_submit_window_full");
-                    return ProcessResult.WINDOW_FULL;
+                handleFailure(msg, "Session disconnected", streamKey, markerHeld);
+                return ProcessResult.DONE;
+            }
+            int ssid = msg.getRSsID();
+            MultiSmppSession smppSession = session instanceof MultiSmppSession ? (MultiSmppSession) session : null;
+            if (smppSession != null && !smppSession.hasClientSubmitWindow()) {
+                recordWindowFull(msg);
+                queueManager.logNack(streamKey, groupName, consumerName, msg, true, "client_submit_window_full");
+                return ProcessResult.WINDOW_FULL;
+            }
+            if (!DistributedThrottlingManager.getInstance().tryAcquire(ssid)) {
+                return ProcessResult.THROTTLED;
+            }
+            if (useMarker) {
+                ClientSendMarker.Claim c = ClientSendMarker.claim(msg, ClientSendMarker.owner(consumerName));
+                if (c != ClientSendMarker.Claim.SEND) {
+                    return settle(c, msg, streamKey, sourceRedisId);
                 }
-                if (submitResult == SmppSubmitResult.SENT) {
-                    MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
-                            MetricsNames.FLOW_CLIENT, msg, MetricsNames.ACTION_SMPP_SENT));
-                    MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
-                            MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_SMPP_SENT));
-                    boolean acked = queueManager.ackById(streamKey, groupName, sourceRedisId, msg, true);
-                    if (!acked) {
-                        logger.warn(msg,
-                                "Outbound submit stream ack failed after send success. streamKey={}, sourceRedisId={}, currentRedisId={}",
-                                streamKey, sourceRedisId, msg == null ? null : msg.getRedisStreamID());
-                    }
-                } else {
-                    handleFailure(msg, "Session submit rejected", streamKey);
+                markerHeld = true;
+            }
+            SmppSubmitResult submitResult = smppSession != null ? smppSession.submitClientOutbound(msg)
+                    : (session.submit(msg) ? SmppSubmitResult.SENT : SmppSubmitResult.FAILED);
+            if (submitResult == SmppSubmitResult.WINDOW_FULL) {
+                if (markerHeld) {
+                    ClientSendMarker.release(msg);
+                    markerHeld = false;
+                }
+                recordWindowFull(msg);
+                queueManager.logNack(streamKey, groupName, consumerName, msg, true, "client_submit_window_full");
+                return ProcessResult.WINDOW_FULL;
+            }
+            if (submitResult == SmppSubmitResult.SENT) {
+                sent = true;
+                MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                        MetricsNames.FLOW_CLIENT, msg, MetricsNames.ACTION_SMPP_SENT));
+                MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                        MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_SMPP_SENT));
+                boolean acked = useMarker ? ClientSendMarker.ackSent(streamKey, groupName, sourceRedisId, msg)
+                        : queueManager.ackById(streamKey, groupName, sourceRedisId, msg, true);
+                if (!acked) {
+                    logger.warn(msg,
+                            "Outbound submit stream ack failed after send success. streamKey={}, sourceRedisId={}, currentRedisId={}",
+                            streamKey, sourceRedisId, msg == null ? null : msg.getRedisStreamID());
                 }
             } else {
-                handleFailure(msg, "Session disconnected", streamKey);
+                handleFailure(msg, "Session submit rejected", streamKey, markerHeld);
             }
         } catch (Exception e) {
-            logger.error(msg, "Error invoking MultiSmppSession submit", e);
-            handleFailure(msg, "Internal error during submit", streamKey);
+            if (sent) {
+                // sent: never report a failure for it; a redelivery finds the marker and only acks
+                logger.error(msg, "Outbound MT sent, ack failed; the redelivery will not send it again", e);
+            } else if (useMarker && !markerHeld) {
+                // the marker could not be checked (Redis error): keep the entry pending, retried by auto-claim
+                logger.error(msg, "Outbound send marker not available, left pending", e);
+                queueManager.logNack(streamKey, groupName, consumerName, msg, true, "send_marker_error");
+            } else {
+                logger.error(msg, "Error invoking MultiSmppSession submit", e);
+                handleFailure(msg, "Internal error during submit", streamKey, markerHeld);
+            }
+        }
+        return ProcessResult.DONE;
+    }
+
+    /** Not this consumer's to send: ack an entry sent before, leave one another consumer is sending. */
+    private ProcessResult settle(ClientSendMarker.Claim c, GmmsMessage msg, String streamKey, String sourceRedisId) {
+        if (c == ClientSendMarker.Claim.ACK_ONLY) {
+            ClientSendMarker.ackFailed(streamKey, groupName, sourceRedisId, msg);
         }
         return ProcessResult.DONE;
     }
     
-    private void scheduleWindowRetry(final String streamKey) {
-        if (streamKey == null || windowRetryThread == null) {
-            return;
-        }
-        if (windowRetryMap.putIfAbsent(streamKey, Boolean.TRUE) != null) {
-            return;
-        }
-        final long retryMs = getWindowFullRetryMs();
-        windowRetryThread.schedule(new Runnable() {
-            public void run() {
-                boolean retryAgain = false;
-                try {
-                    List<GmmsMessage> claimed = queueManager.autoClaimBatch(streamKey, groupName, consumerName,
-                            retryMs, Math.max(1, consumerConfig.batchSize()), true);
-                    if (claimed != null && !claimed.isEmpty()) {
-                        MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(
-                                MetricsNames.COMPONENT_STREAM, MetricsNames.FLOW_PROCESS,
-                                null, MetricsNames.ACTION_RETRY_CLAIM), claimed.size());
-                        for (GmmsMessage msg : claimed) {
-                            if (processMessage(streamKey, msg) == ProcessResult.WINDOW_FULL) {
-                                retryAgain = true;
-                                return;
-                            }
-                        }
-                    } else {
-                        queueManager.triggerDoorbell(streamKey, true);
-                    }
-                } catch (Exception e) {
-                    logger.warn("Client outbound window retry failed. streamKey={}", streamKey, e);
-                    queueManager.triggerDoorbell(streamKey, true);
-                } finally {
-                    windowRetryMap.remove(streamKey);
-                    if (retryAgain) {
-                        scheduleWindowRetry(streamKey);
-                    }
-                }
-            }
-        }, retryMs, TimeUnit.MILLISECONDS);
-    }
-
     private long getWindowFullRetryMs() {
         try {
             long value = Long.parseLong(GmmsUtility.getInstance()
@@ -316,7 +447,7 @@ public class OutboundStreamConsumer {
         return ConnectionStatus.CONNECT.equals(status) || ConnectionStatus.RECOVER.equals(status);
     }
 
-    private void handleFailure(GmmsMessage msg, String reason, String streamKey) {
+    private void handleFailure(GmmsMessage msg, String reason, String streamKey, boolean markerHeld) {
         boolean resultProduced = false;
         String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
         try {
@@ -337,10 +468,17 @@ public class OutboundStreamConsumer {
             logger.error(msg, "Failed to generate outbound failure result", e);
         } finally {
             if (resultProduced) {
-                queueManager.ackById(streamKey, groupName, sourceRedisId, msg, true);
+                if (markerHeld) {
+                    ClientSendMarker.ackFailed(streamKey, groupName, sourceRedisId, msg);
+                } else {
+                    queueManager.ackById(streamKey, groupName, sourceRedisId, msg, true);
+                }
             } else {
                 if (msg != null) {
                     msg.setRedisStreamID(sourceRedisId);
+                }
+                if (markerHeld) {
+                    ClientSendMarker.release(msg);
                 }
                 queueManager.logNack(streamKey, groupName, consumerName, msg, true, "failure_result_not_produced");
             }

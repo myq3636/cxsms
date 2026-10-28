@@ -947,6 +947,7 @@ public class GmmsUtility {
 			"CoreResultStreamSharded", "CoreDrResultIdempotency",
 			"CoreDbFallbackInline", "CsmReassembleMode", "CoreCsmExpirySweep",
 			"CoreCsmExpiryIntervalSec", "CoreCsmExpiryBatch", "CoreCsmExpiryLeaseMs",
+			"ClientSendIdempotency", "ClientSendLeaseMs", "ClientStreamTaskMaxBatches", "ClientStreamTaskMaxMs",
 			"ClientOutboundWindowFullRetryMs",
 			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress", "DNSPort",
 			"DNSMaxFailedLimit", "DNSTestPeriod", "DNSTestNumber", "DNSBufferCapacity",
@@ -1006,7 +1007,8 @@ public class GmmsUtility {
 				|| "RedisStreamMaxDeliveries".equals(key)
 				|| "CoreStreamTaskMaxBatches".equals(key)
 				|| "CoreCsmExpiryIntervalSec".equals(key)
-				|| "CoreCsmExpiryBatch".equals(key)) {
+				|| "CoreCsmExpiryBatch".equals(key)
+				|| "ClientStreamTaskMaxBatches".equals(key)) {
 			return true;
 		}
 		if ("ClientOutboundWindowFullRetryMs".equals(key)
@@ -1063,6 +1065,7 @@ public class GmmsUtility {
 				|| "CoreDrResultIdempotency".equals(key)
 				|| "CoreDbFallbackInline".equals(key)
 				|| "CoreCsmExpirySweep".equals(key)
+				|| "ClientSendIdempotency".equals(key)
 				|| "SmppServerInboundSharedPoolEnable".equals(key)
 				|| "MultiSmppServer.LongConnectionCustomerSharedQueueEnable".equals(key)
 				|| (isModuleLongConnectionCustomerKey(key) && key.endsWith(".LongConnectionCustomerSharedQueueEnable"))
@@ -1091,7 +1094,9 @@ public class GmmsUtility {
 				|| "CoreHoldRecoverIntervalMs".equals(key)
 				|| "CoreHoldRecoverIdleMs".equals(key)
 				|| "CoreStreamTaskMaxMs".equals(key)
-				|| "CoreCsmExpiryLeaseMs".equals(key);
+				|| "CoreCsmExpiryLeaseMs".equals(key)
+				|| "ClientSendLeaseMs".equals(key)
+				|| "ClientStreamTaskMaxMs".equals(key);
 	}
 
 	private boolean isRedisStreamTuningKey(String key) {
@@ -1188,6 +1193,10 @@ public class GmmsUtility {
 		if ("CoreCsmExpiryIntervalSec".equals(key)) return "60";
 		if ("CoreCsmExpiryBatch".equals(key)) return "200";
 		if ("CoreCsmExpiryLeaseMs".equals(key)) return "300000";
+		if ("ClientSendIdempotency".equals(key)) return "true";
+		if ("ClientSendLeaseMs".equals(key)) return "60000";
+		if ("ClientStreamTaskMaxBatches".equals(key)) return "10";
+		if ("ClientStreamTaskMaxMs".equals(key)) return "2000";
 		if ("CoreStreamTaskMaxBatches".equals(key)) return "10";
 		if ("CoreStreamTaskMaxMs".equals(key)) return "2000";
 		if ("CoreOutboundOutboxHardTimeoutMs".equals(key)) return "10800000";

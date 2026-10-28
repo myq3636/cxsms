@@ -59,6 +59,35 @@ public class DistributedThrottlingManager {
         limiter.acquire();
     }
 
+    /**
+     * 非阻塞取许可（OutgoingThrottlingNum，按本 Client 节点生效）：拿不到立即返回 false，
+     * 调用方让出 worker，过 {@link #retryAfterMs} 再来，不在限流器上睡眠。
+     */
+    public boolean tryAcquire(int ssid) {
+        int tps = currentTps(ssid);
+        if (tps <= 0) {
+            limiters.remove(ssid);
+            return true;
+        }
+        RateLimiter limiter = getOrInitLimiter(ssid, tps);
+        if (limiter.getRate() != (double) tps) {
+            limiter.setRate(tps);
+            log.info("Auto-aligned RateLimiter for SSID: {} to {} TPS", ssid, tps);
+        }
+        return limiter.tryAcquire();
+    }
+
+    /** 拿不到许可时多久后再试：约一个许可的间隔，限制在 10ms 到 1s 之间。 */
+    public long retryAfterMs(int ssid) {
+        int tps = currentTps(ssid);
+        return tps <= 0 ? 10L : Math.max(10L, Math.min(1000L, 1000L / tps));
+    }
+
+    /** 当前出站限速 TPS（0 = 不限），按本 Client 节点生效。 */
+    public int tps(int ssid) {
+        return currentTps(ssid);
+    }
+
     /** 读取当前出站限速 TPS；取不到配置时返回 0（不限速），避免误卡死出站。 */
     private int currentTps(int ssid) {
         try {
