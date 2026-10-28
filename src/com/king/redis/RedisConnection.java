@@ -223,11 +223,13 @@ public class RedisConnection {
 	/**
 	 * 原子 INCR + 首次 EXPIRE（H-6）：单条 Lua 完成自增并在计数为 1（新建）时设置 TTL，
 	 * 避免 "INCR 与 EXPIRE 两步之间崩溃/失败导致计数 key 无 TTL 永久残留、该桶永久限流"。
+	 * 计数已存在但没有 TTL（旧代码两步写入时残留）时也补上 TTL。
 	 * @return 自增后的计数；异常返回 null（调用方据此 fail-open）。
 	 */
 	public Long incrWithExpire(String key, int expireSeconds) {
 		String script = "local v = redis.call('INCR', KEYS[1]); "
-				+ "if v == 1 then redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1])); end; return v";
+				+ "if v == 1 or redis.call('TTL', KEYS[1]) == -1 then "
+				+ "redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1])); end; return v";
 		try (Jedis jedis = pool.getResource()) {
 			Object r = jedis.eval(script, Arrays.asList(key), Arrays.asList(String.valueOf(expireSeconds)));
 			return r instanceof Long ? (Long) r : null;

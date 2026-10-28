@@ -1599,6 +1599,8 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 				return processStoredDeliveryReport(finalMsg, finalPdu);
 			}
 			else{
+				boolean deleteLookup = false;
+				String lookupHashKey = null;
 				if(isRedisEnable){
 					String object = redis.getString(finalMsg.getOutMsgID());
 					if(object != null){
@@ -1614,24 +1616,13 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 									message.getMsgID(), message.getInMsgID(), message.getOutMsgID(),
 									message.getOSsID(), message.getRSsID(), message.getDateIn(),
 									message.getExpiryDate());
-							if (GmmsStatus.ACCEPT.getCode() ==finalMsg.getStatus().getCode()) {
-								//didn't do anything							
-							}else {
-								String dateKey  = gmmsUtility.getRedisDateIn(message);
-								if(dateKey!=null){
-									log.debug(finalMsg,
-											"TMP-DRLOOKUP inbound DR delete redis key with hash. out={}, hashKey={}",
-											finalMsg.getOutMsgID(), dateKey);
-									redis.delPipeline(finalMsg.getOutMsgID(),dateKey);
-								}else{
-									log.debug(finalMsg,
-											"TMP-DRLOOKUP inbound DR delete redis key. out={}",
-											finalMsg.getOutMsgID());
-									redis.del(finalMsg.getOutMsgID());
-								}
+							// A final DR removes the lookup entry, but only after it has been
+							// processed: a failed attempt stays pending and the retry must find it again.
+							if (GmmsStatus.ACCEPT.getCode() != finalMsg.getStatus().getCode()) {
+								deleteLookup = true;
+								lookupHashKey = gmmsUtility.getRedisDateIn(message);
 							}
-							
-						}			
+						}
 					}else{
 						log.warn(finalMsg,
 								"TMP-DRLOOKUP inbound DR redis miss. msgId={}, in={}, out={}, os={}, rs={}, status={}/{}, sender={}, recipient={}, text={}",
@@ -1661,9 +1652,13 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 						return false;
 					}
 				}
-				if(message != null){					
+				if(message != null){
 					mergeInboundDeliveryReport(message, finalMsg);
-					return processDeliveryReport(message, finalPdu);
+					boolean processed = processDeliveryReport(message, finalPdu);
+					if (processed && deleteLookup) {
+						deleteDrLookup(finalMsg, lookupHashKey);
+					}
+					return processed;
 				} else {
 					return processStoredDeliveryReport(finalMsg, finalPdu);
 				}
@@ -1671,6 +1666,22 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 		} catch (Exception e) {
 			log.warn(finalMsg, "Failed to handle inbound DR", e);
 			return false;
+		}
+	}
+
+	private void deleteDrLookup(GmmsMessage dr, String hashKey) {
+		try {
+			if (hashKey != null) {
+				log.debug(dr, "TMP-DRLOOKUP inbound DR delete redis key with hash. out={}, hashKey={}",
+						dr.getOutMsgID(), hashKey);
+				redis.delPipeline(dr.getOutMsgID(), hashKey);
+			} else {
+				log.debug(dr, "TMP-DRLOOKUP inbound DR delete redis key. out={}", dr.getOutMsgID());
+				redis.del(dr.getOutMsgID());
+			}
+		} catch (Exception e) {
+			// the entry expires by its TTL; the DR itself is already handled
+			log.warn(dr, "TMP-DRLOOKUP inbound DR delete redis key failed. out={}", dr.getOutMsgID(), e);
 		}
 	}
 
@@ -1963,10 +1974,8 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 								int count = oCustomer.getSmsOptionRecipientMaxSendCountIn24H();
 								if(count>0){
 									String key = "Duplicate:"+msg.getRecipientAddress();
-									long currentCount = redis.incrString(key);
-									if(currentCount == 1){
-										redis.setExpire(key, 24*60*60);
-									}
+									Long counted = redis.incrWithExpire(key, 24*60*60);
+									long currentCount = counted == null ? 0 : counted;
 									if(currentCount>count){
 										msg.setStatus(GmmsStatus.RECIPIENT_ERROR_BY_MAX_COUNT);
 										msg.setRSsID(gmmsUtility.getBlackholeSsid());

@@ -96,7 +96,8 @@ public class StreamQueueManager {
 		} else {
 			hashKey = msg.getOSsID() + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
 		}
-		return Math.abs(hashKey.hashCode()) % totalShards;
+		// Same shard as Math.abs(hash) % n for every hash, but never negative for Integer.MIN_VALUE
+		return Math.abs(hashKey.hashCode() % totalShards);
 	}
 
 	public int calculateOutboundShardId(GmmsMessage msg) {

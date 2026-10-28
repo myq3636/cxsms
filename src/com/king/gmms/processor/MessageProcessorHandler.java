@@ -74,10 +74,9 @@ public class MessageProcessorHandler extends ProcessorHandler{
 		try {
 			A2PCustomerInfo cst = gmmsUtility.getCustomerManager().getCustomerBySSID(message.getRSsID());
 			A2PCustomerInfo oInfo = gmmsUtility.getCustomerManager().getCustomerBySSID(message.getOSsID());
-			int priority = oInfo.getPriority();
 			if (cst == null ) {				
 				if(GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(message.getMessageType()) 
-						&& (oInfo.isSmsOptionSendDRByInSubmitInCU()||oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress()))
+						&& oInfo != null && (oInfo.isSmsOptionSendDRByInSubmitInCU()||oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress()))
 						&& message.getRetriedNumber()<1	){	
 					//backup routing didn't need to send indr at 2024.09.14
 					boolean indrFlag = true;
@@ -102,7 +101,7 @@ public class MessageProcessorHandler extends ProcessorHandler{
 						&& map!= null 
 						&& !map.isEmpty() 
 						&& ModuleManager.getInstance().getRouterModules().contains(moduleName) ) {
-					if((oInfo.isSmsOptionSendDRByInSubmitInCU()||oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress()))
+					if(oInfo != null && (oInfo.isSmsOptionSendDRByInSubmitInCU()||oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress()))
 							&& message.getRetriedNumber()<1){
 						//backup routing didn't need to send indr at 2024.09.14
 						boolean indrFlag = true;
@@ -123,7 +122,7 @@ public class MessageProcessorHandler extends ProcessorHandler{
 					log.debug(message, "core priority list bypassed, put message to MessageProcessorThread");
 				}else {
 					if(GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(message.getMessageType()) 
-							&& (oInfo.isSmsOptionSendDRByInSubmitInCU()||oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress()))
+							&& oInfo != null && (oInfo.isSmsOptionSendDRByInSubmitInCU()||oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress()))
 							&& message.getRetriedNumber()<1){	
 						//backup routing didn't need to send indr at 2024.09.14
 						boolean indrFlag = true;

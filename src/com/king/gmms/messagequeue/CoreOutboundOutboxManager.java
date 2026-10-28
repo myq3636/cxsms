@@ -78,7 +78,7 @@ public class CoreOutboundOutboxManager {
                         key, streamKey, redisId);
                 return false;
             }
-            log.info(msg, "Core outbound outbox registered. key={}, streamKey={}, redisId={}, firstCheckMs={}, hardTimeoutMs={}",
+            log.debug(msg, "Core outbound outbox registered. key={}, streamKey={}, redisId={}, firstCheckMs={}, hardTimeoutMs={}",
                     key, streamKey, redisId, recheckMs, hardTimeoutMs);
             return true;
         } catch (Exception e) {

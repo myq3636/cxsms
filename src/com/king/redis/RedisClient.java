@@ -130,6 +130,7 @@ public class RedisClient {
 	public boolean setString(String key, String obj) { return stateRedis.setString(key, obj); }
 	public Long incBlackhole(String key) { return stateRedis.incblackhole(key); }
 	public Long incrString(String key) { return stateRedis.incrString(key); }
+	public Long incrWithExpire(String key, int expireSeconds) { return stateRedis.incrWithExpire(key, expireSeconds); }
 	public void setExpire(String key, int time) { stateRedis.setExpired(key, time); }
 	public boolean setString(String key, String obj, int time) { return stateRedis.setString(key, obj, time); }
 	public String setnxString(String key, String value, int expireSeconds) { return stateRedis.setnxString(key, value, expireSeconds); }
