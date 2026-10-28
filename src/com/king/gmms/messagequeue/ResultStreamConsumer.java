@@ -70,15 +70,16 @@ public class ResultStreamConsumer {
             }
         });
         recoveryThread = Executors.newSingleThreadExecutor();
+        // legacy stream:core:results and the sharded stream:core:results:{ssid}:{shard}
         recoveryThread.execute(new RedisStreamAutoClaimRunner("Core outbound-result",
-                StreamQueueManager.STR_CORE_RESULTS, groupName, consumerName, false, queueManager,
+                StreamQueueManager.STR_CORE_RESULTS + "*", groupName, consumerName, false, queueManager,
                 new RedisStreamAutoClaimRunner.MessageProcessor() {
                     public void process(String streamKey, GmmsMessage msg) {
                         processResult(streamKey, msg);
                     }
                 }));
 
-        queueManager.triggerDoorbell(StreamQueueManager.STR_CORE_RESULTS, false);
+        queueManager.reRingExistingStreams(StreamQueueManager.STR_CORE_RESULTS + "*", false);
         logger.info("Core outbound-result consumer started. Group: {}, Consumer: {}, Config: {}",
                 groupName, consumerName, consumerConfig.summary());
     }

@@ -459,7 +459,7 @@ public class StreamQueueManager {
 			return ZSET_DR_PENDING_ACTIVE;
 		} else if (streamKey.startsWith(STR_INBOUND_DR_PREFIX)) {
 			return ZSET_INBOUND_DR_ACTIVE;
-		} else if (STR_CORE_RESULTS.equals(streamKey)) {
+		} else if (isResultStream(streamKey)) {
 			return ZSET_CORE_RESULTS_ACTIVE;
 		} else if (streamKey.startsWith(STR_CORE_HOLD_PREFIX)) {
 			return ZSET_CORE_HOLD_ACTIVE;
@@ -944,7 +944,7 @@ public class StreamQueueManager {
 		if (STR_OUTBOUND_HTTP.equals(streamKey)) {
 			return "core->http-client";
 		}
-		if (STR_CORE_RESULTS.equals(streamKey)) {
+		if (isResultStream(streamKey)) {
 			return "result->core";
 		}
 		return "unknown";
@@ -969,7 +969,7 @@ public class StreamQueueManager {
 					|| STR_OUTBOUND_HTTP.equals(streamKey)) {
 				return "submit";
 			}
-			if (STR_CORE_RESULTS.equals(streamKey) && msg != null && msg.getRedisStreamMessageType() != null) {
+			if (isResultStream(streamKey) && msg != null && msg.getRedisStreamMessageType() != null) {
 				return MetricsNames.msgType(msg.getRedisStreamMessageType());
 			}
 			if (streamKey.startsWith(STR_DR_PENDING_PREFIX) || streamKey.startsWith(STR_INBOUND_DR_PREFIX)
@@ -1110,8 +1110,44 @@ public class StreamQueueManager {
 	}
 
 
+	/**
+	 * Outbound result for Core. With CoreResultStreamSharded (default true) it goes to
+	 * stream:core:results:{ssid}:{shard} so results are processed in parallel and per ssid;
+	 * false writes the single legacy stream:core:results. Core consumes both.
+	 */
 	public boolean produceResult(GmmsMessage msg) {
-		return produce(STR_CORE_RESULTS, msg, false);
+		return produce(resultStreamKey(msg), msg, false);
+	}
+
+	public boolean isResultStreamSharded() {
+		return !"false".equalsIgnoreCase(GmmsUtility.getInstance().getCommonProperty("CoreResultStreamSharded", "true"));
+	}
+
+	/**
+	 * ssid: the customer (ossid) for DR results, the channel (rssid) otherwise, the other one when
+	 * missing; shard by msgId so all parts of a split message share a stream.
+	 */
+	public String resultStreamKey(GmmsMessage msg) {
+		if (msg == null || !isResultStreamSharded()) {
+			return STR_CORE_RESULTS;
+		}
+		String type = msg.getMessageType();
+		boolean drResult = GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP.equalsIgnoreCase(type)
+				|| GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(type)
+				|| GmmsMessage.MSG_TYPE_DELIVERY_REPORT_QUERY_RESP.equalsIgnoreCase(type);
+		int ssid = drResult ? msg.getOSsID() : msg.getRSsID();
+		if (ssid <= 0) {
+			ssid = drResult ? msg.getRSsID() : msg.getOSsID();
+		}
+		String id = !isBlank(msg.getMsgID()) ? msg.getMsgID() : msg.getInMsgID();
+		int totalShards = GmmsUtility.getInstance().getTotalShards();
+		int shard = totalShards <= 1 || isBlank(id) ? 0 : (id.hashCode() & Integer.MAX_VALUE) % totalShards;
+		return STR_CORE_RESULTS + ":" + ssid + ":" + shard;
+	}
+
+	/** stream:core:results and its sharded streams stream:core:results:{ssid}:{shard} */
+	public static boolean isResultStream(String streamKey) {
+		return streamKey != null && (STR_CORE_RESULTS.equals(streamKey) || streamKey.startsWith(STR_CORE_RESULTS + ":"));
 	}
 
 	public long getAutoClaimIdleMs() {
@@ -1261,7 +1297,7 @@ public class StreamQueueManager {
 		if (lowerModule.contains("core")) {
 			scanBacklogPattern(STR_MT_PENDING_PREFIX + "*", "CoreMTGroup", ZSET_MT_PENDING_ACTIVE, true, "server_to_core");
 			scanBacklogPattern(STR_INBOUND_DR_PREFIX + "*", "CoreInboundDRGroup", ZSET_INBOUND_DR_ACTIVE, false, "client_to_core");
-			scanBacklogPattern(STR_CORE_RESULTS, "CoreResultGroup", ZSET_CORE_RESULTS_ACTIVE, false, "result_to_core");
+			scanBacklogPattern(STR_CORE_RESULTS + "*", "CoreResultGroup", ZSET_CORE_RESULTS_ACTIVE, false, "result_to_core");
 			scanBacklogPattern(STR_MQM_SUBMIT_PREFIX + "*", "CoreMQMSubmitGroup", ZSET_MQM_SUBMIT_ACTIVE, true, "mqm_to_core_submit");
 			scanBacklogPattern(STR_MQM_REPORT_PREFIX + "*", "CoreMQMReportGroup", ZSET_MQM_REPORT_ACTIVE, false, "mqm_to_core_report");
 		} else if (lowerModule.contains("commonhttpclient")) {
