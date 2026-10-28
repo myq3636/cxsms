@@ -195,8 +195,7 @@ public class SyncSubmitRouter {
             int count = oCustomer == null ? 0 : oCustomer.getSmsOptionRecipientMaxSendCountIn24H();
             if (count > 0) {
                 String key = "Duplicate:" + assembled.getRecipientAddress();
-                Long counted = gmmsUtility.getRedisClient().incrWithExpire(key, 24 * 60 * 60);
-                long currentCount = counted == null ? 0 : counted;
+                long currentCount = com.king.gmms.messagequeue.MtAttempt.countOnce(key, 24 * 60 * 60);
                 if (currentCount > count) {
                     assembled.setStatus(GmmsStatus.RECIPIENT_ERROR_BY_MAX_COUNT);
                     assembled.setRSsID(gmmsUtility.getBlackholeSsid());

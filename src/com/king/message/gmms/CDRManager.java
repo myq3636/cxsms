@@ -1,5 +1,6 @@
 package com.king.message.gmms;
 
+import com.king.gmms.messagequeue.MtAttempt;
 import java.util.Date;
 
 import com.king.framework.*;
@@ -57,6 +58,10 @@ public class CDRManager {
 	}
 
 	private boolean add(CDR cdr) {
+		if (!MtAttempt.once("cdr", cdr.getCdrType() + ":" + cdr.getSplitStatus() + ":" + cdr.getRSsID())) {
+			log.info(cdr, "MT redelivered, {} CDR already written", cdr.getCdrType());
+			return true;
+		}
 		String cdrStr = makeCDR(cdr);
 		log.debug(new StringBuilder(" ").append(cdr.getMsgID())
 				.append(" CDR: ").append(cdrStr).toString());

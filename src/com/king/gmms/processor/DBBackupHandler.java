@@ -64,6 +64,11 @@ public class DBBackupHandler extends ProcessorHandler{
 		if(message == null){
 			return ret;
 		}
+		if (!com.king.gmms.messagequeue.MtAttempt.once("db",
+				message.getStatusCode() + ":" + message.getSplitStatus())) {
+			log.info(message, "MT redelivered, DB backup already queued");
+			return true;
+		}
 		try {
 			handlerThreadPool.execute(new DBBackupThread(message));
 			ret = true;

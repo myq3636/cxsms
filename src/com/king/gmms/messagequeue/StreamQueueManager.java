@@ -4,6 +4,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Set;
 
 import com.king.framework.SystemLogger;
@@ -108,20 +109,14 @@ public class StreamQueueManager {
 	}
 
 	public boolean produceSubmitRouted(GmmsMessage msg, String channelId) {
-		String key = STR_MT_ROUTED_PREFIX + channelId;
-		boolean produced = produce(key, msg, true);
-		if (produced && !CoreOutboundOutboxManager.getInstance().register(msg, key, msg.getRedisStreamID())) {
-			deleteStreamEntry(key, msg.getRedisStreamID(), true);
-			return false;
-		}
-		return produced;
+		return produceOnce(STR_MT_ROUTED_PREFIX + channelId, msg);
 	}
 
 	public boolean produceHttpSubmitMessage(GmmsMessage msg) {
 		int targetSsid = msg.getRSsID();
 		int shardId = calculateHttpShardId(msg, targetSsid);
 		String key = STR_HTTP_SUBMIT_PREFIX + targetSsid + ":" + shardId;
-		return produce(key, msg, true);
+		return produceOnce(key, msg);
 	}
 
 	public boolean produceHttpDeliveryReport(GmmsMessage msg) {
@@ -230,6 +225,10 @@ public class StreamQueueManager {
 
 	public boolean produceServerDeliveryMessage(GmmsMessage msg) {
 		String key = getServerDeliveryQueue(msg);
+		if (!MtAttempt.once("delivery", String.valueOf(msg.getSplitStatus()))) {
+			logger.info(msg, "MT redelivered, delivery part {} already produced", msg.getSplitStatus());
+			return true;
+		}
 		return produce(key, msg, false);
 	}
 
@@ -300,6 +299,92 @@ public class StreamQueueManager {
 			return msgId != null;
 		} catch (Exception e) {
 			logStreamTrace("STREAM-PUT", key, null, null, null, msg, isSubmitMq,
+					"result=fail reason=exception:" + e.getClass().getSimpleName());
+			logger.error("Produce to stream " + key + " failed", e);
+			incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_FAIL);
+			return false;
+		}
+	}
+
+	// KEYS: 1 stream, 2 doorbell, 3 marker|'', 4 outbox|'', 5 outboxZset|'', 6 outboxMeta|''
+	// ARGV: 1 maxLen, 2 '~'|'', 3 nowMs, 4 partField, 5 body, 6 outboxTtl, 7 outboxFirstCheck,
+	//       8 flag count n (pairs), 9.. n field,value pairs
+	private static final String PRODUCE_ONCE_LUA =
+			"local m = KEYS[3] "
+			+ "if m ~= '' then "
+			+ "  local done = redis.call('HGET', m, ARGV[4]) "
+			+ "  if done then return {'DUP', done} end "
+			+ "end "
+			+ "local args = {KEYS[1], 'MAXLEN'} "
+			+ "if ARGV[2] == '~' then args[#args+1] = '~' end "
+			+ "args[#args+1] = ARGV[1] args[#args+1] = '*' args[#args+1] = 'body' args[#args+1] = ARGV[5] "
+			+ "local id = redis.call('XADD', unpack(args)) "
+			+ "redis.call('ZADD', KEYS[2], ARGV[3], KEYS[1]) "
+			+ "if KEYS[4] ~= '' then "
+			+ "  redis.call('SETEX', KEYS[4], ARGV[6], ARGV[5]) "
+			+ "  redis.call('ZADD', KEYS[5], ARGV[7], KEYS[4]) "
+			+ "  redis.call('SETEX', KEYS[6], ARGV[6], KEYS[1] .. '\\n' .. id .. '\\n' .. ARGV[3]) "
+			+ "end "
+			+ "if m ~= '' then "
+			+ "  redis.call('HSET', m, ARGV[4], id) "
+			+ "  local n = tonumber(ARGV[8]) "
+			+ "  if n > 0 then redis.call('HSET', m, unpack(ARGV, 9, 8 + 2 * n)) end "
+			+ "end "
+			+ "return {'OK', id}";
+
+	/**
+	 * Produce an outbound MT to a submit MQ stream: XADD + doorbell, plus its outbox entry
+	 * (routed SMPP) and, inside an {@link MtAttempt}, the part marker and pending side-effect
+	 * flags, all in one Lua. A part already produced by an earlier attempt is not produced again.
+	 */
+	private boolean produceOnce(String key, GmmsMessage msg) {
+		int split = msg.getSplitStatus();
+		String done = MtAttempt.producedPart(split);
+		if (done != null) {
+			msg.setRedisStreamID(done);
+			logger.info(msg, "MT redelivered, part {} already produced to {} as {}", split, key, done);
+			return true;
+		}
+		try {
+			if (isBackPressureBlocked(key, true)) {
+				logStreamTrace("STREAM-PUT", key, null, null, null, msg, true, "result=fail reason=backpressure_blocked");
+				incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_FAIL);
+				return false;
+			}
+			String marker = MtAttempt.currentMarker();
+			CoreOutboundOutboxManager.OutboxWrite outbox = CoreOutboundOutboxManager.getInstance().outboxWrite(msg, key);
+			List<String> flags = marker == null ? new ArrayList<String>() : MtAttempt.pendingFlags();
+			String body = SerializableHandler.convertGmmsMessage2RedisMessage(msg);
+			long now = System.currentTimeMillis();
+			List<String> keys = Arrays.asList(key, getDoorbellZSet(key), marker == null ? "" : marker,
+					outbox == null ? "" : outbox.key, outbox == null ? "" : outbox.zset,
+					outbox == null ? "" : outbox.metaKey);
+			List<String> args = new ArrayList<String>();
+			args.add(String.valueOf(getStreamMaxLen()));
+			args.add(isApproximateTrimming() ? "~" : "");
+			args.add(String.valueOf(now));
+			args.add(MtAttempt.partField(split));
+			args.add(body);
+			args.add(String.valueOf(outbox == null ? 0 : outbox.ttlSeconds));
+			args.add(String.valueOf(outbox == null ? 0 : outbox.firstCheckAt));
+			args.add(String.valueOf(flags.size() / 2));
+			args.addAll(flags);
+			List<?> r = (List<?>) redisClient.getSubmitMqRedis().evalScript(PRODUCE_ONCE_LUA, keys, args);
+			String id = String.valueOf(r.get(1));
+			msg.setRedisStreamID(id);
+			if (marker != null) {
+				MtAttempt.partProduced(split, id, flags);
+			}
+			if ("DUP".equals(String.valueOf(r.get(0)))) {
+				logger.info(msg, "MT part {} already produced to {} as {}, not produced again", split, key, id);
+				return true;
+			}
+			incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_OK);
+			logStreamTrace("STREAM-PUT", key, null, null, id, msg, true,
+					"zset=" + getDoorbellZSet(key) + " outbox=" + (outbox == null ? "-" : outbox.key) + " result=ok");
+			return true;
+		} catch (Exception e) {
+			logStreamTrace("STREAM-PUT", key, null, null, null, msg, true,
 					"result=fail reason=exception:" + e.getClass().getSimpleName());
 			logger.error("Produce to stream " + key + " failed", e);
 			incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_FAIL);
@@ -905,14 +990,7 @@ public class StreamQueueManager {
 			int shardId = calculateOutboundShardId(msg);
 			key = STR_MT_ROUTED_PREFIX + msg.getRSsID() + ":" + shardId;
 		}
-		boolean needOutbox = key.startsWith(STR_MT_ROUTED_PREFIX);
-		boolean produced = produce(key, msg, true);
-		if (produced && needOutbox
-				&& !CoreOutboundOutboxManager.getInstance().register(msg, key, msg.getRedisStreamID())) {
-			deleteStreamEntry(key, msg.getRedisStreamID(), true);
-			return false;
-		}
-		return produced;
+		return produceOnce(key, msg);
 	}
 
 	private boolean isBlank(String value) {

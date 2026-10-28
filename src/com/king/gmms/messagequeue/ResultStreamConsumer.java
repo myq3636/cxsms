@@ -176,6 +176,14 @@ public class ResultStreamConsumer {
         try {
             String resultType = msg.getRedisStreamMessageType() != null
                     ? msg.getRedisStreamMessageType() : msg.getMessageType();
+            if (GmmsMessage.MSG_TYPE_SUBMIT_RESP.equalsIgnoreCase(resultType)
+                    && CoreOutboundOutboxManager.getInstance().claimResult(msg) == CoreOutboundOutboxManager.Claim.STALE) {
+                // this outbound attempt already has its result (e.g. a submit_resp after the timeout)
+                logger.warn(msg, "Late or duplicate submit result dropped. streamKey={}, redisId={}, status={}",
+                        streamKey, sourceRedisId, msg.getStatusCode());
+                queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);
+                return;
+            }
             if (!InternalCoreEngineSession.getReactiveInstance().handleOutboundResultInternal(msg)) {
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(MetricsNames.COMPONENT_CONSUMER,
                         MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_FAIL));
@@ -189,7 +197,6 @@ public class ResultStreamConsumer {
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
                         MetricsNames.STAGE_OUT_DR, msg, false, MetricsNames.ACTION_PROCESSED));
             }
-            CoreOutboundOutboxManager.getInstance().complete(msg);
             boolean acked = queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);
             if (!acked) {
                 logger.warn(msg,

@@ -33,6 +33,7 @@ import com.king.gmms.processor.CsmValueInfoMark;
 import com.king.gmms.processor.DirectInDRDispatchService;
 import com.king.gmms.processor.MessageProcessorHandler;
 import com.king.gmms.processor.MessageProcessorThread;
+import com.king.gmms.messagequeue.MtAttempt;
 import com.king.gmms.protocol.commonhttp.HttpUtils;
 import com.king.gmms.routing.IOSMSRerouteDispatcher;
 import com.king.gmms.routing.RouteResponse;
@@ -316,7 +317,9 @@ public class MessageStoreManager extends DataManager {
 			return;
 		}
 		if (isSendToSMQ) {
-			insertMessageToDB(message, SMQ);
+			if (MtAttempt.once("smq", String.valueOf(message.getSplitStatus()))) {
+				insertMessageToDB(message, SMQ);
+			}
 		} else {
 			sendToPMQ(message);
 		}
@@ -1829,6 +1832,10 @@ public class MessageStoreManager extends DataManager {
 	 * @param message
 	 */
 	public void sendDRMessage(GmmsMessage message) {
+		if (!MtAttempt.once("dr", message.getStatusCode() + ":" + message.getSplitStatus())) {
+			log.info(message, "MT redelivered, DR {} already sent", message.getStatusCode());
+			return;
+		}
 		// concatenated message and is the first DR
 		if (ctm == null) {
 			ctm = gmmsUtility.getCustomerManager();
@@ -4238,6 +4245,10 @@ public class MessageStoreManager extends DataManager {
 	}
 	
 	public void insertMsgForDRDelay(GmmsMessage message, int delayTime) {
+		if (!MtAttempt.once("drdelay", message.getStatusCode() + ":" + message.getSplitStatus())) {
+			log.info(message, "MT redelivered, delayed DR {} already stored", message.getStatusCode());
+			return;
+		}
 		if (message.getSarMsgRefNum() != null
 				&& message.getSarMsgRefNum().trim().length() > 0) {
 			List<GmmsMessage> msgList = new ArrayList<GmmsMessage>();

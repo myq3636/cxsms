@@ -1974,8 +1974,7 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 								int count = oCustomer.getSmsOptionRecipientMaxSendCountIn24H();
 								if(count>0){
 									String key = "Duplicate:"+msg.getRecipientAddress();
-									Long counted = redis.incrWithExpire(key, 24*60*60);
-									long currentCount = counted == null ? 0 : counted;
+									long currentCount = com.king.gmms.messagequeue.MtAttempt.countOnce(key, 24 * 60 * 60);
 									if(currentCount>count){
 										msg.setStatus(GmmsStatus.RECIPIENT_ERROR_BY_MAX_COUNT);
 										msg.setRSsID(gmmsUtility.getBlackholeSsid());

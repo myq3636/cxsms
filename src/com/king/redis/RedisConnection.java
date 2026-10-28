@@ -1296,6 +1296,36 @@ public class RedisConnection {
 		}
 	}
 
+	/**
+	 * Run a Lua script. Unlike most methods here a Redis error is thrown, so a caller
+	 * that must not ack on failure can tell "failed" from "returned nil".
+	 */
+	public Object evalScript(String script, List<String> keys, List<String> args) {
+		try (Jedis jedis = pool.getResource()) {
+			return jedis.eval(script, keys, args);
+		}
+	}
+
+	/**
+	 * Smallest idle time (ms since the last read attempt) among the consumers of a group,
+	 * -1 when the group has no consumer or does not exist.
+	 */
+	public long minConsumerIdleMs(String key, String group) {
+		try (Jedis jedis = pool.getResource()) {
+			long min = -1;
+			for (redis.clients.jedis.resps.StreamConsumerInfo c : jedis.xinfoConsumers2(key, group)) {
+				long idle = c.getIdle();
+				if (min < 0 || idle < min) {
+					min = idle;
+				}
+			}
+			return min;
+		} catch (Exception e) {
+			logger.warn("minConsumerIdleMs failed. key={}, group={}", key, group, e);
+			return -1;
+		}
+	}
+
 	public boolean streamPendingEntryExists(String key, String group, String id) {
 		if (key == null || group == null || id == null || id.trim().length() == 0) {
 			return false;
