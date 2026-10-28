@@ -1,7 +1,7 @@
 # Core 通道限速放行与空指针修复：测试用例与执行报告
 
 > 范围：
-> - 通道限速放行（`ChannelReleaseDispatcher`、暂存队列 `stream:core:hold:{rssid}`、`CoreOutboundTps` / `CoreHoldMaxSeconds`）
+> - 通道限速放行（`ChannelReleaseDispatcher`、暂存队列 `stream:core:hold:{rssid}`、`SMSOptionCoreProcessorThrottlingNum` / `CoreHoldMaxSeconds`）
 > - 两处空指针修复：DR 改道时间窗判断；`senderReplacement.cfg` 缺失时启动失败
 > - 第 1 到 3 批的全量回归（用例见《Core优化测试用例与执行报告》）
 >
@@ -13,7 +13,7 @@
 
 | 项 | 配置 |
 |---|---|
-| 限速通道 VENDOR9（rssid 9） | `CoreOutboundTps: 2`、`CoreHoldMaxSeconds: 5`，所以积压上限 = 2 × 5 = 10 条 |
+| 限速通道 VENDOR9（rssid 9） | `SMSOptionCoreProcessorThrottlingNum: 2`、`CoreHoldMaxSeconds: 5`，所以积压上限 = 2 × 5 = 10 条 |
 | 客户 7001 的路由 | `conf/routing/CUST7001_routingInfo.cfg`：`A2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR9)` |
 | 不限速通道 VENDOR8（rssid 8） | 不配置两个新参数，使用默认值 0 和 21600 |
 | 测试中的热加载 | 改写 cm.cfg 里 VENDOR9 的两个值，再调用真实的 `A2PCustomerManager.loadCustomers()` |
@@ -88,7 +88,7 @@
 
 | ID | 项 | 建议做法 |
 |---|---|---|
-| X-11 | 多个 Core 节点同时放行：总速率 = TPS × 节点数 | 测试环境部署 2 个 Core，给同一个通道配 `CoreOutboundTps: 5`，观察 routed 的写入速率约为每秒 10 条 |
+| X-11 | 多个 Core 节点同时放行：总速率 = TPS × 节点数 | 测试环境部署 2 个 Core，给同一个通道配 `SMSOptionCoreProcessorThrottlingNum: 5`，观察 routed 的写入速率约为每秒 10 条 |
 | X-12 | 失败后的重试策略：供应商的重试码里包含 2600 时，被拒的消息会写入 RMQ 后重新外发 | 需要数据库；测试环境里给供应商配上 `SMSOptionSubmitRetryCode` 后验证 |
 | X-13 | HTTP 通道限速：放行到 `stream:http:submit:*` | 本地没有 HTTP 通道配置；测试环境配置一个 HTTP 供应商再验证 |
 | X-14 | 大量积压时 Redis 的内存与放行性能 | 压测：例如每秒 5000 条进、每秒 1 条出，观察 hold 长度停在上限、拒收的条数与预期一致、Redis 内存 |

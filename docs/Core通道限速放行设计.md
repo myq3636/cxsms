@@ -19,7 +19,7 @@
 stream:mt:pending:{ossid}:{shard}
    │ MTStreamConsumer（正常速度，不等待）
    ▼ 路由，选出 rssid
-   ├ 通道没配 CoreOutboundTps → 和现在一样，直接写 stream:mt:routed（行为不变）
+   ├ 通道没配 SMSOptionCoreProcessorThrottlingNum → 和现在一样，直接写 stream:mt:routed（行为不变）
    └ 配了：
        ├ 积压条数 ≥ 上限 → 不写入；写 CDR，给客户回失败 DR（通道拥塞）
        └ 否则写入 stream:core:hold:{rssid}，然后确认消费 pending
@@ -39,10 +39,10 @@ stream:mt:routed:{rssid}:{shard} → Client（几乎没有积压）
 
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
-| `CoreOutboundTps` | 0（不限速） | **单个 Core 节点**对这个通道的放行速率。实际总速率 = 这个值 × 放行该通道的 Core 节点数，配置时按"供应商能力 ÷ Core 节点数"填写 |
+| `SMSOptionCoreProcessorThrottlingNum` | 0（不限速） | **单个 Core 节点**对这个通道的放行速率。实际总速率 = 这个值 × 放行该通道的 Core 节点数，配置时按"供应商能力 ÷ Core 节点数"填写 |
 | `CoreHoldMaxSeconds` | 21600（6 小时） | 消息在暂存队列里最多等多久；同时检查消息自身的过期时间，先到者为准。也用来计算积压上限 |
 
-- 积压上限 = `CoreOutboundTps × CoreHoldMaxSeconds`（按 rssid）。例如 1 × 21600 = 21600 条。
+- 积压上限 = `SMSOptionCoreProcessorThrottlingNum × CoreHoldMaxSeconds`（按 rssid）。例如 1 × 21600 = 21600 条。
 - 超过上限：直接回失败 DR，不写入暂存队列。
 - cm.cfg 热加载后生效：放行线程每一轮都从客户配置快照里读取最新值；本地 `RateLimiter.setRate` 随之调整。改成 0 以后，新消息直接走 routed，暂存队列里剩下的消息不再限速，尽快放完。
 
@@ -82,7 +82,7 @@ stream:mt:routed:{rssid}:{shard} → Client（几乎没有积压）
 
 ## 7. 验证场景（本地集成环境）
 
-1. 配 `CoreOutboundTps: 2` 的通道，每秒写入 50 条：放行速率不超过 2；另一个不限速的通道不受影响。
+1. 配 `SMSOptionCoreProcessorThrottlingNum: 2` 的通道，每秒写入 50 条：放行速率不超过 2；另一个不限速的通道不受影响。
 2. 积压达到上限后，新消息立即得到失败 DR，hold 长度不再增加。
 3. 在 hold 里超过 `CoreHoldMaxSeconds`（测试时配成几秒）的消息不会发出，客户收到失败 DR。
 4. 搬运到一半时进程退出：恢复后不丢失、不重复。
@@ -99,4 +99,4 @@ stream:mt:routed:{rssid}:{shard} → Client（几乎没有积压）
 | 目标 stream | 放行时重新计算：通道协议为 HTTP 时写 `stream:http:submit:*`，否则写 `stream:mt:routed:*` |
 | 令牌 | 每个 Core 节点、每个 rssid 一个本地 Guava `RateLimiter`，每 100ms 一轮（`CoreHoldReleaseTickMs`），每轮最多 100 条 |
 | 崩溃恢复 | 每 30 秒（`CoreHoldRecoverIntervalMs`）用 XAUTOCLAIM 接管空闲超过 60 秒（`CoreHoldRecoverIdleMs`）的条目，**只转移归属、不消耗令牌**；放行时先读本节点名下的待处理条目，再读新条目 |
-| 新增配置 | cm.cfg（按通道）：`CoreOutboundTps`、`CoreHoldMaxSeconds`；全局：`CoreHoldReleaseTickMs`、`CoreHoldRecoverIntervalMs`、`CoreHoldRecoverIdleMs` |
+| 新增配置 | cm.cfg（按通道）：`SMSOptionCoreProcessorThrottlingNum`、`CoreHoldMaxSeconds`；全局：`CoreHoldReleaseTickMs`、`CoreHoldRecoverIntervalMs`、`CoreHoldRecoverIdleMs` |
