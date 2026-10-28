@@ -1,7 +1,7 @@
 # Core 通道限速放行设计
 
 > 目的：客户提交速率远大于通道（供应商）速率时（例如客户每秒 5000 条、通道每秒 1 条），由 Core 按通道配置的速率放行，积压留在 Core 的 Redis 暂存队列里，`stream:mt:routed` 和 Client 侧不再积压。
-> 状态：设计已确认，未实现。计划排在第 3 批（MT 幂等与 outbox 改造）之后。
+> 状态：已实现（`ChannelReleaseDispatcher`，见第 8 节实现说明）；测试见《Core通道限速放行测试用例与执行报告》。
 
 ## 1. 现状问题
 
@@ -87,3 +87,16 @@ stream:mt:routed:{rssid}:{shard} → Client（几乎没有积压）
 3. 在 hold 里超过 `CoreHoldMaxSeconds`（测试时配成几秒）的消息不会发出，客户收到失败 DR。
 4. 搬运到一半时进程退出：恢复后不丢失、不重复。
 5. 热加载把 TPS 从 2 改成 10：放行速率随之变化；改成 0：新消息直接走 routed。
+
+## 8. 实现说明（与上文的差异和补充）
+
+| 项 | 实现 |
+|---|---|
+| 失败状态码 | 积压超上限：Throttled（2600）；暂存超过 `CoreHoldMaxSeconds` 或消息本身已过期：EXPIRED（10200）。两者都走 `MessageStoreManager.handleOutSubmitRes(msg, false)`：写 OUT_SUBMIT CDR、按客户配置回失败 DR、按重试码决定是否重试（2600 在供应商的 `SMSOptionSubmitRetryCode` 里时会重试） |
+| 拦截位置 | `StreamQueueManager.produceOutboundMessage`（SMPP）和 `produceHttpSubmitMessage`（HTTP）；只拦截 Submit 类型 |
+| 写入暂存队列 | 复用第 3 批的 `produceOnce` Lua：在一次 MT 处理中，同一段只写入一次；hold stream 不登记 outbox |
+| 放行 | 一段 Lua 完成：XACK+XDEL hold 条目（XACK 返回 0 说明已被别的 Core 放行，直接放弃）→ XADD 目标 stream + 门铃 + outbox（routed）→ hold 为空时删除门铃 |
+| 目标 stream | 放行时重新计算：通道协议为 HTTP 时写 `stream:http:submit:*`，否则写 `stream:mt:routed:*` |
+| 令牌 | 每个 Core 节点、每个 rssid 一个本地 Guava `RateLimiter`，每 100ms 一轮（`CoreHoldReleaseTickMs`），每轮最多 100 条 |
+| 崩溃恢复 | 每 30 秒（`CoreHoldRecoverIntervalMs`）用 XAUTOCLAIM 接管空闲超过 60 秒（`CoreHoldRecoverIdleMs`）的条目，**只转移归属、不消耗令牌**；放行时先读本节点名下的待处理条目，再读新条目 |
+| 新增配置 | cm.cfg（按通道）：`CoreOutboundTps`、`CoreHoldMaxSeconds`；全局：`CoreHoldReleaseTickMs`、`CoreHoldRecoverIntervalMs`、`CoreHoldRecoverIdleMs` |
