@@ -282,7 +282,7 @@ public class MessageProcessorThread extends RunnableMsgTask{
 					int blackholeTimer = ocustomer.getBlackholeTimerInSec();
 					int blackholeNumber = ocustomer.getBlackholeMinNumberByTimer();
 					Long number;
-					if (com.king.gmms.messagequeue.MtAttempt.once("cnt", "blackhole_" + ossid)) {
+					if (com.king.gmms.messagequeue.StreamAttempt.once("cnt", "blackhole_" + ossid)) {
 						number = gmmsUtility.getRedisClient().incBlackhole("blackhole_"+ossid);
 						//log.info("redis blackhole number is {},{}", number, blackholeNumber);
 						gmmsUtility.getRedisClient().setExpire("blackhole_"+ossid, blackholeTimer);

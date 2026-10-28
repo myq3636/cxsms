@@ -182,18 +182,42 @@ public class InboundDRStreamConsumer {
         long start = System.nanoTime();
         String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
         try {
-            // The DR to the customer is produced on this thread, before the ack below
-            boolean processed = MessageStoreManager.withInlineDrDispatch(new Callable<Boolean>() {
-                public Boolean call() {
-                    return InternalCoreEngineSession.getReactiveInstance().handleInboundDRInternal(msg, null);
+            boolean attempt = StreamAttempt.drResultEnabled();
+            com.king.redis.RedisConnection streamRedis = com.king.redis.RedisClient.getInstance().getReportMqRedis();
+            if (attempt) {
+                StreamAttempt.Start state = StreamAttempt.beginEntry(streamKey, msg, streamRedis,
+                        consumerName + ":" + Thread.currentThread().getId());
+                if (state == StreamAttempt.Start.BUSY) {
+                    logger.info(msg, "Inbound DR is being processed by another consumer, left pending. streamKey={}, redisId={}",
+                            streamKey, sourceRedisId);
+                    return;
                 }
-            });
+                if (state == StreamAttempt.Start.DONE) {
+                    StreamAttempt.ackDone(streamKey, groupName, msg, streamRedis);
+                    return;
+                }
+            }
+            boolean processed = false;
+            try {
+                // The DR to the customer is produced on this thread, before the ack below
+                processed = MessageStoreManager.withInlineDrDispatch(new Callable<Boolean>() {
+                    public Boolean call() {
+                        return InternalCoreEngineSession.getReactiveInstance().handleInboundDRInternal(msg, null);
+                    }
+                });
+            } finally {
+                if (attempt && !processed) {
+                    StreamAttempt.abandon();
+                }
+            }
             if (processed) {
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
                         MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_PROCESSED));
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
                         MetricsNames.STAGE_IN_DR, msg, true, MetricsNames.ACTION_PROCESSED));
-                boolean acked = queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);
+                // with an attempt: _done first, then XACK+XDEL+DEL marker
+                boolean acked = attempt ? StreamAttempt.finish(streamKey, groupName, sourceRedisId)
+                        : queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);
                 if (!acked) {
                     logger.warn(msg,
                             "Inbound DR stream ack failed after process success. streamKey={}, sourceRedisId={}, currentRedisId={}",

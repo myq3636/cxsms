@@ -33,7 +33,7 @@ import com.king.gmms.processor.CsmValueInfoMark;
 import com.king.gmms.processor.DirectInDRDispatchService;
 import com.king.gmms.processor.MessageProcessorHandler;
 import com.king.gmms.processor.MessageProcessorThread;
-import com.king.gmms.messagequeue.MtAttempt;
+import com.king.gmms.messagequeue.StreamAttempt;
 import com.king.gmms.protocol.commonhttp.HttpUtils;
 import com.king.gmms.routing.IOSMSRerouteDispatcher;
 import com.king.gmms.routing.RouteResponse;
@@ -317,7 +317,7 @@ public class MessageStoreManager extends DataManager {
 			return;
 		}
 		if (isSendToSMQ) {
-			if (MtAttempt.once("smq", String.valueOf(message.getSplitStatus()))) {
+			if (StreamAttempt.once("smq", String.valueOf(message.getSplitStatus()))) {
 				insertMessageToDB(message, SMQ);
 			}
 		} else {
@@ -531,7 +531,7 @@ public class MessageStoreManager extends DataManager {
 		GmmsMessage cdr = new GmmsMessage(message);
 		// reroute check and process
 		if (checkReroute) {				
-			if (RouteResponse.RouteOK.equals(rerouteDispatcher.dispatch(message))) {
+			if (rerouteOnce(message)) {
 				// reroute success, return directly				
 				if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(messageType)) {			
 					if (supportDR)
@@ -1236,8 +1236,21 @@ public class MessageStoreManager extends DataManager {
 	
 	
 	public boolean rerouteOutMsg(GmmsMessage message){		
+		return rerouteOnce(message);
+	}
+
+	/**
+	 * Reroute to a backup channel. A redelivered DR / result whose earlier attempt already
+	 * rerouted is reported as rerouted without sending again; the mark is written at once.
+	 */
+	private boolean rerouteOnce(GmmsMessage message) {
+		String name = "reroute:" + message.getSplitStatus();
+		if (StreamAttempt.isDone(name)) {
+			log.info(message, "Redelivered, already rerouted");
+			return true;
+		}
 		if (RouteResponse.RouteOK.equals(rerouteDispatcher.dispatch(message))) {
-			// reroute success, return directly
+			StreamAttempt.markDoneNow(name);
 			return true;
 		}
 		return false;
@@ -1845,7 +1858,7 @@ public class MessageStoreManager extends DataManager {
 	 * @param message
 	 */
 	public void sendDRMessage(GmmsMessage message) {
-		if (!MtAttempt.once("dr", message.getStatusCode() + ":" + message.getSplitStatus())) {
+		if (!StreamAttempt.once("dr", message.getStatusCode() + ":" + message.getSplitStatus())) {
 			log.info(message, "MT redelivered, DR {} already sent", message.getStatusCode());
 			return;
 		}
@@ -2104,6 +2117,10 @@ public class MessageStoreManager extends DataManager {
 	// true = 已同步落库或成功入异步队列；false = 连入队/同步写都失败(消息可能丢，需调用方处理)。
 	// 现有忽略返回值的调用点行为不变(返回值非破坏性)。
 	public boolean insertMessageToDB(GmmsMessage message, String table) {
+		if (!StreamAttempt.once("dbq:" + table, message.getSplitStatus() + ":" + message.getStatusCode())) {
+			log.info(message, "Redelivered, already inserted into {}", table);
+			return true;
+		}
 
 		String strSQL = "INSERT INTO " + table + " SET "
 				+ makeUpdateAllStmt(message);
@@ -4258,7 +4275,7 @@ public class MessageStoreManager extends DataManager {
 	}
 	
 	public void insertMsgForDRDelay(GmmsMessage message, int delayTime) {
-		if (!MtAttempt.once("drdelay", message.getStatusCode() + ":" + message.getSplitStatus())) {
+		if (!StreamAttempt.once("drdelay", message.getStatusCode() + ":" + message.getSplitStatus())) {
 			log.info(message, "MT redelivered, delayed DR {} already stored", message.getStatusCode());
 			return;
 		}

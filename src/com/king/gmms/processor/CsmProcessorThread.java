@@ -81,7 +81,7 @@ public class CsmProcessorThread extends RunnableMsgTask {
 				int count = oCustomer.getSmsOptionRecipientMaxSendCountIn24H();
 				if(count>0){
 					String key = "Duplicate:"+assembledMsg.getRecipientAddress();
-					long currentCount = com.king.gmms.messagequeue.MtAttempt.countOnce(key, 24 * 60 * 60);
+					long currentCount = com.king.gmms.messagequeue.StreamAttempt.countOnce(key, 24 * 60 * 60);
 					if(currentCount>count){
 						assembledMsg.setStatus(GmmsStatus.RECIPIENT_ERROR_BY_MAX_COUNT);
 						assembledMsg.setRSsID(GmmsUtility.getInstance().getBlackholeSsid());

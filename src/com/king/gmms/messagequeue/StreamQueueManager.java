@@ -131,7 +131,7 @@ public class StreamQueueManager {
 		int targetSsid = msg.getOSsID() > 0 ? msg.getOSsID() : msg.getRSsID();
 		int shardId = calculateHttpShardId(msg, targetSsid);
 		String key = STR_HTTP_DR_PREFIX + targetSsid + ":" + shardId;
-		return produce(key, msg, false);
+		return produceDrOnce(key, msg);
 	}
 
 	private int calculateHttpShardId(GmmsMessage msg, int targetSsid) {
@@ -210,7 +210,7 @@ public class StreamQueueManager {
 			logger.warn(msg, "Can not resolve SMPP server DR stream key.");
 			return false;
 		}
-		return produce(key, msg, false);
+		return produceDrOnce(key, msg);
 	}
 
 	public boolean produceDeliveryReportToQueue(GmmsMessage msg, String key) {
@@ -218,7 +218,7 @@ public class StreamQueueManager {
 			logger.warn(msg, "Can not resolve SMPP server DR stream key.");
 			return false;
 		}
-		return produce(key, msg, false);
+		return produceDrOnce(key, msg);
 	}
 
 	public boolean produceDeliveryReportToModule(GmmsMessage msg, String moduleName) {
@@ -228,12 +228,12 @@ public class StreamQueueManager {
 			key += ":" + moduleName;
 			key += ":" + calculateDrShardId(msg, targetSsid);
 		}
-		return produce(key, msg, false);
+		return produceDrOnce(key, msg);
 	}
 
 	public boolean produceServerDeliveryMessage(GmmsMessage msg) {
 		String key = getServerDeliveryQueue(msg);
-		if (!MtAttempt.once("delivery", String.valueOf(msg.getSplitStatus()))) {
+		if (!StreamAttempt.once("delivery", String.valueOf(msg.getSplitStatus()))) {
 			logger.info(msg, "MT redelivered, delivery part {} already produced", msg.getSplitStatus());
 			return true;
 		}
@@ -340,28 +340,46 @@ public class StreamQueueManager {
 			+ "end "
 			+ "return {'OK', id}";
 
-	/**
-	 * Produce an outbound MT to a submit MQ stream: XADD + doorbell, plus its outbox entry
-	 * (routed SMPP) and, inside an {@link MtAttempt}, the part marker and pending side-effect
-	 * flags, all in one Lua. A part already produced by an earlier attempt is not produced again.
-	 */
+	/** Outbound MT part (routed, HTTP submit, hold) on the submit MQ, once per part and attempt. */
 	private boolean produceOnce(String key, GmmsMessage msg) {
-		int split = msg.getSplitStatus();
-		String done = MtAttempt.producedPart(split);
+		return produceOnce(key, msg, true, StreamAttempt.partField(msg.getSplitStatus()));
+	}
+
+	/**
+	 * DR to a customer stream (stream:dr:pending, stream:http:dr) on the report MQ, once per
+	 * attempt for the same stream, part and status. Outside an attempt: a plain produce.
+	 */
+	private boolean produceDrOnce(String key, GmmsMessage msg) {
+		if (StreamAttempt.current() == null) {
+			return produce(key, msg, false);
+		}
+		return produceOnce(key, msg, false, "dr:" + key + ":" + msg.getSplitStatus() + ":" + msg.getStatusCode());
+	}
+
+	/**
+	 * Produce to a stream: XADD + doorbell, plus the outbox entry (routed SMPP) and, inside a
+	 * {@link StreamAttempt} whose marker is on the same Redis, partField and the pending
+	 * side-effect flags, all in one Lua. Something an earlier attempt already produced under
+	 * partField is not produced again. With the marker on the other Redis the produce is
+	 * recorded afterwards and persisted with the attempt's next flush.
+	 */
+	private boolean produceOnce(String key, GmmsMessage msg, boolean isSubmitMq, String partField) {
+		String done = StreamAttempt.produced(partField);
 		if (done != null) {
 			msg.setRedisStreamID(done);
-			logger.info(msg, "MT redelivered, part {} already produced to {} as {}", split, key, done);
+			logger.info(msg, "Redelivered, {} already produced to {} as {}", partField, key, done);
 			return true;
 		}
 		try {
-			if (isBackPressureBlocked(key, true)) {
-				logStreamTrace("STREAM-PUT", key, null, null, null, msg, true, "result=fail reason=backpressure_blocked");
+			if (isBackPressureBlocked(key, isSubmitMq)) {
+				logStreamTrace("STREAM-PUT", key, null, null, null, msg, isSubmitMq, "result=fail reason=backpressure_blocked");
 				incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_FAIL);
 				return false;
 			}
-			String marker = MtAttempt.currentMarker();
+			com.king.redis.RedisConnection target = isSubmitMq ? redisClient.getSubmitMqRedis() : redisClient.getReportMqRedis();
+			String marker = StreamAttempt.currentMarkerOn(target);
 			CoreOutboundOutboxManager.OutboxWrite outbox = CoreOutboundOutboxManager.getInstance().outboxWrite(msg, key);
-			List<String> flags = marker == null ? new ArrayList<String>() : MtAttempt.pendingFlags();
+			List<String> flags = marker == null ? new ArrayList<String>() : StreamAttempt.pendingFlags();
 			String body = SerializableHandler.convertGmmsMessage2RedisMessage(msg);
 			long now = System.currentTimeMillis();
 			List<String> keys = Arrays.asList(key, getDoorbellZSet(key), marker == null ? "" : marker,
@@ -371,28 +389,30 @@ public class StreamQueueManager {
 			args.add(String.valueOf(getStreamMaxLen()));
 			args.add(isApproximateTrimming() ? "~" : "");
 			args.add(String.valueOf(now));
-			args.add(MtAttempt.partField(split));
+			args.add(partField);
 			args.add(body);
 			args.add(String.valueOf(outbox == null ? 0 : outbox.ttlSeconds));
 			args.add(String.valueOf(outbox == null ? 0 : outbox.firstCheckAt));
 			args.add(String.valueOf(flags.size() / 2));
 			args.addAll(flags);
-			List<?> r = (List<?>) redisClient.getSubmitMqRedis().evalScript(PRODUCE_ONCE_LUA, keys, args);
+			List<?> r = (List<?>) target.evalScript(PRODUCE_ONCE_LUA, keys, args);
 			String id = String.valueOf(r.get(1));
 			msg.setRedisStreamID(id);
 			if (marker != null) {
-				MtAttempt.partProduced(split, id, flags);
+				StreamAttempt.produced(partField, id, flags);
+			} else {
+				StreamAttempt.producedElsewhere(partField, id);
 			}
 			if ("DUP".equals(String.valueOf(r.get(0)))) {
-				logger.info(msg, "MT part {} already produced to {} as {}, not produced again", split, key, id);
+				logger.info(msg, "{} already produced to {} as {}, not produced again", partField, key, id);
 				return true;
 			}
 			incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_OK);
-			logStreamTrace("STREAM-PUT", key, null, null, id, msg, true,
+			logStreamTrace("STREAM-PUT", key, null, null, id, msg, isSubmitMq,
 					"zset=" + getDoorbellZSet(key) + " outbox=" + (outbox == null ? "-" : outbox.key) + " result=ok");
 			return true;
 		} catch (Exception e) {
-			logStreamTrace("STREAM-PUT", key, null, null, null, msg, true,
+			logStreamTrace("STREAM-PUT", key, null, null, null, msg, isSubmitMq,
 					"result=fail reason=exception:" + e.getClass().getSimpleName());
 			logger.error("Produce to stream " + key + " failed", e);
 			incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_FAIL);
@@ -1034,7 +1054,7 @@ public class StreamQueueManager {
 		return routedKey(msg);
 	}
 
-	/** Put an outbound MT into its channel hold stream (idempotent inside an MtAttempt like any produce). */
+	/** Put an outbound MT into its channel hold stream (idempotent inside an StreamAttempt like any produce). */
 	public boolean produceHold(String holdKey, GmmsMessage msg) {
 		return produceOnce(holdKey, msg);
 	}

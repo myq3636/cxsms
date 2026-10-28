@@ -185,7 +185,26 @@ public class ResultStreamConsumer {
     private void processResult(String streamKey, GmmsMessage msg) {
         long start = System.nanoTime();
         String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
+        boolean attempt = false;
+        boolean processed = false;
         try {
+            attempt = StreamAttempt.drResultEnabled();
+            com.king.redis.RedisConnection streamRedis = com.king.redis.RedisClient.getInstance().getReportMqRedis();
+            if (attempt) {
+                StreamAttempt.Start state = StreamAttempt.beginEntry(streamKey, msg, streamRedis,
+                        consumerName + ":" + Thread.currentThread().getId());
+                if (state == StreamAttempt.Start.BUSY) {
+                    attempt = false;
+                    logger.info(msg, "Result is being processed by another consumer, left pending. streamKey={}, redisId={}",
+                            streamKey, sourceRedisId);
+                    return;
+                }
+                if (state == StreamAttempt.Start.DONE) {
+                    attempt = false;
+                    StreamAttempt.ackDone(streamKey, groupName, msg, streamRedis);
+                    return;
+                }
+            }
             String resultType = msg.getRedisStreamMessageType() != null
                     ? msg.getRedisStreamMessageType() : msg.getMessageType();
             if (GmmsMessage.MSG_TYPE_SUBMIT_RESP.equalsIgnoreCase(resultType)
@@ -193,7 +212,12 @@ public class ResultStreamConsumer {
                 // this outbound attempt already has its result (e.g. a submit_resp after the timeout)
                 logger.warn(msg, "Late or duplicate submit result dropped. streamKey={}, redisId={}, status={}",
                         streamKey, sourceRedisId, msg.getStatusCode());
-                queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);
+                processed = true;
+                if (attempt) {
+                    StreamAttempt.finish(streamKey, groupName, sourceRedisId);
+                } else {
+                    queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);
+                }
                 return;
             }
             if (!InternalCoreEngineSession.getReactiveInstance().handleOutboundResultInternal(msg)) {
@@ -202,6 +226,7 @@ public class ResultStreamConsumer {
                 queueManager.logNack(streamKey, groupName, consumerName, msg, false, "core_rejected_outbound_result");
                 return;
             }
+            processed = true;
             if (GmmsMessage.MSG_TYPE_SUBMIT_RESP.equalsIgnoreCase(resultType)) {
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
                         MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_PROCESSED));
@@ -209,7 +234,9 @@ public class ResultStreamConsumer {
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
                         MetricsNames.STAGE_OUT_DR, msg, false, MetricsNames.ACTION_PROCESSED));
             }
-            boolean acked = queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);
+            // with an attempt: _done first, then XACK+XDEL+DEL marker
+            boolean acked = attempt ? StreamAttempt.finish(streamKey, groupName, sourceRedisId)
+                    : queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);
             if (!acked) {
                 logger.warn(msg,
                         "Result stream ack failed after process success. streamKey={}, sourceRedisId={}, currentRedisId={}",
@@ -220,6 +247,9 @@ public class ResultStreamConsumer {
                     MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_FAIL));
             logger.error(msg, "Failed to process result in Core", e);
         } finally {
+            if (attempt && !processed) {
+                StreamAttempt.abandon();   // no-op once finish() ran
+            }
             MetricsCollector.getInstance().recordTime(MetricsNames.timer(MetricsNames.COMPONENT_CONSUMER,
                     MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_LATENCY),
                     System.nanoTime() - start);

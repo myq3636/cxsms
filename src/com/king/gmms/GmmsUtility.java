@@ -944,7 +944,7 @@ public class GmmsUtility {
 			"CoreHoldReleaseTickMs", "CoreHoldRecoverIntervalMs", "CoreHoldRecoverIdleMs",
 			"ServerDrStreamShardFilter",
 			"RedisStreamMaxDeliveries", "CoreStreamTaskMaxBatches", "CoreStreamTaskMaxMs",
-			"CoreResultStreamSharded",
+			"CoreResultStreamSharded", "CoreDrResultIdempotency",
 			"ClientOutboundWindowFullRetryMs",
 			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress", "DNSPort",
 			"DNSMaxFailedLimit", "DNSTestPeriod", "DNSTestNumber", "DNSBufferCapacity",
@@ -1056,6 +1056,7 @@ public class GmmsUtility {
 				|| "CoreMtIdempotency".equals(key)
 				|| "ServerDrStreamShardFilter".equals(key)
 				|| "CoreResultStreamSharded".equals(key)
+				|| "CoreDrResultIdempotency".equals(key)
 				|| "SmppServerInboundSharedPoolEnable".equals(key)
 				|| "MultiSmppServer.LongConnectionCustomerSharedQueueEnable".equals(key)
 				|| (isModuleLongConnectionCustomerKey(key) && key.endsWith(".LongConnectionCustomerSharedQueueEnable"))
@@ -1173,6 +1174,7 @@ public class GmmsUtility {
 		if ("ServerDrStreamShardFilter".equals(key)) return "false";
 		if ("RedisStreamMaxDeliveries".equals(key)) return "10";
 		if ("CoreResultStreamSharded".equals(key)) return "true";
+		if ("CoreDrResultIdempotency".equals(key)) return "true";
 		if ("CoreStreamTaskMaxBatches".equals(key)) return "10";
 		if ("CoreStreamTaskMaxMs".equals(key)) return "2000";
 		if ("CoreOutboundOutboxHardTimeoutMs".equals(key)) return "10800000";

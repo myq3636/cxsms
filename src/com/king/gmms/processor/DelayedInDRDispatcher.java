@@ -65,7 +65,7 @@ public class DelayedInDRDispatcher implements Runnable {
 		if (message == null) {
 			return true;
 		}
-		if (!com.king.gmms.messagequeue.MtAttempt.once("drschedule",
+		if (!com.king.gmms.messagequeue.StreamAttempt.once("drschedule",
 				message.getStatusCode() + ":" + message.getSplitStatus())) {
 			log.info(message, "MT redelivered, delayed DR already scheduled");
 			return true;

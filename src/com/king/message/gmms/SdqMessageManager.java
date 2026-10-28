@@ -73,6 +73,10 @@ public class SdqMessageManager implements LifecycleListener, SignalHandler {
 		if (message == null) {
 			return result;
 		}
+		if (!com.king.gmms.messagequeue.StreamAttempt.once("sdq", message.getSplitStatus() + ":" + message.getStatusCode())) {
+			log.info(message, "Redelivered, already stored in SDQ");
+			return true;
+		}
 
 		if (!isAlow.get()) {
 			if(log.isInfoEnabled()){

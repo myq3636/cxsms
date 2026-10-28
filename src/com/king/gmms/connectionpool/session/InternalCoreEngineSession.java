@@ -1656,7 +1656,15 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 					mergeInboundDeliveryReport(message, finalMsg);
 					boolean processed = processDeliveryReport(message, finalPdu);
 					if (processed && deleteLookup) {
-						deleteDrLookup(finalMsg, lookupHashKey);
+						final GmmsMessage dr = finalMsg;
+						final String hashKey = lookupHashKey;
+						// inside a DR attempt only once _done is written: a redelivery after a crash
+						// must still find the original and take the same path
+						com.king.gmms.messagequeue.StreamAttempt.afterDone(new Runnable() {
+							public void run() {
+								deleteDrLookup(dr, hashKey);
+							}
+						});
 					}
 					return processed;
 				} else {
@@ -1974,7 +1982,7 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 								int count = oCustomer.getSmsOptionRecipientMaxSendCountIn24H();
 								if(count>0){
 									String key = "Duplicate:"+msg.getRecipientAddress();
-									long currentCount = com.king.gmms.messagequeue.MtAttempt.countOnce(key, 24 * 60 * 60);
+									long currentCount = com.king.gmms.messagequeue.StreamAttempt.countOnce(key, 24 * 60 * 60);
 									if(currentCount>count){
 										msg.setStatus(GmmsStatus.RECIPIENT_ERROR_BY_MAX_COUNT);
 										msg.setRSsID(gmmsUtility.getBlackholeSsid());

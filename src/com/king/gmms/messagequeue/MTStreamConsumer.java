@@ -180,9 +180,9 @@ public class MTStreamConsumer {
                     MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
             MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
                     MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
-            boolean attempt = MtAttempt.enabled();
-            if (attempt && MtAttempt.begin(msg, consumerName + ":" + Thread.currentThread().getId())
-                    == MtAttempt.Start.BUSY) {
+            boolean attempt = StreamAttempt.enabled();
+            if (attempt && StreamAttempt.begin(msg, consumerName + ":" + Thread.currentThread().getId())
+                    == StreamAttempt.Start.BUSY) {
                 logger.info(msg, "MT is being processed by another consumer, left pending. streamKey={}, redisId={}",
                         streamKey, sourceRedisId);
                 return;
@@ -192,12 +192,12 @@ public class MTStreamConsumer {
                 processed = InternalCoreEngineSession.getReactiveInstance().processSubmitFromStream(msg);
             } finally {
                 if (attempt && !processed) {
-                    MtAttempt.abandon();
+                    StreamAttempt.abandon();
                 }
             }
             if (processed) {
                 // with an attempt the ack also removes its marker
-                boolean acked = attempt ? MtAttempt.finish(streamKey, groupName, sourceRedisId)
+                boolean acked = attempt ? StreamAttempt.finish(streamKey, groupName, sourceRedisId)
                         : queueManager.ackById(streamKey, groupName, sourceRedisId, msg, true);
                 if (!acked) {
                     logger.warn(msg,

@@ -1,6 +1,6 @@
 package com.king.message.gmms;
 
-import com.king.gmms.messagequeue.MtAttempt;
+import com.king.gmms.messagequeue.StreamAttempt;
 import java.util.Date;
 
 import com.king.framework.*;
@@ -57,8 +57,15 @@ public class CDRManager {
 		return maxFileSize;
 	}
 
+	/** Message statistics (StMsgCount); a redelivered stream entry does not count twice. */
+	private void incStat(String field) {
+		if (StreamAttempt.once("stat", field)) {
+			gmmsUtility.getRedisClient().asyncHashInc("StMsgCount", field);
+		}
+	}
+
 	private boolean add(CDR cdr) {
-		if (!MtAttempt.once("cdr", cdr.getCdrType() + ":" + cdr.getSplitStatus() + ":" + cdr.getRSsID())) {
+		if (!StreamAttempt.once("cdr", cdr.getCdrType() + ":" + cdr.getSplitStatus() + ":" + cdr.getRSsID())) {
 			log.info(cdr, "MT redelivered, {} CDR already written", cdr.getCdrType());
 			return true;
 		}
@@ -421,14 +428,14 @@ public class CDRManager {
 			if(gmmsUtility.getCustomerManager()
 			.getCustomerBySSID(ossid)
 			.isNeedStatisticMsgCount()){
-				gmmsUtility.getRedisClient().asyncHashInc("StMsgCount", "IN:"+ossid);
+				incStat("IN:"+ossid);
 			}
 			
 			if(gmmsUtility.getCustomerManager()
 					.getCustomerBySSID(ossid)
 					.isNeedStatisticMsgCountByCountry()){
 				String cc = PhoneUtils.getRegionCodeByPhone(msg.getRecipientAddress());
-				gmmsUtility.getRedisClient().asyncHashInc("StMsgCount", "IN:"+ossid+":"+cc);
+				incStat("IN:"+ossid+":"+cc);
 			}
 			
 		} catch (Exception e) {
@@ -463,13 +470,13 @@ public class CDRManager {
 			if(gmmsUtility.getCustomerManager()
 			.getCustomerBySSID(rssid)
 			.isNeedStatisticMsgCount()&& msg.getStatusCode()!=2500){
-				gmmsUtility.getRedisClient().asyncHashInc("StMsgCount", "OUT:"+rssid);
+				incStat("OUT:"+rssid);
 			}
 			if(gmmsUtility.getCustomerManager()
 					.getCustomerBySSID(rssid)
 					.isNeedStatisticMsgCountByCountry()&& msg.getStatusCode()!=2500){
 				String cc = PhoneUtils.getRegionCodeByPhone(msg.getRecipientAddress());
-				gmmsUtility.getRedisClient().asyncHashInc("StMsgCount", "OUT:"+rssid+":"+cc);						
+				incStat("OUT:"+rssid+":"+cc);						
 			}
 		} catch (Exception e) {
 			
@@ -485,13 +492,13 @@ public class CDRManager {
 			if(gmmsUtility.getCustomerManager()
 			.getCustomerBySSID(rssid)
 			.isNeedStatisticMsgCount() && msg.getStatusCode()!=2500){
-				gmmsUtility.getRedisClient().asyncHashInc("StMsgCount", "OUT:"+rssid);
+				incStat("OUT:"+rssid);
 			}
 			if(gmmsUtility.getCustomerManager()
 					.getCustomerBySSID(rssid)
 					.isNeedStatisticMsgCountByCountry()&& msg.getStatusCode()!=2500){
 				String cc = PhoneUtils.getRegionCodeByPhone(msg.getRecipientAddress());
-				gmmsUtility.getRedisClient().asyncHashInc("StMsgCount", "OUT:"+rssid+":"+cc);						
+				incStat("OUT:"+rssid+":"+cc);						
 			}
 		} catch (Exception e) {
 			
@@ -562,14 +569,14 @@ public class CDRManager {
 			if(gmmsUtility.getCustomerManager()
 			.getCustomerBySSID(rssid)
 			.isNeedStatisticMsgCount()){
-				gmmsUtility.getRedisClient().asyncHashInc("StMsgCount", "OUTDR:"+rssid);
+				incStat("OUTDR:"+rssid);
 			}
 			
 			if(gmmsUtility.getCustomerManager()
 					.getCustomerBySSID(rssid)
 					.isNeedStatisticMsgCountByCountry()){
 				String cc = PhoneUtils.getRegionCodeByPhone(msg.getRecipientAddress());
-				gmmsUtility.getRedisClient().asyncHashInc("StMsgCount", "OUTDR:"+rssid+":"+cc);						
+				incStat("OUTDR:"+rssid+":"+cc);						
 			}
 			
 		} catch (Exception e) {
@@ -586,13 +593,13 @@ public class CDRManager {
 			if(gmmsUtility.getCustomerManager()
 			.getCustomerBySSID(rssid)
 			.isNeedStatisticMsgCount()){
-				gmmsUtility.getRedisClient().asyncHashInc("StMsgCount", "OUTDR:"+rssid);
+				incStat("OUTDR:"+rssid);
 			}
 			if(gmmsUtility.getCustomerManager()
 					.getCustomerBySSID(rssid)
 					.isNeedStatisticMsgCountByCountry()){
 				String cc = PhoneUtils.getRegionCodeByPhone(msg.getRecipientAddress());
-				gmmsUtility.getRedisClient().asyncHashInc("StMsgCount", "OUTDR:"+rssid+":"+cc);						
+				incStat("OUTDR:"+rssid+":"+cc);						
 			}
 		} catch (Exception e) {
 			
