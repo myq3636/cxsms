@@ -47,6 +47,7 @@ public class StreamQueueManager {
 	
 	public static final String STR_OUTBOUND_HTTP = "stream:outbound:http:tasks";
 	public static final String STR_CORE_RESULTS = "stream:core:results";
+	public static final String STR_CORE_HOLD_PREFIX = "stream:core:hold:";
 	public static final String STR_DLQ_SUBMIT = "stream:dlq:submit";
 	public static final String STR_DLQ_REPORT = "stream:dlq:report";
 
@@ -60,6 +61,7 @@ public class StreamQueueManager {
 	public static final String ZSET_DR_PENDING_ACTIVE = "zset:dr:pending:active";
 	public static final String ZSET_INBOUND_DR_ACTIVE = "zset:core:inbound-dr:active";
 	public static final String ZSET_CORE_RESULTS_ACTIVE = "zset:core:results:active";
+	public static final String ZSET_CORE_HOLD_ACTIVE = "zset:core:hold:active";
 	private static final StreamEntryID AUTOCLAIM_START_ID = new StreamEntryID("0-0");
 
 	private StreamQueueManager() {
@@ -113,10 +115,16 @@ public class StreamQueueManager {
 	}
 
 	public boolean produceHttpSubmitMessage(GmmsMessage msg) {
+		if (ChannelReleaseDispatcher.getInstance().holds(msg)) {
+			return ChannelReleaseDispatcher.getInstance().offer(msg);
+		}
+		return produceOnce(httpSubmitKey(msg), msg);
+	}
+
+	private String httpSubmitKey(GmmsMessage msg) {
 		int targetSsid = msg.getRSsID();
 		int shardId = calculateHttpShardId(msg, targetSsid);
-		String key = STR_HTTP_SUBMIT_PREFIX + targetSsid + ":" + shardId;
-		return produceOnce(key, msg);
+		return STR_HTTP_SUBMIT_PREFIX + targetSsid + ":" + shardId;
 	}
 
 	public boolean produceHttpDeliveryReport(GmmsMessage msg) {
@@ -453,6 +461,8 @@ public class StreamQueueManager {
 			return ZSET_INBOUND_DR_ACTIVE;
 		} else if (STR_CORE_RESULTS.equals(streamKey)) {
 			return ZSET_CORE_RESULTS_ACTIVE;
+		} else if (streamKey.startsWith(STR_CORE_HOLD_PREFIX)) {
+			return ZSET_CORE_HOLD_ACTIVE;
 		}
 		return null;
 	}
@@ -491,8 +501,8 @@ public class StreamQueueManager {
 			}
 			long len = streamLength(streamKey, isSubmitMq);
 			if (len <= 0) {
-				removeDoorbell(doorbellKey, streamKey, isSubmitMq);
-				if (logger.isDebugEnabled()) {
+				// only if still empty: an entry produced since the XLEN rang this doorbell again
+				if (removeDoorbellIfEmpty(doorbellKey, streamKey, isSubmitMq) && logger.isDebugEnabled()) {
 					logger.debug("Removed stale doorbell. zsetKey={}, streamKey={}, isSubmitMq={}",
 							doorbellKey, streamKey, isSubmitMq);
 				}
@@ -507,6 +517,22 @@ public class StreamQueueManager {
 
 	public long streamLength(String streamKey, boolean isSubmitMq) {
 		return isSubmitMq ? redisClient.xlenSubmitMq(streamKey) : redisClient.xlenReportMq(streamKey);
+	}
+
+	private static final String REMOVE_DOORBELL_IF_EMPTY_LUA =
+			"if redis.call('XLEN', KEYS[2]) == 0 then return redis.call('ZREM', KEYS[1], KEYS[2]) end return 0";
+
+	/** XLEN + ZREM in one Lua: a separate check would drop the doorbell of an entry produced in between. */
+	boolean removeDoorbellIfEmpty(String doorbellKey, String streamKey, boolean isSubmitMq) {
+		com.king.redis.RedisConnection c = isSubmitMq ? redisClient.getSubmitMqRedis() : redisClient.getReportMqRedis();
+		try {
+			Object r = c.evalScript(REMOVE_DOORBELL_IF_EMPTY_LUA, Arrays.asList(doorbellKey, streamKey),
+					new ArrayList<String>());
+			return r instanceof Long && (Long) r > 0;
+		} catch (Exception e) {
+			logger.warn("Failed to remove stale doorbell. zsetKey={}, streamKey={}", doorbellKey, streamKey, e);
+			return false;
+		}
 	}
 
 	private boolean removeDoorbell(String doorbellKey, String streamKey, boolean isSubmitMq) {
@@ -980,17 +1006,103 @@ public class StreamQueueManager {
 	}
 
 	public boolean produceOutboundMessage(GmmsMessage msg) {
-		String key;
 		if ("HTTP".equalsIgnoreCase(msg.getProperty("Protocol") != null ? msg.getProperty("Protocol").toString() : "")) {
 			if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(msg.getMessageType())) {
 				return produceHttpDeliveryReport(msg);
 			}
 			return produceHttpSubmitMessage(msg);
-		} else {
-			int shardId = calculateOutboundShardId(msg);
-			key = STR_MT_ROUTED_PREFIX + msg.getRSsID() + ":" + shardId;
 		}
-		return produceOnce(key, msg);
+		if (ChannelReleaseDispatcher.getInstance().holds(msg)) {
+			return ChannelReleaseDispatcher.getInstance().offer(msg);
+		}
+		return produceOnce(routedKey(msg), msg);
+	}
+
+	private String routedKey(GmmsMessage msg) {
+		return STR_MT_ROUTED_PREFIX + msg.getRSsID() + ":" + calculateOutboundShardId(msg);
+	}
+
+	/** Stream a held MT is released to: the HTTP submit stream for HTTP channels, else stream:mt:routed. */
+	public String outboundTargetKey(GmmsMessage msg) {
+		com.king.gmms.domain.A2PCustomerInfo channel = GmmsUtility.getInstance().getCustomerManager()
+				.getCustomerBySSID(msg.getRSsID());
+		Object protocol = msg.getProperty("Protocol");
+		if ((channel != null && "HTTP".equalsIgnoreCase(channel.getProtocol()))
+				|| (protocol != null && "HTTP".equalsIgnoreCase(protocol.toString()))) {
+			return httpSubmitKey(msg);
+		}
+		return routedKey(msg);
+	}
+
+	/** Put an outbound MT into its channel hold stream (idempotent inside an MtAttempt like any produce). */
+	public boolean produceHold(String holdKey, GmmsMessage msg) {
+		return produceOnce(holdKey, msg);
+	}
+
+	// KEYS: 1 hold, 2 holdDoorbell, 3 target, 4 targetDoorbell, 5 outbox|'', 6 outboxZset|'', 7 outboxMeta|''
+	// ARGV: 1 group, 2 holdId, 3 maxLen, 4 '~'|'', 5 nowMs, 6 body, 7 outboxTtl, 8 outboxFirstCheck
+	private static final String RELEASE_LUA =
+			"if redis.call('XACK', KEYS[1], ARGV[1], ARGV[2]) == 0 then return {'GONE', ''} end "
+			+ "redis.call('XDEL', KEYS[1], ARGV[2]) "
+			+ "local args = {KEYS[3], 'MAXLEN'} "
+			+ "if ARGV[4] == '~' then args[#args+1] = '~' end "
+			+ "args[#args+1] = ARGV[3] args[#args+1] = '*' args[#args+1] = 'body' args[#args+1] = ARGV[6] "
+			+ "local id = redis.call('XADD', unpack(args)) "
+			+ "redis.call('ZADD', KEYS[4], ARGV[5], KEYS[3]) "
+			+ "if KEYS[5] ~= '' then "
+			+ "  redis.call('SETEX', KEYS[5], ARGV[7], ARGV[6]) "
+			+ "  redis.call('ZADD', KEYS[6], ARGV[8], KEYS[5]) "
+			+ "  redis.call('SETEX', KEYS[7], ARGV[7], KEYS[3] .. '\\n' .. id .. '\\n' .. ARGV[5]) "
+			+ "end "
+			+ "if redis.call('XLEN', KEYS[1]) == 0 then redis.call('ZREM', KEYS[2], KEYS[1]) end "
+			+ "return {'OK', id}";
+
+	// KEYS: 1 hold, 2 holdDoorbell; ARGV: 1 group, 2 holdId
+	private static final String DROP_HOLD_LUA =
+			"local a = redis.call('XACK', KEYS[1], ARGV[1], ARGV[2]) "
+			+ "redis.call('XDEL', KEYS[1], ARGV[2]) "
+			+ "if redis.call('XLEN', KEYS[1]) == 0 then redis.call('ZREM', KEYS[2], KEYS[1]) end "
+			+ "return a";
+
+	/**
+	 * Move one held MT to its outbound stream: ack+delete in the hold stream, XADD + doorbell
+	 * (+ outbox for stream:mt:routed) in one Lua. Returns the outbound id, or null when another
+	 * Core already released it. Redis errors are thrown and the entry stays pending.
+	 */
+	public String releaseHeld(String holdKey, String group, GmmsMessage msg) {
+		String target = outboundTargetKey(msg);
+		CoreOutboundOutboxManager.OutboxWrite outbox = CoreOutboundOutboxManager.getInstance().outboxWrite(msg, target);
+		String holdId = msg.getRedisStreamID();
+		List<String> keys = Arrays.asList(holdKey, ZSET_CORE_HOLD_ACTIVE, target, getDoorbellZSet(target),
+				outbox == null ? "" : outbox.key, outbox == null ? "" : outbox.zset,
+				outbox == null ? "" : outbox.metaKey);
+		List<String> args = Arrays.asList(group, holdId, String.valueOf(getStreamMaxLen()),
+				isApproximateTrimming() ? "~" : "", String.valueOf(System.currentTimeMillis()),
+				SerializableHandler.convertGmmsMessage2RedisMessage(msg),
+				String.valueOf(outbox == null ? 0 : outbox.ttlSeconds),
+				String.valueOf(outbox == null ? 0 : outbox.firstCheckAt));
+		List<?> r = (List<?>) redisClient.getSubmitMqRedis().evalScript(RELEASE_LUA, keys, args);
+		if (!"OK".equals(String.valueOf(r.get(0)))) {
+			return null;
+		}
+		String id = String.valueOf(r.get(1));
+		msg.setRedisStreamID(id);
+		incrementStreamCounter(MetricsNames.FLOW_OUT, target, msg, MetricsNames.ACTION_WRITE_OK);
+		logStreamTrace("STREAM-PUT", target, null, null, id, msg, true,
+				"released_from=" + holdKey + " outbox=" + (outbox == null ? "-" : outbox.key) + " result=ok");
+		return id;
+	}
+
+	/** Hold streams that have entries (their doorbell is removed when they become empty). */
+	public Set<String> holdStreams() {
+		Set<String> keys = redisClient.getSubmitMqRedis().zrangeDoorbell(ZSET_CORE_HOLD_ACTIVE, 0, -1);
+		return keys == null ? new java.util.HashSet<String>() : keys;
+	}
+
+	/** Remove a held MT that will not be sent (expired, held too long). */
+	public void dropHeld(String holdKey, String group, String holdId) {
+		redisClient.getSubmitMqRedis().evalScript(DROP_HOLD_LUA, Arrays.asList(holdKey, ZSET_CORE_HOLD_ACTIVE),
+				Arrays.asList(group, holdId));
 	}
 
 	private boolean isBlank(String value) {

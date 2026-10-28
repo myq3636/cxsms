@@ -1448,6 +1448,19 @@ public class MessageStoreManager extends DataManager {
 		}
 	}
 	
+	/**
+	 * Time past the DR reroute window of the channel (negative: still inside, reroute allowed).
+	 * Without a timestamp or channel config the window cannot be judged: no reroute.
+	 */
+	private long drRerouteDelayMs(GmmsMessage message, A2PCustomerInfo rCustomerInfo) {
+		Date timeDate = message.getTimeStamp();
+		if (timeDate == null || rCustomerInfo == null) {
+			return Long.MAX_VALUE;
+		}
+		return System.currentTimeMillis() - timeDate.getTime() - 8 * 3600 * 1000L
+				- rCustomerInfo.getMaxRerouteDRDelayTimeInSec() * 1000L;
+	}
+
 	public void handleOutDeliveryReportResForInnerAck(GmmsMessage message) {
 		message.setActionCode(-1);
 		if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT_QUERY.equalsIgnoreCase(message
@@ -1542,8 +1555,8 @@ public class MessageStoreManager extends DataManager {
 								List<Integer> drRerouteCode = rCustomerInfo.getSmsOptionDRRerouteCode();
 								if(drRerouteCode!=null && !drRerouteCode.isEmpty()){
 									Date timeDate = message.getTimeStamp();									
-									log.trace(message, "message timestamp is:{}, timestamp:{}, delayTime:{}", timeDate, timeDate.getTime(), rCustomerInfo.getMaxRerouteDRDelayTimeInSec());
-									long delayTime = System.currentTimeMillis()-timeDate.getTime()-8*3600*1000-rCustomerInfo.getMaxRerouteDRDelayTimeInSec()*1000;
+									log.trace(message, "message timestamp is:{}, delayTime:{}", timeDate, rCustomerInfo.getMaxRerouteDRDelayTimeInSec());
+									long delayTime = drRerouteDelayMs(message, rCustomerInfo);
 									if(drRerouteCode.contains(message.getStatusCode())&& delayTime<0){										
 										GmmsStatus temp = message.getStatus();
 										message.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT);
@@ -1586,8 +1599,8 @@ public class MessageStoreManager extends DataManager {
 									}
 								}else{
 									Date timeDate = message.getTimeStamp();									
-									log.trace(message, "message timestamp is:{}, timestamp:{}, delayTime:{}", timeDate, timeDate.getTime(), rCustomerInfo.getMaxRerouteDRDelayTimeInSec());								
-									long delayTime = System.currentTimeMillis()-timeDate.getTime()-8*3600*1000-rCustomerInfo.getMaxRerouteDRDelayTimeInSec()*1000;
+									log.trace(message, "message timestamp is:{}, delayTime:{}", timeDate, rCustomerInfo.getMaxRerouteDRDelayTimeInSec());								
+									long delayTime = drRerouteDelayMs(message, rCustomerInfo);
 									if(GmmsStatus.DELIVERED.getCode() != message.getStatusCode() && delayTime<0){
 										
 										GmmsStatus temp = message.getStatus();
@@ -1655,7 +1668,7 @@ public class MessageStoreManager extends DataManager {
 						//TODO
 						A2PCustomerInfo rCustomerInfo = ctm.getCustomerBySSID(message.getRSsID());
 						Date timeDate = message.getTimeStamp();									
-						long delayTime = System.currentTimeMillis()-timeDate.getTime()-8*3600*1000-rCustomerInfo.getMaxRerouteDRDelayTimeInSec()*1000;
+						long delayTime = drRerouteDelayMs(message, rCustomerInfo);
 						if (rCustomerInfo!=null && rCustomerInfo.isNeedDrReroute() 
 								&& GmmsStatus.DELIVERED.getCode() != message.getStatusCode()
 								&& delayTime<0) {

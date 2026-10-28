@@ -2599,6 +2599,11 @@ public class A2PCustomerManager implements LifecycleListener {
 			File conf = new File(path);
 			this.phonePrefixTime = conf.lastModified();
 			this.phonePrefixMap = A2PCustomerConfig.parse(conf);
+			if (phonePrefixMap == null) {
+				// no senderReplacement.cfg: no sender replacement prefixes
+				log.warn("{} not loaded, no sender replacement prefix", path);
+				phonePrefixMap = new HashMap<String, A2PCustomerConfig>();
+			}
 			for (A2PCustomerConfig block : phonePrefixMap.values()) {
 				try {
 

@@ -939,6 +939,10 @@ public class GmmsUtility {
 			"CoreOutboundOutboxEnable", "CoreOutboundOutboxRecheckMs",
 			"CoreOutboundOutboxHardTimeoutMs", "CoreOutboundOutboxPayloadTTLSeconds",
 			"CoreOutboundOutboxScanBatchSize", "CoreOutboundOutboxResultRetryMs",
+			"CoreOutboundUnreadStallMs", "CoreOutboundRespTimeoutMs",
+			"CoreDrInlineDispatch", "CoreMtIdempotency", "CoreMtLeaseMs", "CoreMtMarkerTtlSeconds",
+			"CoreHoldReleaseTickMs", "CoreHoldRecoverIntervalMs", "CoreHoldRecoverIdleMs",
+			"ServerDrStreamShardFilter",
 			"ClientOutboundWindowFullRetryMs",
 			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress", "DNSPort",
 			"DNSMaxFailedLimit", "DNSTestPeriod", "DNSTestNumber", "DNSBufferCapacity",
@@ -1044,6 +1048,9 @@ public class GmmsUtility {
 				|| "AutoInDR.FallbackToLegacyDelayDR".equals(key)
 				|| "MQM.ActiveStandbyEnable".equals(key)
 				|| "CoreOutboundOutboxEnable".equals(key)
+				|| "CoreDrInlineDispatch".equals(key)
+				|| "CoreMtIdempotency".equals(key)
+				|| "ServerDrStreamShardFilter".equals(key)
 				|| "SmppServerInboundSharedPoolEnable".equals(key)
 				|| "MultiSmppServer.LongConnectionCustomerSharedQueueEnable".equals(key)
 				|| (isModuleLongConnectionCustomerKey(key) && key.endsWith(".LongConnectionCustomerSharedQueueEnable"))
@@ -1063,7 +1070,14 @@ public class GmmsUtility {
 				|| "CoreOutboundOutboxRecheckMs".equals(key)
 				|| "CoreOutboundOutboxHardTimeoutMs".equals(key)
 				|| "CoreOutboundOutboxPayloadTTLSeconds".equals(key)
-				|| "CoreOutboundOutboxResultRetryMs".equals(key);
+				|| "CoreOutboundOutboxResultRetryMs".equals(key)
+				|| "CoreOutboundUnreadStallMs".equals(key)
+				|| "CoreOutboundRespTimeoutMs".equals(key)
+				|| "CoreMtLeaseMs".equals(key)
+				|| "CoreMtMarkerTtlSeconds".equals(key)
+				|| "CoreHoldReleaseTickMs".equals(key)
+				|| "CoreHoldRecoverIntervalMs".equals(key)
+				|| "CoreHoldRecoverIdleMs".equals(key);
 	}
 
 	private boolean isRedisStreamTuningKey(String key) {
@@ -1140,7 +1154,17 @@ public class GmmsUtility {
 		if ("AutoInDR.DelayPayloadTTLSeconds".equals(key)) return "172800";
 		if ("AutoInDR.DispatcherIdleSleepMs".equals(key)) return "200";
 		if ("CoreOutboundOutboxEnable".equals(key)) return "true";
-		if ("CoreOutboundOutboxRecheckMs".equals(key)) return "300000";
+		if ("CoreOutboundOutboxRecheckMs".equals(key)) return "60000";
+		if ("CoreOutboundUnreadStallMs".equals(key)) return "120000";
+		if ("CoreOutboundRespTimeoutMs".equals(key)) return "180000";
+		if ("CoreDrInlineDispatch".equals(key)) return "true";
+		if ("CoreMtIdempotency".equals(key)) return "true";
+		if ("CoreMtLeaseMs".equals(key)) return "60000";
+		if ("CoreMtMarkerTtlSeconds".equals(key)) return "604800";
+		if ("CoreHoldReleaseTickMs".equals(key)) return "100";
+		if ("CoreHoldRecoverIntervalMs".equals(key)) return "30000";
+		if ("CoreHoldRecoverIdleMs".equals(key)) return "60000";
+		if ("ServerDrStreamShardFilter".equals(key)) return "false";
 		if ("CoreOutboundOutboxHardTimeoutMs".equals(key)) return "10800000";
 		if ("CoreOutboundOutboxPayloadTTLSeconds".equals(key)) return "14400";
 		if ("CoreOutboundOutboxScanBatchSize".equals(key)) return "100";

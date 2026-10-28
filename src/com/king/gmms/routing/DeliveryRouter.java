@@ -10,6 +10,7 @@ import com.king.gmms.domain.ModuleManager;
 import com.king.gmms.ha.ModuleStatusReporter;
 import com.king.gmms.processor.CsmProcessorHandler;
 import com.king.gmms.processor.DelayedInDRDispatcher;
+import com.king.gmms.messagequeue.ChannelReleaseDispatcher;
 import com.king.gmms.messagequeue.CoreMQMStreamConsumer;
 import com.king.gmms.messagequeue.MTStreamConsumer;
 import com.king.gmms.messagequeue.InboundDRStreamConsumer;
@@ -56,6 +57,7 @@ public class DeliveryRouter implements A2PService{
 		ResultStreamConsumer.getInstance().start();
 		CoreMQMStreamConsumer.getInstance().start();
 		DelayedInDRDispatcher.getInstance().startDispatcher();
+		ChannelReleaseDispatcher.getInstance().start();
 		//SenderRentHandler.getInstance();
 		
 		if(gmmsUtility.isStoreDRModeEnable()){
@@ -94,6 +96,7 @@ public class DeliveryRouter implements A2PService{
 		ResultStreamConsumer.getInstance().stop();
 		CoreMQMStreamConsumer.getInstance().stop();
 		DelayedInDRDispatcher.getInstance().stopDispatcher();
+		ChannelReleaseDispatcher.getInstance().stop();
 		return true;
 	}
 	/**
