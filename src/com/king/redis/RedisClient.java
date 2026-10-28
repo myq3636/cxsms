@@ -137,9 +137,6 @@ public class RedisClient {
 	public boolean setStringIfAbsent(String key, String value, int expireSeconds) { return stateRedis.setStringIfAbsent(key, value, expireSeconds); }
 	public boolean compareAndSetString(String key, String expectedValue, String newValue, int expireSeconds) { return stateRedis.compareAndSetString(key, expectedValue, newValue, expireSeconds); }
 	public boolean deleteIfStringEquals(String key, String expectedValue) { return stateRedis.deleteIfStringEquals(key, expectedValue); }
-	public java.util.List<String> csmReassemble(String hashKey, String indexZset, String seq, String payload, int total, int ttlSeconds, long expireAtMs) { return stateRedis.csmReassemble(hashKey, indexZset, seq, payload, total, ttlSeconds, expireAtMs); }
-	public boolean csmDeleteIfComplete(String hashKey, String indexZset, int total) { return stateRedis.csmDeleteIfComplete(hashKey, indexZset, total); }
-	public java.util.List<String> csmClaimExpired(String indexZset, long nowMs, int batch) { return stateRedis.csmClaimExpired(indexZset, nowMs, batch); }
 	public java.util.Map<String,String> hgetAll(String key) { return stateRedis.hgetAll(key); }
 	public Long delKey(String key) { return stateRedis.delKey(key); }
 	public boolean lpush(String key, String obj) { return stateRedis.lpush(key, obj); }

@@ -86,6 +86,9 @@ public final class StreamAttempt {
 			+ "if ARGV[1] == '1' then redis.call('HDEL', KEYS[1], '" + LEASE + "') end "
 			+ "return 1";
 
+	// KEYS[1]=marker ARGV[1]=field
+	private static final String FORGET_LUA = "return redis.call('HDEL', KEYS[1], ARGV[1])";
+
 	// KEYS[1]=stream KEYS[2]=marker ARGV[1]=group ARGV[2]=id
 	private static final String ACK_LUA =
 			"local acked = redis.call('XACK', KEYS[1], ARGV[1], ARGV[2]) "
@@ -101,6 +104,8 @@ public final class StreamAttempt {
 	private final Map<String, String> recorded;
 	private final Map<String, String> pending = new LinkedHashMap<String, String>();
 	private final Map<String, Integer> sequence = new HashMap<String, Integer>();
+	/** last field handed out by {@link #once} per category, for {@link #forget} */
+	private final Map<String, String> lastField = new HashMap<String, String>();
 	private final List<Runnable> afterDone = new ArrayList<Runnable>();
 
 	private StreamAttempt(String markerKey, RedisConnection redis, boolean trackDone, Map<String, String> recorded) {
@@ -195,7 +200,30 @@ public final class StreamAttempt {
 			return false;
 		}
 		a.pending.put(field, "1");
+		a.lastField.put(category, field);
 		return true;
+	}
+
+	/**
+	 * The side effect just let through by {@link #once} for this category failed: drop its
+	 * flag so the retry does it again.
+	 */
+	public static void forget(String category) {
+		StreamAttempt a = current.get();
+		if (a == null) {
+			return;
+		}
+		String field = a.lastField.remove(category);
+		if (field == null) {
+			return;
+		}
+		if (a.pending.remove(field) == null && a.recorded.remove(field) != null) {
+			try {
+				a.redis.evalScript(FORGET_LUA, Arrays.asList(a.markerKey), Arrays.asList(field));
+			} catch (Exception e) {
+				log.warn("Attempt flag {} not removed, the retry will skip it. marker={}", field, a.markerKey, e);
+			}
+		}
 	}
 
 	/** Whether an earlier attempt recorded {@link #markDoneNow} for this name. */

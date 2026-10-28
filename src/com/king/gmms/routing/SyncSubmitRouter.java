@@ -66,17 +66,16 @@ public class SyncSubmitRouter {
     /**
      * 同步路由 + 外发。
      *
-     * @return {@code true} = downstream stream produce succeeded, or the message
-     *         was handed to the asynchronous DB fallback queue and may be ACKed;
-     *         {@code false} = neither stream produce nor fallback enqueue completed,
-     *         so the caller should keep it in the PEL for auto-claim retry.
+     * @return {@code true} = downstream stream produce succeeded, or the DB fallback
+     *         completed (see {@link #dbFallback}) and the message may be ACKed;
+     *         {@code false} = neither completed, so the caller should keep it in the PEL
+     *         for auto-claim retry.
      */
     public boolean routeSubmitSync(GmmsMessage message) {
         // ===== 等价 DeliveryRouterThread.transactNewMessage =====
         RouteResponse res = dispatcherTL.get().dispatch(message);
         if (res == RouteResponse.RouteFailed) {
-            dbBackup.putMsg(message); // async DB fallback is acceptable here.
-            return true;
+            return dbFallback(message);
         }
         if (res == RouteResponse.ASYQueryOP) {
             // 异步 OP 查询：消息交接给异步 DNS/OP 查询流程(终态交接)。
@@ -85,8 +84,7 @@ public class SyncSubmitRouter {
         }
         if (message.getRSsID() <= 0) {
             message.setStatus(GmmsStatus.SERVER_ERROR);
-            dbBackup.putMsg(message);
-            return true;
+            return dbFallback(message);
         }
         A2PCustomerManager ctm = gmmsUtility.getCustomerManager();
         if (!(ctm.isA2P(message.getRA2P()) || ctm.isPartition(message.getRA2P()))) {
@@ -94,8 +92,7 @@ public class SyncSubmitRouter {
                 log.info(message, "Can't get RA2P for message.");
             }
             message.setStatus(GmmsStatus.UNKNOWN_ERROR);
-            dbBackup.putMsg(message);
-            return true;
+            return dbFallback(message);
         }
         if (NMGUtility.needRentAddr(message)) {
             // 租号分支：原 DeliveryRouterThread.senderRentHandler 未初始化(注释掉，死代码)。
@@ -103,13 +100,25 @@ public class SyncSubmitRouter {
             log.warn(message, "needRentAddr=true but rent path is disabled; fallback to DB. ossid={}",
                     message.getOSsID());
             message.setStatus(GmmsStatus.SERVER_ERROR);
-            dbBackup.putMsg(message);
-            return true;
+            return dbFallback(message);
         }
 
         // ===== 等价 MessageProcessorHandler.putMsg 的假 DR 派生 + 同步重活 =====
         spawnFakeDrIfNeeded(message);
         return new MessageProcessorThread(message).processSync();
+    }
+
+    /**
+     * DB fallback of a stream entry (route failed, no rssid, ...): handled on this thread before
+     * the ack (CoreDbFallbackInline, default true), false = not completed, keep it pending;
+     * with the switch off it is queued to the DBBackupHandler pool as before.
+     */
+    private boolean dbFallback(GmmsMessage message) {
+        if (dbBackup.inlineEnabled()) {
+            return dbBackup.processInline(message);
+        }
+        dbBackup.putMsg(message);
+        return true;
     }
 
     /** 复刻 MessageProcessorHandler.putMsg 的假 DR 谓词；改为内联 run() 顺序执行。 */
@@ -144,16 +153,18 @@ public class SyncSubmitRouter {
      * CSM 长短信分段的同步入口（与 {@link #routeSubmitSync} 对称）。
      *
      * <p>把分段存入 Redis 合并缓冲；未集齐则该段已持久化即可 ACK；集齐则内存组装后同步外发，
-     * 外发持久化成功才删除合并 hash（produce-before-DEL）并 ACK 最终段。
+     * 外发持久化成功才收尾（produce-before-DEL）并 ACK 最终段。所在组已完成的分段重投只 ACK；
+     * 另一个消费者正在组装外发时不 ACK，重投时再判断。
      *
-     * @return {@code true} = 可 ACK 该入站分段（已持久 / 已完成外发或 DB 兜底 / 终态拒绝）；
-     *         {@code false} = 勿 ACK（存储失败 或 完成外发未持久化）→ 留 PEL 由 auto-claim 重投。
+     * @return {@code true} = 可 ACK 该入站分段（已持久 / 已完成外发或 DB 兜底 / 终态拒绝 / 所在组已完成）；
+     *         {@code false} = 勿 ACK（存储失败 / 别人正在外发 / 完成外发未持久化）→ 留 PEL 由 auto-claim 重投。
      */
     public boolean routeCsmSegmentSync(GmmsMessage seg) {
         RedisCsmReassembler reassembler = RedisCsmReassembler.getInstance();
-        CsmStoreResult r = reassembler.storeSegment(seg);
-        if (r.isFailed()) {
-            return false;                                  // 存储失败 -> 不 ACK -> 重试
+        CsmStoreResult r = reassembler.storeSegment(seg,
+                System.getProperty("module") + ":" + Thread.currentThread().getId());
+        if (r.isFailed() || r.isBusy()) {
+            return false;                                  // 存储失败 / 别人正在外发 -> 不 ACK -> 重试
         }
         // Q2: 逐段 in-submit CDR（CDR type 与 handleInSubmit 不同，需逐段记录）
         try {
@@ -161,15 +172,17 @@ public class SyncSubmitRouter {
         } catch (Exception e) {
             log.warn(seg, "handleInSubmit4Csm failed (ignored): {}", e.getMessage());
         }
-        if (r.isIncomplete()) {
-            return true;                                   // 已持久 -> ACK
+        if (r.isIncomplete() || r.isDone()) {
+            return true;                                   // 已持久 / 所在组已完成 -> ACK
         }
         // 集齐
         GmmsMessage assembled = r.getAssembled();
         if (assembled == null) {
             // Q4: 组装失败 -> DB 兜底 + 删 hash + ACK（避免毒丸重投循环）
             seg.setStatus(GmmsStatus.SERVER_ERROR);
-            dbBackup.putMsg(seg);
+            if (!dbFallback(seg)) {
+                return false;
+            }
             reassembler.complete(seg);
             return true;
         }

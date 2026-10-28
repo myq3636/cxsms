@@ -82,6 +82,43 @@ public class DBBackupHandler extends ProcessorHandler{
 		return ret;
 		
 	}
+	/** CoreDbFallbackInline (default true): stream paths handle the fallback on their own thread. */
+	public boolean inlineEnabled() {
+		return !"false".equalsIgnoreCase(gmmsUtility.getCommonProperty("CoreDbFallbackInline", "true"));
+	}
+
+	/**
+	 * Stream paths: the DB fallback (CDR, retry queue or failure DR) is handled on the calling
+	 * thread before the entry is acked, so a crash cannot lose it in the pool. DRs are produced
+	 * inline. Returns false when it did not complete (exception, failed DB write): leave the entry
+	 * pending, the redelivery skips the side effects already done.
+	 */
+	public boolean processInline(final GmmsMessage message) {
+		if (message == null) {
+			return true;
+		}
+		boolean done = MessageStoreManager.runTrackingDbWrites(new Runnable() {
+			public void run() {
+				try {
+					MessageStoreManager.withInlineDrDispatch(new java.util.concurrent.Callable<Void>() {
+						public Void call() {
+							msm.handleMessageError(message);
+							return null;
+						}
+					});
+				} catch (RuntimeException e) {
+					throw e;
+				} catch (Exception e) {
+					throw new IllegalStateException(e);
+				}
+			}
+		});
+		if (!done) {
+			log.warn(message, "DB fallback not completed, left pending for retry. status={}", message.getStatusCode());
+		}
+		return done;
+	}
+
 	/**
 	 * buffer timeout
 	 */

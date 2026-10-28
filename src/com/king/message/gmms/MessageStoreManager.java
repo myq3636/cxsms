@@ -79,6 +79,8 @@ public class MessageStoreManager extends DataManager {
 	 * CoreDrInlineDispatch says.
 	 */
 	private static final ThreadLocal<Boolean> inlineDrDispatch = new ThreadLocal<Boolean>();
+	/** DB writes that failed on this thread inside {@link #runTrackingDbWrites} */
+	private static final ThreadLocal<int[]> dbWriteFailures = new ThreadLocal<int[]>();
 	private boolean isRedisEnable = false;
 	private RedisClient redis = null;
 	private String module = null;
@@ -1789,6 +1791,38 @@ public class MessageStoreManager extends DataManager {
 	}
 	
 	/**
+	 * Run {@code task} on the current thread and report whether it completed: false when it
+	 * threw or a DB write inside failed (only synchronous writes can be seen; rows handed to
+	 * the AsyncSqlWriter count as written). Nested calls report their own writes only.
+	 */
+	public static boolean runTrackingDbWrites(Runnable task) {
+		int[] outer = dbWriteFailures.get();
+		int[] mine = new int[1];
+		dbWriteFailures.set(mine);
+		try {
+			task.run();
+			return mine[0] == 0;
+		} catch (RuntimeException e) {
+			log.warn("Tracked task failed: {}", e.toString(), e);
+			return false;
+		} finally {
+			if (outer == null) {
+				dbWriteFailures.remove();
+			} else {
+				outer[0] += mine[0];
+				dbWriteFailures.set(outer);
+			}
+		}
+	}
+
+	private static void dbWriteFailed() {
+		int[] f = dbWriteFailures.get();
+		if (f != null) {
+			f[0]++;
+		}
+	}
+
+	/**
 	 * Run {@code task} with inline DR dispatch on the current thread (see
 	 * {@link #inlineDrDispatch}); nested calls keep it on until the outermost returns.
 	 */
@@ -2149,6 +2183,9 @@ public class MessageStoreManager extends DataManager {
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
 								+ " for DB Exception", e);
+				// a retry may succeed: let the redelivery insert it again
+				StreamAttempt.forget("dbq:" + table);
+				dbWriteFailed();
 			}
 			return false;
 		} finally {
@@ -3474,6 +3511,7 @@ public class MessageStoreManager extends DataManager {
 				MailSender.getInstance().sendAlertMail(
 						"A2P alert mail from " + ModuleURI.self().getAddress()
 								+ " for DB Exception", ex);
+				dbWriteFailed();
 			}
 		} finally {
 			message.setContentIsChanged(false);

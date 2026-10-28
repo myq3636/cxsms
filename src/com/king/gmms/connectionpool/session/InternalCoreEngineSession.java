@@ -1404,8 +1404,8 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 				return true;
 			}
 			if (CsmUtility.isConcatenatedMsg(msg) && msg.getRoperator() < 0) {
-				// CSM 修复：CsmReassembleMode=redis 走 Redis Hash 同步合并(持久化后才 ACK)；否则 legacy 异步。
-				if ("redis".equalsIgnoreCase(gmmsUtility.getCommonProperty("CsmReassembleMode", "legacy"))) {
+				// CSM：CsmReassembleMode=redis（默认）走 Redis Hash 同步合并(持久化后才 ACK)；legacy 异步。
+				if (com.king.gmms.processor.RedisCsmReassembler.enabled()) {
 					if (!com.king.gmms.routing.SyncSubmitRouter.getInstance().routeCsmSegmentSync(msg)) {
 						msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
 						return false;   // 不 ACK -> MQM 流 PEL auto-claim 重试
@@ -1955,8 +1955,8 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 						}
 						msgStoreManager.handleInSubmit(msg, false);
 						if (CsmUtility.isConcatenatedMsg(msg)) {
-							// CSM 修复：CsmReassembleMode=redis 走 Redis Hash 同步合并(持久化后才 ACK，不丢)；否则 legacy 异步。
-							if ("redis".equalsIgnoreCase(gmmsUtility.getCommonProperty("CsmReassembleMode", "legacy"))) {
+							// CSM：CsmReassembleMode=redis（默认）走 Redis Hash 同步合并(持久化后才 ACK，不丢)；legacy 异步。
+							if (com.king.gmms.processor.RedisCsmReassembler.enabled()) {
 								if(!com.king.gmms.routing.SyncSubmitRouter.getInstance().routeCsmSegmentSync(msg)){
 									msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
 									return false;   // 不 ACK -> PEL auto-claim 重试

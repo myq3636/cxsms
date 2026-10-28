@@ -945,6 +945,8 @@ public class GmmsUtility {
 			"ServerDrStreamShardFilter",
 			"RedisStreamMaxDeliveries", "CoreStreamTaskMaxBatches", "CoreStreamTaskMaxMs",
 			"CoreResultStreamSharded", "CoreDrResultIdempotency",
+			"CoreDbFallbackInline", "CsmReassembleMode", "CoreCsmExpirySweep",
+			"CoreCsmExpiryIntervalSec", "CoreCsmExpiryBatch", "CoreCsmExpiryLeaseMs",
 			"ClientOutboundWindowFullRetryMs",
 			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress", "DNSPort",
 			"DNSMaxFailedLimit", "DNSTestPeriod", "DNSTestNumber", "DNSBufferCapacity",
@@ -1002,7 +1004,9 @@ public class GmmsUtility {
 		}
 		if ("CoreOutboundOutboxScanBatchSize".equals(key)
 				|| "RedisStreamMaxDeliveries".equals(key)
-				|| "CoreStreamTaskMaxBatches".equals(key)) {
+				|| "CoreStreamTaskMaxBatches".equals(key)
+				|| "CoreCsmExpiryIntervalSec".equals(key)
+				|| "CoreCsmExpiryBatch".equals(key)) {
 			return true;
 		}
 		if ("ClientOutboundWindowFullRetryMs".equals(key)
@@ -1057,6 +1061,8 @@ public class GmmsUtility {
 				|| "ServerDrStreamShardFilter".equals(key)
 				|| "CoreResultStreamSharded".equals(key)
 				|| "CoreDrResultIdempotency".equals(key)
+				|| "CoreDbFallbackInline".equals(key)
+				|| "CoreCsmExpirySweep".equals(key)
 				|| "SmppServerInboundSharedPoolEnable".equals(key)
 				|| "MultiSmppServer.LongConnectionCustomerSharedQueueEnable".equals(key)
 				|| (isModuleLongConnectionCustomerKey(key) && key.endsWith(".LongConnectionCustomerSharedQueueEnable"))
@@ -1084,7 +1090,8 @@ public class GmmsUtility {
 				|| "CoreHoldReleaseTickMs".equals(key)
 				|| "CoreHoldRecoverIntervalMs".equals(key)
 				|| "CoreHoldRecoverIdleMs".equals(key)
-				|| "CoreStreamTaskMaxMs".equals(key);
+				|| "CoreStreamTaskMaxMs".equals(key)
+				|| "CoreCsmExpiryLeaseMs".equals(key);
 	}
 
 	private boolean isRedisStreamTuningKey(String key) {
@@ -1175,6 +1182,12 @@ public class GmmsUtility {
 		if ("RedisStreamMaxDeliveries".equals(key)) return "10";
 		if ("CoreResultStreamSharded".equals(key)) return "true";
 		if ("CoreDrResultIdempotency".equals(key)) return "true";
+		if ("CoreDbFallbackInline".equals(key)) return "true";
+		if ("CsmReassembleMode".equals(key)) return "redis";
+		if ("CoreCsmExpirySweep".equals(key)) return "true";
+		if ("CoreCsmExpiryIntervalSec".equals(key)) return "60";
+		if ("CoreCsmExpiryBatch".equals(key)) return "200";
+		if ("CoreCsmExpiryLeaseMs".equals(key)) return "300000";
 		if ("CoreStreamTaskMaxBatches".equals(key)) return "10";
 		if ("CoreStreamTaskMaxMs".equals(key)) return "2000";
 		if ("CoreOutboundOutboxHardTimeoutMs".equals(key)) return "10800000";
