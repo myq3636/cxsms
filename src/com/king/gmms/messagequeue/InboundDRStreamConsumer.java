@@ -62,7 +62,7 @@ public class InboundDRStreamConsumer {
         workerPool = new ThreadPoolExecutor(
             consumerConfig.workerCorePoolSize(), consumerConfig.workerMaxPoolSize(), 60L, TimeUnit.SECONDS,
             new LinkedBlockingQueue<Runnable>(consumerConfig.workerQueueSize()),
-            new ThreadPoolExecutor.CallerRunsPolicy()
+            new ThreadPoolExecutor.AbortPolicy()
         );
 
         dispatcherThread = Executors.newSingleThreadExecutor();
@@ -105,7 +105,14 @@ public class InboundDRStreamConsumer {
                 String streamKey = queueManager.popResponsibleDoorbell(StreamQueueManager.ZSET_INBOUND_DR_ACTIVE, false);
                 if (streamKey != null) {
                     if (processingMap.putIfAbsent(streamKey, true) == null) {
-                        workerPool.submit(new FetchAndProcessTask(streamKey));
+                        try {
+                            workerPool.submit(new FetchAndProcessTask(streamKey));
+                        } catch (java.util.concurrent.RejectedExecutionException full) {
+                            // all workers busy: give the stream back instead of running it on the dispatcher
+                            processingMap.remove(streamKey);
+                            queueManager.triggerDoorbell(streamKey, false);
+                            Thread.sleep(consumerConfig.dispatcherIdleSleepMs());
+                        }
                     } else {
                         pendingDoorbellMap.put(streamKey, true);
                     }
@@ -132,6 +139,7 @@ public class InboundDRStreamConsumer {
             try {
                 queueManager.createGroup(streamKey, groupName, false);
 
+                StreamTaskBudget budget = new StreamTaskBudget();
                 while (running) {
                     Map<String, StreamEntryID> query = new HashMap<String, StreamEntryID>();
                     query.put(streamKey, StreamEntryID.UNRECEIVED_ENTRY);
@@ -144,12 +152,17 @@ public class InboundDRStreamConsumer {
                     for (GmmsMessage msg : messages) {
                         processMessage(streamKey, msg);
                     }
+                    if (budget.spent()) {
+                        break; // give the stream back, the finally re-rings it
+                    }
                 }
             } catch (Exception e) {
                 logger.error("Error processing inbound DR stream: " + streamKey, e);
             } finally {
                 processingMap.remove(streamKey);
-                if (pendingDoorbellMap.remove(streamKey) != null && queueManager.streamLength(streamKey, false) > 0) {
+                pendingDoorbellMap.remove(streamKey);
+                // re-ring whenever entries remain (the task may have stopped on its budget)
+                if (queueManager.streamLength(streamKey, false) > 0) {
                     queueManager.triggerDoorbell(streamKey, false);
                 }
             }

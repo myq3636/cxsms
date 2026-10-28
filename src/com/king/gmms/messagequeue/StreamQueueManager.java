@@ -1400,6 +1400,95 @@ public class StreamQueueManager {
 		}
 	}
 
+	// KEYS: 1 source stream, 2 dead letter stream
+	// ARGV: 1 group, 2 id, 3 reason, 4 deliveries, 5 consumer, 6 nowMs, 7 maxLen
+	private static final String DEAD_LETTER_LUA =
+			"local e = redis.call('XRANGE', KEYS[1], ARGV[2], ARGV[2]) "
+			+ "if #e == 0 then redis.call('XACK', KEYS[1], ARGV[1], ARGV[2]) return {0, ''} end "
+			+ "local f = {'reason', ARGV[3], 'sourceStream', KEYS[1], 'sourceRedisId', ARGV[2], "
+			+ "  'sourceGroup', ARGV[1], 'sourceConsumer', ARGV[5], 'deliveries', ARGV[4], 'createdAt', ARGV[6]} "
+			+ "local src = e[1][2] "
+			+ "local body = '' "
+			+ "for i = 1, #src, 2 do "
+			+ "  f[#f+1] = src[i] f[#f+1] = src[i+1] "
+			+ "  if src[i] == 'body' then body = src[i+1] end "
+			+ "end "
+			+ "redis.call('XADD', KEYS[2], 'MAXLEN', '~', ARGV[7], '*', unpack(f)) "
+			+ "redis.call('XACK', KEYS[1], ARGV[1], ARGV[2]) "
+			+ "redis.call('XDEL', KEYS[1], ARGV[2]) "
+			+ "return {1, body}";
+
+	/** Deliveries after which a pending entry goes to the dead letter stream; 0 = no limit. */
+	public int getMaxDeliveries() {
+		return intProperty("RedisStreamMaxDeliveries", 10);
+	}
+
+	/**
+	 * Recover pending entries idle for minIdleMs (auto-claim): entries delivered
+	 * RedisStreamMaxDeliveries times already go to stream:dlq:submit / stream:dlq:report and
+	 * leave the source stream; the others are claimed for consumerName and returned.
+	 */
+	public List<GmmsMessage> recoverPending(String streamKey, String groupName, String consumerName,
+			long minIdleMs, int count, boolean isSubmitMq) {
+		List<GmmsMessage> messages = new ArrayList<GmmsMessage>();
+		if (count <= 0) {
+			return messages;
+		}
+		com.king.redis.RedisConnection c = isSubmitMq ? redisClient.getSubmitMqRedis() : redisClient.getReportMqRedis();
+		int max = getMaxDeliveries();
+		List<StreamEntryID> claim = new ArrayList<StreamEntryID>();
+		for (redis.clients.jedis.resps.StreamPendingEntry p : c.xpendingIdle(streamKey, groupName, minIdleMs, count)) {
+			if (max > 0 && p.getDeliveredTimes() >= max) {
+				deadLetterMaxDeliveries(c, streamKey, groupName, p, isSubmitMq);
+			} else {
+				claim.add(p.getID());
+			}
+		}
+		if (claim.isEmpty()) {
+			return messages;
+		}
+		for (StreamEntry se : c.xclaimIds(streamKey, groupName, consumerName, minIdleMs, claim)) {
+			if (se == null || se.getFields() == null) {
+				continue;
+			}
+			GmmsMessage msg = SerializableHandler.convertRedisMssage2GmmsMessage(se.getFields().get("body"));
+			if (msg != null) {
+				msg.setRedisStreamID(se.getID().toString());
+				msg.setRedisFence(parseStreamFence(se.getFields().get("fence"))); // C-9
+				msg.setRedisStreamMessageType(msg.getMessageType());
+				messages.add(msg);
+				logStreamTrace("STREAM-CLAIM", streamKey, groupName, consumerName,
+						se.getID().toString(), msg, isSubmitMq, "minIdleMs=" + minIdleMs + " result=claimed");
+			} else {
+				deadLetterDeserializeFailure("STREAM-CLAIM", streamKey, groupName, consumerName,
+						se.getID().toString(), se.getFields(), isSubmitMq, "minIdleMs=" + minIdleMs);
+			}
+		}
+		return messages;
+	}
+
+	private void deadLetterMaxDeliveries(com.king.redis.RedisConnection c, String streamKey, String groupName,
+			redis.clients.jedis.resps.StreamPendingEntry p, boolean isSubmitMq) {
+		String dlqKey = isSubmitMq ? STR_DLQ_SUBMIT : STR_DLQ_REPORT;
+		String id = p.getID().toString();
+		try {
+			List<?> r = (List<?>) c.evalScript(DEAD_LETTER_LUA, Arrays.asList(streamKey, dlqKey),
+					Arrays.asList(groupName, id, "max_deliveries", String.valueOf(p.getDeliveredTimes()),
+							String.valueOf(p.getConsumerName()), String.valueOf(System.currentTimeMillis()),
+							String.valueOf(getStreamMaxLen())));
+			if (!"1".equals(String.valueOf(r.get(0)))) {
+				logger.warn("[STREAM-DLQ] pending entry already gone, removed from PEL. stream={}, redisId={}", streamKey, id);
+				return;
+			}
+			GmmsMessage msg = SerializableHandler.convertRedisMssage2GmmsMessage(String.valueOf(r.get(1)));
+			incrementStreamCounter(MetricsNames.FLOW_IN, streamKey, msg, MetricsNames.ACTION_DEAD_LETTER);
+			logger.error("[STREAM-DLQ] moved to {} after {} deliveries. msgId={}, stream={}, group={}, redisId={}",
+					dlqKey, p.getDeliveredTimes(), msg == null ? null : msg.getMsgID(), streamKey, groupName, id);
+		} catch (Exception e) {
+			logger.error("[STREAM-DLQ] dead letter failed, entry stays pending. stream=" + streamKey + ", redisId=" + id, e);
+		}
+	}
+
 	public List<GmmsMessage> autoClaimBatch(String streamKey, String groupName, String consumerName, 
 			long minIdleMs, int count, boolean isSubmitMq) {
 		if (count <= 0) {

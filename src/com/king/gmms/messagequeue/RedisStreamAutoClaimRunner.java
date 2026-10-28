@@ -76,7 +76,8 @@ final class RedisStreamAutoClaimRunner implements Runnable {
             }
             queueManager.createGroup(streamKey, groupName, submitMq);
             int batchSize = Math.min(queueManager.getAutoClaimBatchSize(), remaining);
-            List<GmmsMessage> messages = queueManager.autoClaimBatch(streamKey, groupName, consumerName,
+            // entries delivered RedisStreamMaxDeliveries times go to the dead letter stream here
+            List<GmmsMessage> messages = queueManager.recoverPending(streamKey, groupName, consumerName,
                     queueManager.getAutoClaimIdleMs(), batchSize, submitMq);
             if (messages == null || messages.isEmpty()) {
                 continue;

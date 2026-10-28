@@ -62,7 +62,7 @@ public class MTStreamConsumer {
         workerPool = new ThreadPoolExecutor(
             consumerConfig.workerCorePoolSize(), consumerConfig.workerMaxPoolSize(), 60L, TimeUnit.SECONDS, 
             new LinkedBlockingQueue<Runnable>(consumerConfig.workerQueueSize()), 
-            new ThreadPoolExecutor.CallerRunsPolicy()
+            new ThreadPoolExecutor.AbortPolicy()
         );
 
         dispatcherThread = Executors.newSingleThreadExecutor();
@@ -95,7 +95,14 @@ public class MTStreamConsumer {
                 String streamKey = queueManager.popResponsibleDoorbell(StreamQueueManager.ZSET_MT_PENDING_ACTIVE, true);
                 if (streamKey != null) {
                     if (processingMap.putIfAbsent(streamKey, true) == null) {
-                        workerPool.submit(new FetchAndProcessTask(streamKey));
+                        try {
+                            workerPool.submit(new FetchAndProcessTask(streamKey));
+                        } catch (java.util.concurrent.RejectedExecutionException full) {
+                            // all workers busy: give the stream back instead of running it on the dispatcher
+                            processingMap.remove(streamKey);
+                            queueManager.triggerDoorbell(streamKey, true);
+                            Thread.sleep(consumerConfig.dispatcherIdleSleepMs());
+                        }
                     } else {
                         pendingDoorbellMap.put(streamKey, true);
                     }
@@ -123,6 +130,7 @@ public class MTStreamConsumer {
             try {
                 queueManager.createGroup(streamKey, groupName, true);
 
+                StreamTaskBudget budget = new StreamTaskBudget();
                 while (running) {
                     Map<String, StreamEntryID> query = new HashMap<>();
                     query.put(streamKey, StreamEntryID.UNRECEIVED_ENTRY);
@@ -136,6 +144,9 @@ public class MTStreamConsumer {
 
                     for (GmmsMessage msg : messages) {
                         processMessage(streamKey, msg);
+                    }
+                    if (budget.spent()) {
+                        break; // give the stream back, the finally re-rings it
                     }
                 }
             } catch (Exception e) {

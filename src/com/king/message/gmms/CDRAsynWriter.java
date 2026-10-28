@@ -75,8 +75,27 @@ public class CDRAsynWriter implements LifecycleListener, SignalHandler {
 		log.trace("Event Received. Type: {}", event.getEventType());
 		if (event.getEventType() == Event.TYPE_SHUTDOWN) {
 			isAlow.set(false);
+			drain();
 		}
 		return 1;
+	}
+
+	/**
+	 * Write the CDRs still queued (their messages are already acked) before the process stops;
+	 * new CDRs go to the synchronous writer once isAlow is false.
+	 */
+	int drain() {
+		int n = 0;
+		String cdr;
+		while ((cdr = cdrQueue.poll()) != null) {
+			if (write(cdr)) {
+				n++;
+			}
+		}
+		if (n > 0) {
+			log.info("CDR asyn queue drained on shutdown: {} CDRs written", n);
+		}
+		return n;
 	}
 
 	public void initialize() {

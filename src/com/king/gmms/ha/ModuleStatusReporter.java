@@ -157,6 +157,11 @@ public class ModuleStatusReporter {
 		} catch (Exception e) {
 			log.warn("Failed to heartbeat module status for " + identity, e);
 		}
+		try {
+			ShardAssignmentChecker.publish(gmmsUtility, role, module, nodeId, heartbeatSeconds * 3);
+		} catch (Exception e) {
+			log.warn("Shard assignment check failed for " + identity, e);
+		}
 	}
 
 	private void selfCheck() {

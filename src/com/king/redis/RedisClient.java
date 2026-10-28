@@ -384,8 +384,9 @@ public class RedisClient {
 	public boolean streamPendingEntryExistsSubmitMq(String key, String group, String id) {
 		return submitMqRedis != null && submitMqRedis.streamPendingEntryExists(key, group, id);
 	}
+	/** Keys matching pattern on the submit MQ, listed with SCAN (KEYS would block Redis). */
 	public Set<String> keysSubmitMq(String pattern) {
-		return submitMqRedis != null ? submitMqRedis.keys(pattern) : null;
+		return submitMqRedis != null ? submitMqRedis.scanAll(pattern) : null;
 	}
 
 	// --- Report-MQ ---
@@ -443,8 +444,9 @@ public class RedisClient {
 		return reportMqRedis != null ? reportMqRedis.xlen(key) : 0L;
 	}
 
+	/** Keys matching pattern on the report MQ, listed with SCAN (KEYS would block Redis). */
 	public Set<String> keysReportMq(String pattern) {
-		return reportMqRedis != null ? reportMqRedis.keys(pattern) : null;
+		return reportMqRedis != null ? reportMqRedis.scanAll(pattern) : null;
 	}
 
 	// --- Pub/Sub (STATE channel) ---

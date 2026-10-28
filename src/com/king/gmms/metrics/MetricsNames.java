@@ -33,6 +33,7 @@ public class MetricsNames {
     public static final String ACTION_ACK = "ack";
     public static final String ACTION_ACK_FAIL = "ack_fail";
     public static final String ACTION_FAIL = "fail";
+    public static final String ACTION_DEAD_LETTER = "dead_letter";
     public static final String ACTION_LATENCY = "latency";
 
     public static final String ACTION_RECEIVED = "received";

@@ -1306,6 +1306,43 @@ public class RedisConnection {
 		}
 	}
 
+	/** Pending entries of a group idle for at least minIdleMs, with their delivery counts. */
+	public List<StreamPendingEntry> xpendingIdle(String key, String group, long minIdleMs, int count) {
+		try (Jedis jedis = pool.getResource()) {
+			return jedis.xpending(key, group, XPendingParams.xPendingParams("-", "+", count).idle(minIdleMs));
+		} catch (Exception e) {
+			logger.warn("xpendingIdle failed. key={}, group={}", key, group, e);
+			return new ArrayList<StreamPendingEntry>();
+		}
+	}
+
+	/** XCLAIM the given ids (only those still idle for minIdleMs) for consumer. */
+	public List<StreamEntry> xclaimIds(String key, String group, String consumer, long minIdleMs,
+			List<StreamEntryID> ids) {
+		try (Jedis jedis = pool.getResource()) {
+			return jedis.xclaim(key, group, consumer, minIdleMs, XClaimParams.xClaimParams(),
+					ids.toArray(new StreamEntryID[ids.size()]));
+		} catch (Exception e) {
+			logger.warn("xclaimIds failed. key={}, group={}", key, group, e);
+			return new ArrayList<StreamEntry>();
+		}
+	}
+
+	/** All keys matching pattern, by SCAN (non blocking, unlike KEYS). */
+	public Set<String> scanAll(String pattern) {
+		Set<String> keys = new LinkedHashSet<String>();
+		String cursor = ScanParams.SCAN_POINTER_START;
+		do {
+			ScanResult<String> r = scanKeys(cursor, pattern, 1000);
+			if (r == null) {
+				break;
+			}
+			keys.addAll(r.getResult());
+			cursor = r.getCursor();
+		} while (!ScanParams.SCAN_POINTER_START.equals(cursor));
+		return keys;
+	}
+
 	/**
 	 * Smallest idle time (ms since the last read attempt) among the consumers of a group,
 	 * -1 when the group has no consumer or does not exist.

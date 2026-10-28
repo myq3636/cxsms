@@ -943,6 +943,7 @@ public class GmmsUtility {
 			"CoreDrInlineDispatch", "CoreMtIdempotency", "CoreMtLeaseMs", "CoreMtMarkerTtlSeconds",
 			"CoreHoldReleaseTickMs", "CoreHoldRecoverIntervalMs", "CoreHoldRecoverIdleMs",
 			"ServerDrStreamShardFilter",
+			"RedisStreamMaxDeliveries", "CoreStreamTaskMaxBatches", "CoreStreamTaskMaxMs",
 			"ClientOutboundWindowFullRetryMs",
 			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress", "DNSPort",
 			"DNSMaxFailedLimit", "DNSTestPeriod", "DNSTestNumber", "DNSBufferCapacity",
@@ -998,7 +999,9 @@ public class GmmsUtility {
 				|| "MQM.StandbyCheckSeconds".equals(key) || "MQM.ActivePriorityDelayMs".equals(key)) {
 			return true;
 		}
-		if ("CoreOutboundOutboxScanBatchSize".equals(key)) {
+		if ("CoreOutboundOutboxScanBatchSize".equals(key)
+				|| "RedisStreamMaxDeliveries".equals(key)
+				|| "CoreStreamTaskMaxBatches".equals(key)) {
 			return true;
 		}
 		if ("ClientOutboundWindowFullRetryMs".equals(key)
@@ -1077,7 +1080,8 @@ public class GmmsUtility {
 				|| "CoreMtMarkerTtlSeconds".equals(key)
 				|| "CoreHoldReleaseTickMs".equals(key)
 				|| "CoreHoldRecoverIntervalMs".equals(key)
-				|| "CoreHoldRecoverIdleMs".equals(key);
+				|| "CoreHoldRecoverIdleMs".equals(key)
+				|| "CoreStreamTaskMaxMs".equals(key);
 	}
 
 	private boolean isRedisStreamTuningKey(String key) {
@@ -1165,6 +1169,9 @@ public class GmmsUtility {
 		if ("CoreHoldRecoverIntervalMs".equals(key)) return "30000";
 		if ("CoreHoldRecoverIdleMs".equals(key)) return "60000";
 		if ("ServerDrStreamShardFilter".equals(key)) return "false";
+		if ("RedisStreamMaxDeliveries".equals(key)) return "10";
+		if ("CoreStreamTaskMaxBatches".equals(key)) return "10";
+		if ("CoreStreamTaskMaxMs".equals(key)) return "2000";
 		if ("CoreOutboundOutboxHardTimeoutMs".equals(key)) return "10800000";
 		if ("CoreOutboundOutboxPayloadTTLSeconds".equals(key)) return "14400";
 		if ("CoreOutboundOutboxScanBatchSize".equals(key)) return "100";
