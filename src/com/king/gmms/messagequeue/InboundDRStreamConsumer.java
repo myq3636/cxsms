@@ -3,6 +3,7 @@ package com.king.gmms.messagequeue;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -15,6 +16,7 @@ import com.king.gmms.connectionpool.session.InternalCoreEngineSession;
 import com.king.gmms.metrics.MetricsCollector;
 import com.king.gmms.metrics.MetricsNames;
 import com.king.message.gmms.GmmsMessage;
+import com.king.message.gmms.MessageStoreManager;
 
 import redis.clients.jedis.StreamEntryID;
 
@@ -163,11 +165,16 @@ public class InboundDRStreamConsumer {
         consumerConfig.applyWorkerPool(workerPool);
     }
 
-    private void processMessage(String streamKey, GmmsMessage msg) {
+    private void processMessage(String streamKey, final GmmsMessage msg) {
         long start = System.nanoTime();
         String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
         try {
-            boolean processed = InternalCoreEngineSession.getReactiveInstance().handleInboundDRInternal(msg, null);
+            // The DR to the customer is produced on this thread, before the ack below
+            boolean processed = MessageStoreManager.withInlineDrDispatch(new Callable<Boolean>() {
+                public Boolean call() {
+                    return InternalCoreEngineSession.getReactiveInstance().handleInboundDRInternal(msg, null);
+                }
+            });
             if (processed) {
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
                         MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_PROCESSED));

@@ -32,6 +32,7 @@ import com.king.gmms.processor.CsmValueInfo;
 import com.king.gmms.processor.CsmValueInfoMark;
 import com.king.gmms.processor.DirectInDRDispatchService;
 import com.king.gmms.processor.MessageProcessorHandler;
+import com.king.gmms.processor.MessageProcessorThread;
 import com.king.gmms.protocol.commonhttp.HttpUtils;
 import com.king.gmms.routing.IOSMSRerouteDispatcher;
 import com.king.gmms.routing.RouteResponse;
@@ -70,6 +71,13 @@ public class MessageStoreManager extends DataManager {
 	private ExpiredMessageQueueWithSafeExit messageQueuePmq = null;
 	private boolean isPMQEnable = false;
 	private MessageProcessorHandler processorHandler = null;
+	/**
+	 * Set while a stream consumer thread handles a message whose DR must be in its
+	 * outbound stream before the consumer acks: DRs sent from that thread are
+	 * dispatched inline instead of through the processor pool, whatever
+	 * CoreDrInlineDispatch says.
+	 */
+	private static final ThreadLocal<Boolean> inlineDrDispatch = new ThreadLocal<Boolean>();
 	private boolean isRedisEnable = false;
 	private RedisClient redis = null;
 	private String module = null;
@@ -1751,7 +1759,51 @@ public class MessageStoreManager extends DataManager {
 		}
 	}
 	
-	public void sendDRMessageForServerReject(GmmsMessage message) {
+	/**
+	 * Run {@code task} with inline DR dispatch on the current thread (see
+	 * {@link #inlineDrDispatch}); nested calls keep it on until the outermost returns.
+	 */
+	public static <T> T withInlineDrDispatch(java.util.concurrent.Callable<T> task) throws Exception {
+		boolean outermost = inlineDrDispatch.get() == null;
+		inlineDrDispatch.set(Boolean.TRUE);
+		try {
+			return task.call();
+		} finally {
+			if (outermost) {
+				inlineDrDispatch.remove();
+			}
+		}
+	}
+
+	/**
+	 * CoreDrInlineDispatch (default true): every DR is produced on the calling thread.
+	 * false: only threads inside {@link #withInlineDrDispatch} do so, the rest use the pool.
+	 */
+	private boolean dispatchDR(GmmsMessage message) {
+		if (inlineDrDispatch.get() != null
+				|| !"false".equalsIgnoreCase(gmmsUtility.getCommonProperty("CoreDrInlineDispatch", "true"))) {
+			// transactDR handles a failed produce itself (FAIL_SENDOUT_DELIVERYREPORT + DB backup)
+			return new MessageProcessorThread(message).processSync();
+		}
+		return processorHandler.putMsg(message);
+	}
+
+	public void sendDRMessageForServerReject(final GmmsMessage message) {
+		try {
+			withInlineDrDispatch(new java.util.concurrent.Callable<Void>() {
+				public Void call() {
+					sendRejectDR(message);
+					return null;
+				}
+			});
+		} catch (RuntimeException e) {
+			throw e;
+		} catch (Exception e) {
+			throw new IllegalStateException(e);
+		}
+	}
+
+	private void sendRejectDR(GmmsMessage message) {
 		A2PCustomerInfo oInfo = ctm.getCustomerBySSID(message
 				.getOSsID());
 		int sendDrImmediately = oInfo.getSendDelayDRImmediately();
@@ -1845,7 +1897,7 @@ public class MessageStoreManager extends DataManager {
 						insertDRMessageToSDQ(message);
 						return;
 					}
-					if (!processorHandler.putMsg(message)) {
+					if (!dispatchDR(message)) {
 						message.setStatusCode(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT
 								.getCode());
 						handleMessageError(message);
@@ -1859,7 +1911,7 @@ public class MessageStoreManager extends DataManager {
 					}
 				}
 			} else if (ctm.isA2P(oA2P) || ctm.isPartition(oA2P)) {
-				if (!processorHandler.putMsg(message)) {
+				if (!dispatchDR(message)) {
 					message.setStatusCode(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT
 							.getCode());
 					handleMessageError(message);
