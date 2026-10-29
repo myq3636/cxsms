@@ -948,6 +948,8 @@ public class GmmsUtility {
 			"CoreDbFallbackInline", "CsmReassembleMode", "CoreCsmExpirySweep",
 			"CoreCsmExpiryIntervalSec", "CoreCsmExpiryBatch", "CoreCsmExpiryLeaseMs",
 			"ClientSendIdempotency", "ClientSendLeaseMs", "ClientStreamTaskMaxBatches", "ClientStreamTaskMaxMs",
+			"SmppServerBindTimeoutMs", "SmppServerMaxConnections", "SmppServerMaxConnectionsPerIp",
+			"ServerStreamTaskMaxBatches", "ServerStreamTaskMaxMs",
 			"ClientOutboundWindowFullRetryMs",
 			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress", "DNSPort",
 			"DNSMaxFailedLimit", "DNSTestPeriod", "DNSTestNumber", "DNSBufferCapacity",
@@ -1008,7 +1010,10 @@ public class GmmsUtility {
 				|| "CoreStreamTaskMaxBatches".equals(key)
 				|| "CoreCsmExpiryIntervalSec".equals(key)
 				|| "CoreCsmExpiryBatch".equals(key)
-				|| "ClientStreamTaskMaxBatches".equals(key)) {
+				|| "ClientStreamTaskMaxBatches".equals(key)
+				|| "SmppServerMaxConnections".equals(key)
+				|| "SmppServerMaxConnectionsPerIp".equals(key)
+				|| "ServerStreamTaskMaxBatches".equals(key)) {
 			return true;
 		}
 		if ("ClientOutboundWindowFullRetryMs".equals(key)
@@ -1096,7 +1101,9 @@ public class GmmsUtility {
 				|| "CoreStreamTaskMaxMs".equals(key)
 				|| "CoreCsmExpiryLeaseMs".equals(key)
 				|| "ClientSendLeaseMs".equals(key)
-				|| "ClientStreamTaskMaxMs".equals(key);
+				|| "ClientStreamTaskMaxMs".equals(key)
+				|| "SmppServerBindTimeoutMs".equals(key)
+				|| "ServerStreamTaskMaxMs".equals(key);
 	}
 
 	private boolean isRedisStreamTuningKey(String key) {
@@ -1197,6 +1204,17 @@ public class GmmsUtility {
 		if ("ClientSendLeaseMs".equals(key)) return "60000";
 		if ("ClientStreamTaskMaxBatches".equals(key)) return "10";
 		if ("ClientStreamTaskMaxMs".equals(key)) return "2000";
+		if ("SmppServerBindTimeoutMs".equals(key)) return "30000";
+		if ("SmppServerMaxConnections".equals(key)) return "0";
+		if ("SmppServerMaxConnectionsPerIp".equals(key)) return "0";
+		if ("ServerStreamTaskMaxBatches".equals(key)) return "10";
+		if ("ServerStreamTaskMaxMs".equals(key)) return "2000";
+		if ("SmppServerInboundSharedPoolEnable".equals(key)) return "true";
+		if ("SmppServerInboundMaxInFlightPerSsid".equals(key)) return "20";
+		if ("SmppServerInboundPerSsidQueueSize".equals(key)) return "10000";
+		if ("SmppServerInboundGlobalQueueLimit".equals(key)) return "200000";
+		if ("SmppServerInboundWorkerMax".equals(key)) return "50";
+		if ("SmppServerInboundWorkerQueue".equals(key)) return "1000";
 		if ("CoreStreamTaskMaxBatches".equals(key)) return "10";
 		if ("CoreStreamTaskMaxMs".equals(key)) return "2000";
 		if ("CoreOutboundOutboxHardTimeoutMs".equals(key)) return "10800000";

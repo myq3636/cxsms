@@ -91,8 +91,14 @@ public class MultiSmppServer
      * @throws IOException
      */
     protected void createSession(Socket clientSocket) throws IOException {
-        if(clientSocket != null) {
+        if (clientSocket == null || !SmppServerConnectionLimiter.getInstance().admit(clientSocket, module)) {
+            return;
+        }
+        try {
             new MultiSmppSession(clientSocket);
+        } catch (Throwable t) {
+            SmppServerConnectionLimiter.getInstance().failed(clientSocket);
+            throw t;
         }
     }
 

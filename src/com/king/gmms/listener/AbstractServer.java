@@ -70,6 +70,21 @@ public abstract class AbstractServer implements A2PService, Runnable {
 				} catch (IOException e) {
 					// NO log needed here because the
 					// java.net.SocketTimeoutException is regularly thrown
+				} catch (Throwable t) {
+					// e.g. OutOfMemoryError "unable to create native thread": keep accepting,
+					// close the connection whose session could not be created
+					log.error(module + " failed to create a session, connection closed; still accepting", t);
+					if (nextClient != null) {
+						try {
+							nextClient.close();
+						} catch (IOException ignored) {
+						}
+					}
+					try {
+						Thread.sleep(100L);
+					} catch (InterruptedException ie) {
+						Thread.currentThread().interrupt();
+					}
 				}
 			}
 		} catch (IOException e) {

@@ -50,12 +50,19 @@ public class ServerSessionThread extends AbstractTimer implements SessionThread 
                 /**
                  * just wait if session status is disconnect or inital
                  */
+                long acceptedAt = System.currentTimeMillis();
+                long bindTimeoutMs = bindTimeoutMs();
                 while (session.isKeepRunning() &&
                        (session.getStatus().equals(ConnectionStatus.DISCONNECT)||
                         session.getStatus().equals(ConnectionStatus.INITIAL))) {
 
                     if(session.getStatus().equals(ConnectionStatus.DISCONNECT)){
                         log.warn("Session from initial dump to disconnect, direct stop session!");                			
+                        session.stop();
+                        return;
+                    }
+                    else if (bindTimeoutMs > 0 && System.currentTimeMillis() - acceptedAt > bindTimeoutMs) {
+                        log.warn("Session is stopped since it did not bind within SmppServerBindTimeoutMs={}", bindTimeoutMs);
                         session.stop();
                         return;
                     }
@@ -130,6 +137,16 @@ public class ServerSessionThread extends AbstractTimer implements SessionThread 
             finally {
                 session.stop();
                 log.warn("ServerSessionThread stop, session number: {}", session.getSessionNum());
+            }
+        }
+
+        /** SmppServerBindTimeoutMs (default 30000, 0 = only MaxSilentTime): longest time from accept to bind. */
+        private static long bindTimeoutMs() {
+            try {
+                return Long.parseLong(com.king.gmms.GmmsUtility.getInstance()
+                        .getCommonProperty("SmppServerBindTimeoutMs", "30000").trim());
+            } catch (Exception e) {
+                return 30000L;
             }
         }
 

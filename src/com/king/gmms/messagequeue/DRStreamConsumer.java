@@ -8,10 +8,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import com.king.framework.SystemLogger;
@@ -53,7 +51,8 @@ public class DRStreamConsumer {
     private ThreadPoolExecutor workerPool;
     private final ConcurrentHashMap<String, Boolean> processingMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> pendingDoorbellMap = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Boolean> windowRetryMap = new ConcurrentHashMap<String, Boolean>();
+    /** DRs put off while the customer's window is full, sent again after ServerDrWindowFullRetryMs */
+    private StreamDeferrals deferrals;
     private final ConcurrentHashMap<String, AtomicLong> windowFullCountMap = new ConcurrentHashMap<String, AtomicLong>();
     private final ConcurrentHashMap<String, AtomicLong> windowFullLastWarnMsMap = new ConcurrentHashMap<String, AtomicLong>();
 
@@ -79,22 +78,23 @@ public class DRStreamConsumer {
         if (running) return;
         running = true;
         
-        workerPool = new ThreadPoolExecutor(
-            consumerConfig.workerCorePoolSize(), consumerConfig.workerMaxPoolSize(), 60L, TimeUnit.SECONDS,
-            new LinkedBlockingQueue<Runnable>(consumerConfig.workerQueueSize()),
-            new ThreadPoolExecutor.CallerRunsPolicy()
-        );
+        workerPool = consumerConfig.newElasticWorkerPool();
 
+        windowRetryThread = Executors.newSingleThreadScheduledExecutor();
+        deferrals = new StreamDeferrals(windowRetryThread, new StreamDeferrals.Resume() {
+            public void resume(String streamKey) {
+                resumeDeferred(streamKey);
+            }
+        });
         dispatcherThread = Executors.newSingleThreadExecutor();
         dispatcherThread.execute(this::dispatcherLoop);
-        windowRetryThread = Executors.newSingleThreadScheduledExecutor();
         recoveryThread = Executors.newSingleThreadExecutor();
         recoveryThread.execute(new RedisStreamAutoClaimRunner("Server DR-to-customer",
                 StreamQueueManager.STR_DR_PENDING_PREFIX + "*", groupName, consumerName, false, queueManager,
                 new RedisStreamAutoClaimRunner.MessageProcessor() {
                     public void process(String streamKey, GmmsMessage msg) {
                         if (sendDeliveryReport(streamKey, msg) == ProcessResult.WINDOW_FULL) {
-                            scheduleWindowRetry(streamKey);
+                            deferrals.defer(streamKey, java.util.Collections.singletonList(msg), getWindowFullRetryMs());
                         }
                     }
                 }));
@@ -144,9 +144,19 @@ public class DRStreamConsumer {
                 String streamKey = queueManager.popResponsibleDoorbell(StreamQueueManager.ZSET_DR_PENDING_ACTIVE, false);
                 if (streamKey != null) {
                     logger.debug("Server DR-to-customer popped doorbell. streamKey={}", streamKey);
-                    if (processingMap.putIfAbsent(streamKey, true) == null) {
+                    if (deferrals.isDeferred(streamKey)) {
+                        // its put-off DRs go first; the task started for them re-rings afterwards
+                        pendingDoorbellMap.put(streamKey, true);
+                    } else if (processingMap.putIfAbsent(streamKey, true) == null) {
                         logger.debug("Server DR-to-customer submit worker. streamKey={}", streamKey);
-                        workerPool.submit(new FetchAndProcessTask(streamKey));
+                        try {
+                            workerPool.submit(new FetchAndProcessTask(streamKey, null));
+                        } catch (java.util.concurrent.RejectedExecutionException full) {
+                            // all workers busy: give the stream back instead of running it on the dispatcher
+                            processingMap.remove(streamKey);
+                            queueManager.triggerDoorbell(streamKey, false);
+                            Thread.sleep(consumerConfig.dispatcherIdleSleepMs());
+                        }
                     } else {
                         pendingDoorbellMap.put(streamKey, true);
                         logger.debug("Server DR-to-customer stream already processing, mark pending doorbell. streamKey={}", streamKey);
@@ -165,18 +175,25 @@ public class DRStreamConsumer {
 
     private class FetchAndProcessTask implements Runnable {
         private final String streamKey;
+        /** DRs of this stream put off earlier (window full), sent before reading new ones */
+        private final List<GmmsMessage> carried;
 
-        public FetchAndProcessTask(String streamKey) {
+        public FetchAndProcessTask(String streamKey, List<GmmsMessage> carried) {
             this.streamKey = streamKey;
+            this.carried = carried;
         }
 
         @Override
         public void run() {
+            boolean yielded = false;
             try {
                 queueManager.createGroup(streamKey, groupName, false);
                 logger.debug("Server DR-to-customer ensured consumer group. streamKey={}, group={}, consumer={}",
                     streamKey, groupName, consumerName);
-
+                if (carried != null && !processCarried()) {
+                    return;
+                }
+                StreamTaskBudget budget = new StreamTaskBudget("Server");
                 while (running) {
                     Map<String, StreamEntryID> query = new HashMap<>();
                     query.put(streamKey, StreamEntryID.UNRECEIVED_ENTRY);
@@ -190,24 +207,84 @@ public class DRStreamConsumer {
                         break; 
                     }
                     logger.debug("Server DR-to-customer read messages. streamKey={}, count={}", streamKey, messages.size());
-
-                    for (GmmsMessage msg : messages) {
-                        // 【业务集成】：将 DR 发送回 SmppServer 的客户端
-                        if (sendDeliveryReport(streamKey, msg) == ProcessResult.WINDOW_FULL) {
-                            scheduleWindowRetry(streamKey);
-                            break;
-                        }
-                        // 确认消费
+                    if (!sendAll(messages)) {
+                        return;
+                    }
+                    if (budget.spent()) {
+                        yielded = true;
+                        break;
                     }
                 }
             } catch (Exception e) {
                 logger.error("Error processing DR stream: " + streamKey, e);
             } finally {
                 processingMap.remove(streamKey);
-                if (pendingDoorbellMap.remove(streamKey) != null && queueManager.streamLength(streamKey, false) > 0) {
+                boolean rung = pendingDoorbellMap.remove(streamKey) != null;
+                if ((rung || yielded) && !deferrals.isDeferred(streamKey)
+                        && queueManager.streamLength(streamKey, false) > 0) {
                     queueManager.triggerDoorbell(streamKey, false);
                 }
             }
+        }
+
+        /** Put-off DRs: keep the ones still pending (idle reset, no delivery counted) and send them. */
+        private boolean processCarried() {
+            List<String> ids = new ArrayList<String>();
+            for (GmmsMessage m : carried) {
+                ids.add(m.getRedisStreamID());
+            }
+            Set<String> still;
+            try {
+                still = new java.util.HashSet<String>(queueManager.keepPending(streamKey, groupName, consumerName, ids, false));
+            } catch (Exception e) {
+                logger.warn("Server DR put-off entries not reclaimed, retried later. streamKey={}", streamKey, e);
+                deferrals.defer(streamKey, carried, 1000L);
+                return false;
+            }
+            List<GmmsMessage> live = new ArrayList<GmmsMessage>();
+            for (GmmsMessage m : carried) {
+                if (still.contains(m.getRedisStreamID())) {
+                    live.add(m);
+                }
+            }
+            return sendAll(live);
+        }
+
+        /**
+         * false when the customer's window filled up: the DRs not sent yet are put off for this
+         * stream (only these: no other task's DRs are taken, so none is sent twice) and the task ends.
+         */
+        private boolean sendAll(List<GmmsMessage> messages) {
+            for (int i = 0; i < messages.size(); i++) {
+                if (sendDeliveryReport(streamKey, messages.get(i)) == ProcessResult.WINDOW_FULL) {
+                    deferrals.defer(streamKey, new ArrayList<GmmsMessage>(messages.subList(i, messages.size())),
+                            getWindowFullRetryMs());
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    /** Delay over: a task sends the put-off DRs, then goes on reading the stream. */
+    private void resumeDeferred(String streamKey) {
+        if (processingMap.putIfAbsent(streamKey, true) != null) {
+            deferrals.schedule(streamKey, 20L);    // the task that put them off is still finishing
+            return;
+        }
+        List<GmmsMessage> list = deferrals.take(streamKey);
+        if (list == null) {
+            processingMap.remove(streamKey);
+            return;
+        }
+        try {
+            MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(
+                    MetricsNames.COMPONENT_STREAM, MetricsNames.FLOW_PROCESS,
+                    null, MetricsNames.ACTION_RETRY_CLAIM), list.size());
+            workerPool.submit(new FetchAndProcessTask(streamKey, list));
+        } catch (java.util.concurrent.RejectedExecutionException full) {
+            processingMap.remove(streamKey);
+            deferrals.defer(streamKey, list, 100L);
         }
     }
 
@@ -217,7 +294,7 @@ public class DRStreamConsumer {
             return;
         }
         lastPoolConfigRefreshMs = now;
-        consumerConfig.applyWorkerPool(workerPool);
+        consumerConfig.applyElasticWorkerPool(workerPool);
     }
 
     private ProcessResult sendDeliveryReport(String streamKey, GmmsMessage msg) {
@@ -283,48 +360,6 @@ public class DRStreamConsumer {
         return ProcessResult.DONE;
     }
 
-    private void scheduleWindowRetry(final String streamKey) {
-        if (streamKey == null || windowRetryThread == null) {
-            return;
-        }
-        if (windowRetryMap.putIfAbsent(streamKey, Boolean.TRUE) != null) {
-            return;
-        }
-        final long retryMs = getWindowFullRetryMs();
-        windowRetryThread.schedule(new Runnable() {
-            public void run() {
-                boolean retryAgain = false;
-                try {
-                    List<GmmsMessage> claimed = queueManager.autoClaimBatch(streamKey, groupName, consumerName,
-                            retryMs, getWindowFullRetryBatchSize(), false);
-                    if (claimed != null && !claimed.isEmpty()) {
-                        MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(
-                                MetricsNames.COMPONENT_STREAM, MetricsNames.FLOW_PROCESS,
-                                null, MetricsNames.ACTION_RETRY_CLAIM), claimed.size());
-                        MetricsCollector.getInstance().setGauge(MetricsNames.gauge(
-                                "stream.server.dr.window_retry", "last_claim_count"), claimed.size());
-                        for (GmmsMessage msg : claimed) {
-                            if (sendDeliveryReport(streamKey, msg) == ProcessResult.WINDOW_FULL) {
-                                retryAgain = true;
-                                return;
-                            }
-                        }
-                    } else {
-                        queueManager.triggerDoorbell(streamKey, false);
-                    }
-                } catch (Exception e) {
-                    logger.warn("Server DR-to-customer window retry failed. streamKey={}", streamKey, e);
-                    queueManager.triggerDoorbell(streamKey, false);
-                } finally {
-                    windowRetryMap.remove(streamKey);
-                    if (retryAgain) {
-                        scheduleWindowRetry(streamKey);
-                    }
-                }
-            }
-        }, retryMs, TimeUnit.MILLISECONDS);
-    }
-
     private long getWindowFullRetryMs() {
         try {
             long value = Long.parseLong(GmmsUtility.getInstance()
@@ -358,8 +393,8 @@ public class DRStreamConsumer {
         if (!shouldLog || !lastWarnMs.compareAndSet(last, now)) {
             return;
         }
-        logger.warn(msg, "Server DR-to-customer window full. streamKey={}, session={}, phase={}, consecutive={}, retryMs={}, retryBatch={}",
-                streamKey, sessionName, phase, count, getWindowFullRetryMs(), getWindowFullRetryBatchSize());
+        logger.warn(msg, "Server DR-to-customer window full. streamKey={}, session={}, phase={}, consecutive={}, retryMs={}",
+                streamKey, sessionName, phase, count, getWindowFullRetryMs());
     }
 
     private void clearWindowFullState(String streamKey) {
@@ -375,16 +410,6 @@ public class DRStreamConsumer {
             value = map.get(safeKey);
         }
         return value;
-    }
-
-    private int getWindowFullRetryBatchSize() {
-        try {
-            int value = Integer.parseInt(GmmsUtility.getInstance()
-                    .getCommonProperty("ServerDrWindowFullRetryBatchSize", "100").trim());
-            return Math.max(1, Math.min(value, 10000));
-        } catch (Exception e) {
-            return 100;
-        }
     }
 
     private Session resolveServerSession(GmmsMessage msg) {
