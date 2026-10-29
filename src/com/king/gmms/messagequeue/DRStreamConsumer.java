@@ -307,8 +307,10 @@ public class DRStreamConsumer {
                 failToCoreAndAck(streamKey, msg, "session not found");
                 return ProcessResult.DONE;
             }
-            logger.info(msg, "Server DR-to-customer resolved session. streamKey={}, session={}, status={}",
-                streamKey, session.getSessionName(), session.getStatus());
+            if (logger.isDebugEnabled()) {
+                logger.debug(msg, "Server DR-to-customer resolved session. streamKey={}, session={}, status={}",
+                    streamKey, session.getSessionName(), session.getStatus());
+            }
             SmppDrSubmitResult submitResult = SmppDrSubmitResult.FAILED;
             if (session != null && isConnected(session)) {
                 if (session instanceof MultiSmppSession) {
@@ -334,6 +336,11 @@ public class DRStreamConsumer {
                         MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_SENT_TO_CUSTOMER));
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
                         MetricsNames.STAGE_OUT_DR, msg, false, MetricsNames.ACTION_SENT_TO_CUSTOMER));
+                if (session instanceof MultiSmppSession && ((MultiSmppSession) session).acksDrOnResult()) {
+                    // acked when the customer's deliver_sm_resp (or the timeout) writes the result
+                    ((MultiSmppSession) session).ackDrOnResult(msg.getInTransID(), streamKey, groupName, sourceRedisId);
+                    return ProcessResult.DONE;
+                }
                 boolean acked = queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);
                 if (acked) {
                     logger.debug(msg, "Server DR-to-customer sent and acked. streamKey={}, session={}, sourceRedisId={}",

@@ -47,6 +47,10 @@ public class TCPIPConnection {
 	private final Object mutex;// Used for lock during sendAndReceive duration
 	private String connectionname;
 	private final ConcurrentLinkedQueue<byte[]> sendQueue;
+	/** PDUs in sendQueue */
+	private final java.util.concurrent.atomic.AtomicInteger queued = new java.util.concurrent.atomic.AtomicInteger();
+	/** most PDUs waiting for the socket, 0 = no limit; see {@link #setMaxQueued} */
+	private volatile int maxQueued = 0;
 	private final Object sendMutex;
 	private TCPSender tcpSender;
 
@@ -92,16 +96,21 @@ public class TCPIPConnection {
 
 	public void close() {
 		if (!closed) {
-			synchronized (mutex) {
-				if (closed)
-					return;
-
-				closed = true;
-				
-				synchronized(sendMutex) {
-					sendMutex.notifyAll(); // wake up sender to stop
+			closed = true;
+			synchronized(sendMutex) {
+				sendMutex.notifyAll(); // wake up sender to stop
+			}
+			// close the socket before taking mutex: a sender blocked in write() on a peer that does
+			// not read holds mutex, and only closing the socket makes that write fail and return
+			try {
+				Socket s = socket;
+				if (s != null && !s.isClosed()) {
+					s.close();
 				}
-
+			} catch (IOException e) {
+				log.warn(e, e);
+			}
+			synchronized (mutex) {
 				try {
 					if (is != null) {
 						is.close();
@@ -138,10 +147,32 @@ public class TCPIPConnection {
 			return;
 		}
 		
+		int limit = maxQueued;
+		if (limit > 0 && queued.get() >= limit) {
+			// the peer stopped reading: queuing more only fills the heap, drop the connection
+			log.warn("Connection {} closed: {} PDUs waiting for the socket (limit {}), the peer does not read",
+					connectionname, queued.get(), limit);
+			fireConnectionUnavailable();
+			throw new IOException("Send queue full (" + limit + "), connection closed");
+		}
 		sendQueue.offer(data);
+		queued.incrementAndGet();
 		synchronized (sendMutex) {
 			sendMutex.notifyAll();
 		}
+	}
+
+	/**
+	 * Most PDUs waiting for the socket (0 = no limit). Above it the peer is considered dead: the
+	 * connection is closed and send throws.
+	 */
+	public void setMaxQueued(int maxQueued) {
+		this.maxQueued = Math.max(0, maxQueued);
+	}
+
+	/** PDUs waiting for the socket, for back pressure (e.g. hold DRs while the customer does not read). */
+	public int getQueuedCount() {
+		return queued.get();
 	}
 
 	/**
@@ -286,6 +317,7 @@ public class TCPIPConnection {
 				while (!closed) {
 					byte[] data = sendQueue.poll();
 					if (data != null) {
+						queued.decrementAndGet();
 						synchronized (mutex) {
 							if (os == null) continue;
 							
@@ -293,6 +325,7 @@ public class TCPIPConnection {
 							
 							// Pipelining: immediately pop the rest of the queued PDUs while holding the lock
 							while ((data = sendQueue.poll()) != null) {
+								queued.decrementAndGet();
 								os.write(data);
 							}
 							
@@ -302,7 +335,9 @@ public class TCPIPConnection {
 						// Wait for new items in the queue
 						synchronized (sendMutex) {
 							if (sendQueue.isEmpty() && !closed) {
-								sendMutex.wait(200); // Prevent endless wait, wake up occasionally to check closed flag
+								// send() and close() notify; the timeout is only a safety net
+								// (was 200 ms: 5 wake-ups a second for every idle connection)
+								sendMutex.wait(5000);
 							}
 						}
 					}

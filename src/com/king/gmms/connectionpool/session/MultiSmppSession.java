@@ -106,6 +106,13 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
     private final java.util.concurrent.atomic.AtomicInteger seqGen =
             new java.util.concurrent.atomic.AtomicInteger(0);
     protected SmppPendingDrManager pendingDrManager = null;
+    /**
+     * DR stream entries sent on this session and acked only once their result is written
+     * (deliver_sm_resp, timeout, session shutdown), by sequence: a crash before that leaves them
+     * pending, so auto-claim sends them again instead of losing them.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<String, String[]> drAwaitingResp =
+            new java.util.concurrent.ConcurrentHashMap<String, String[]>();
     private String serverRegistrySessionKey = null;
     private volatile long lastServerRegistryRefreshMs = 0L;
     
@@ -135,7 +142,12 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         
         int connectionSilentTime = Integer.parseInt(gmmsUtility.
             getCommonProperty("MaxSilentTime", "600")) * 1000;
-        sessionThread = new ServerSessionThread(this, connectionSilentTime);
+        // SmppServerSessionKeeperShared (default true): keep-alive on a shared scheduler, no thread per connection
+        if ("false".equalsIgnoreCase(gmmsUtility.getCommonProperty("SmppServerSessionKeeperShared", "true").trim())) {
+            sessionThread = new ServerSessionThread(this, connectionSilentTime);
+        } else {
+            sessionThread = new com.king.gmms.connectionpool.sessionthread.ServerSessionKeeper(this, connectionSilentTime);
+        }
         
         start();
     }
@@ -541,7 +553,12 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                     tagServerInboundContext(msg);
 
                 	if(log.isInfoEnabled()){
-    					log.info(msg, "Smpp receive message :{}",msg);
+    					log.info(msg, "[SUBMIT-IN] ssid={} session={} seq={} inMsgId={} sender={} recipient={}",
+    							msg.getOSsID(), sessionName, request.getSequenceNumber(), msg.getInMsgID(),
+    							msg.getSenderAddress(), msg.getRecipientAddress());
+                	}
+                	if(log.isDebugEnabled()){
+                		log.debug(msg, "Smpp receive message :{}", msg);
                 	}
                     MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
                             MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_RECEIVED));
@@ -622,7 +639,9 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                             response.setCommandStatus(com.king.gmms.protocol.smpp.util.Data.ESME_ROK);
                             connection.send(response.getData().getBuffer());
                             if(log.isInfoEnabled()){
-                                log.info(msg, "SUBMIT_SM accepted asynchronously, InMsgID: {}", msg.getInMsgID());
+                                log.info(msg, "[SUBMIT-TO-CORE] ssid={} session={} seq={} inMsgId={} redisId={} -> submit_sm_resp ESME_ROK",
+                                        msg.getOSsID(), sessionName, request.getSequenceNumber(), msg.getInMsgID(),
+                                        msg.getRedisStreamID());
                             }
                         } catch (Exception e) {
                             log.warn(msg, "Fail to send success response");
@@ -639,7 +658,12 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                     tagServerInboundContext(msg);
 
                 	if(log.isInfoEnabled()){
-                		log.info(msg, "Smpp receive message :{}",msg);
+                		log.info(msg, "[DELIVER-IN] ssid={} session={} seq={} inMsgId={} sender={} recipient={}",
+                				msg.getOSsID(), sessionName, request.getSequenceNumber(), msg.getInMsgID(),
+                				msg.getSenderAddress(), msg.getRecipientAddress());
+                	}
+                	if(log.isDebugEnabled()){
+                		log.debug(msg, "Smpp receive message :{}", msg);
                 	}
                     MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
                             MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_RECEIVED));
@@ -730,7 +754,9 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                             response.setCommandStatus(com.king.gmms.protocol.smpp.util.Data.ESME_ROK);
                             connection.send(response.getData().getBuffer());
                             if(log.isInfoEnabled()){
-                                log.info(msg, "DELIVER_SM accepted asynchronously, MsgID: {}", msg.getMsgID());
+                                log.info(msg, "[DELIVER-TO-CORE] ssid={} session={} seq={} inMsgId={} redisId={} -> deliver_sm_resp ESME_ROK",
+                                        msg.getOSsID(), sessionName, request.getSequenceNumber(), msg.getInMsgID(),
+                                        msg.getRedisStreamID());
                             }
                         } catch (Exception e) {
                             log.warn(msg, "Fail to send success response");
@@ -1407,8 +1433,8 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             handleSubmit_SM_Resp(response);
         }
         else if (commandId == Data.DELIVER_SM_RESP) {
-            if (log.isInfoEnabled()) {
-                log.info("SMPP {} session receives DELIVER_SM_RESP, sequence={}",
+            if (log.isDebugEnabled()) {
+                log.debug("SMPP {} session receives DELIVER_SM_RESP, sequence={}",
                         isServer ? "server" : "client", response.getSequenceNumber());
             }
             handleDeliver_SM_Resp(response);
@@ -1451,9 +1477,11 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 if (pendingDrManager != null && pendingDrEntry != null) {
                     pendingDrManager.remove(sequenceKey);
                 }
+                ackDrStreamEntry(sequenceKey, bufferedMsg);
                 if (log.isInfoEnabled()) {
-                    log.info(bufferedMsg, "Produced DR_RESP to stream:core:results from {} session, sequence={}",
-                            isServer ? "server" : "client", sequenceKey);
+                    log.info(bufferedMsg, "[DR-RESULT-TO-CORE] ssid={} session={} seq={} status={} redisId={}",
+                            bufferedMsg.getOSsID(), sessionName, sequenceKey, bufferedMsg.getStatusCode(),
+                            bufferedMsg.getRedisStreamID());
                 }
             }
         }
@@ -1703,8 +1731,67 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         return sendDeliveryDRResult(msg, smppVersion);
     }
 
+    /**
+     * Room for one more DR: the DR window has capacity and fewer than SmppServerSendQueueHighWater
+     * (default 2000) PDUs wait for the socket; above it the DRs are put off until the customer reads.
+     */
+    /** marks a sequence whose result was written before the DR worker registered its entry */
+    private static final String RESULTED = "_resulted";
+
+    /**
+     * The DR sent with this sequence came from streamKey/redisId: ack it when its result is written,
+     * or now if the customer's response was already handled (it can be faster than this call).
+     */
+    public void ackDrOnResult(String sequence, String streamKey, String group, String redisId) {
+        if (sequence == null) {
+            StreamQueueManager.getInstance().ackById(streamKey, group, redisId, null, false);
+            return;
+        }
+        String[] entry = new String[] {streamKey, group, redisId};
+        String[] prev = drAwaitingResp.putIfAbsent(sequence, entry);
+        if (prev != null && prev.length == 1 && RESULTED.equals(prev[0])) {
+            drAwaitingResp.remove(sequence, prev);
+            StreamQueueManager.getInstance().ackById(streamKey, group, redisId, null, false);
+        } else if (prev != null) {
+            drAwaitingResp.put(sequence, entry);   // sequence reused after wrap-around
+        }
+    }
+
+    /** Whether DRs on this session are acked on their result (memory pending mode, ServerDrAckOnResp). */
+    public boolean acksDrOnResult() {
+        if ("false".equalsIgnoreCase(gmmsUtility.getCommonProperty("ServerDrAckOnResp", "true").trim())) {
+            return false;
+        }
+        String mode = customerInfo == null ? null : customerInfo.getSMPPDRPendingMode();
+        return mode == null || "memory".equalsIgnoreCase(mode.trim());
+    }
+
+    private void ackDrStreamEntry(String sequence, GmmsMessage msg) {
+        if (sequence == null || !acksDrOnResult()) {
+            return;
+        }
+        String[] e = drAwaitingResp.putIfAbsent(sequence, new String[] {RESULTED});
+        if (e == null) {
+            return;   // the DR worker has not registered yet: it acks when it does
+        }
+        if (e.length == 3 && drAwaitingResp.remove(sequence, e)) {
+            StreamQueueManager.getInstance().ackById(e[0], e[1], e[2], msg, false);
+        }
+    }
+
     public boolean hasServerDrWindow() {
+        if (connection != null && connection.getQueuedCount() >= sendQueueHighWater()) {
+            return false;
+        }
         return pendingDrManager == null || pendingDrManager.hasCapacity();
+    }
+
+    private int sendQueueHighWater() {
+        try {
+            return Integer.parseInt(gmmsUtility.getCommonProperty("SmppServerSendQueueHighWater", "2000").trim());
+        } catch (Exception e) {
+            return 2000;
+        }
     }
 
     public SmppSubmitResult submitClientOutbound(GmmsMessage msg) throws IOException {
@@ -1772,7 +1859,8 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 connection.send(request.getData().getBuffer());
                 pduLogger.logSent(isServer ? "server" : "client", sessionName, request);
                 if(log.isInfoEnabled()){
-					log.info(msg,"send dr, inTransID {}", key);
+					log.info(msg, "[DR-OUT] ssid={} session={} seq={} status={}", msg.getOSsID(), sessionName, key,
+							msg.getStatusCode());
                 }
                 result = true;
             }
@@ -2141,7 +2229,8 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 pduLogger.logSent(isServer ? "server" : "client", sessionName, delivSm);
                 deliverMsg.setInTransID(key);
                 if(log.isInfoEnabled()){
-					log.info(deliverMsg,"send dr, inTransID {}", key);
+					log.info(deliverMsg, "[DR-OUT] ssid={} session={} seq={} status={} redisId={}", deliverMsg.getOSsID(),
+							sessionName, key, deliverMsg.getStatusCode(), deliverMsg.getRedisStreamID());
                 }
                 deliverMsg.setActionCode( -1);
                 result = true;
@@ -2304,6 +2393,9 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         if(!StreamQueueManager.getInstance().produceResult(msg)){
         	log.warn(msg, "Failed to produce {} to stream:core:results.",msg.getMessageType());
             return false;
+        }
+        if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP.equalsIgnoreCase(msg.getMessageType())) {
+            ackDrStreamEntry(msg.getInTransID(), msg);
         }
         return true;
     }

@@ -302,8 +302,8 @@ public class MultiSmppPduProcessor {
 			msg.setStatus(status);
 		}
 		if(log.isInfoEnabled()){
-			log.info(msg, "DeliverSM receivies response, pdu status:{}, and msg statuscode:{}",
-				resp.getCommandStatus(),msg.getStatusCode());
+			log.info(msg, "[DR-RESP] ssid={} seq={} pduStatus={} status={}", msg.getOSsID(),
+				resp.getSequenceNumber(), resp.getCommandStatus(), msg.getStatusCode());
 		}
 	}
 

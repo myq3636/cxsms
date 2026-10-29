@@ -2,7 +2,6 @@ package com.king.gmms.connectionpool.session;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
@@ -40,7 +39,8 @@ public class SmppServerInboundQueueManager {
 
     private final GmmsUtility gmmsUtility = GmmsUtility.getInstance();
     private final ConcurrentHashMap<Integer, SsidQueue> queues = new ConcurrentHashMap<Integer, SsidQueue>();
-    private final ConcurrentLinkedQueue<Integer> activeSsidQueue = new ConcurrentLinkedQueue<Integer>();
+    /** SSIDs with work; dispatchers block on it (no 1 ms polling when idle) */
+    private final LinkedBlockingQueue<Integer> activeSsidQueue = new LinkedBlockingQueue<Integer>();
     private final ConcurrentHashMap<Integer, Boolean> activeSsidSet = new ConcurrentHashMap<Integer, Boolean>();
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final AtomicInteger globalQueued = new AtomicInteger(0);
@@ -259,9 +259,14 @@ public class SmppServerInboundQueueManager {
                     sleep(50L);
                     continue;
                 }
-                Integer ssid = activeSsidQueue.poll();
+                Integer ssid;
+                try {
+                    ssid = activeSsidQueue.poll(100L, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
                 if (ssid == null) {
-                    sleep(1L);
                     continue;
                 }
                 activeSsidSet.remove(ssid);

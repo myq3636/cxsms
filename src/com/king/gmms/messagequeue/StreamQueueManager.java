@@ -853,7 +853,10 @@ public class StreamQueueManager {
 		}
 		String line = buildStreamTraceLine(event, streamKey, groupName, consumerName, redisId, isSubmitMq, detail);
 		if (msg != null) {
-			logger.info(msg, line + " msg={}", shouldPrintFullMessage(event) ? msg : shortMessage(msg));
+			logger.info(msg, line + " msg={}", shortMessage(msg));
+			if (shouldPrintFullMessage(event) && logger.isDebugEnabled()) {
+				logger.debug(msg, line + " full msg={}", msg);
+			}
 		} else {
 			logger.info("{} msg=null", line);
 		}

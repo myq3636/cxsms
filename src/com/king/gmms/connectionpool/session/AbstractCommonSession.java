@@ -130,6 +130,14 @@ public abstract class AbstractCommonSession extends AbstractSession {
 		return true;
 	}
 
+	private int intProperty(String key, int defaultValue) {
+		try {
+			return Integer.parseInt(gmmsUtility.getCommonProperty(key, String.valueOf(defaultValue)).trim());
+		} catch (Exception e) {
+			return defaultValue;
+		}
+	}
+
 	public boolean createConnection(Socket socket) throws IOException {
 		if (socket != null) {
 			synchronized (mutex) {
@@ -140,6 +148,8 @@ public abstract class AbstractCommonSession extends AbstractSession {
 			connection.setMaxSilentTime(gmmsUtility.getMaxSilentTime(),
 					TimeUnit.MILLISECONDS);
 			connection.setConnectionName("" + sessionNum);
+			// incoming (customer) connections: a customer that stops reading is dropped, not buffered without end
+			connection.setMaxQueued(intProperty("SmppServerSendQueueMax", 20000));
 			connection.open();
 			return true;
 		} else {

@@ -44,8 +44,10 @@ public class SmppPduLogger {
         this.enabled = enabled;
     }
 
+    /** setEnabled(false) or SmppPduLogEnable=false (GmmsConfig, hot reload, default true) turn it off */
     public boolean isEnabled() {
-        return enabled;
+        return enabled && !"false".equalsIgnoreCase(
+                com.king.gmms.GmmsUtility.getInstance().getCommonProperty("SmppPduLogEnable", "true").trim());
     }
 
     /**
@@ -56,7 +58,7 @@ public class SmppPduLogger {
      * @param pdu         the received PDU
      */
     public void logReceived(String role, String sessionName, PDU pdu) {
-        if (!enabled || pdu == null) {
+        if (pdu == null || !isEnabled()) {
             return;
         }
         try {
@@ -81,7 +83,7 @@ public class SmppPduLogger {
      * @param pdu         the sent PDU
      */
     public void logSent(String role, String sessionName, PDU pdu) {
-        if (!enabled || pdu == null) {
+        if (pdu == null || !isEnabled()) {
             return;
         }
         try {
