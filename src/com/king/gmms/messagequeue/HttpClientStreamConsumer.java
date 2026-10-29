@@ -1,12 +1,16 @@
 package com.king.gmms.messagequeue;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 
 import com.king.framework.SystemLogger;
@@ -14,6 +18,7 @@ import com.king.gmms.connectionpool.session.Session;
 import com.king.gmms.customerconnectionfactory.CommonHttpClientFactory;
 import com.king.gmms.metrics.MetricsCollector;
 import com.king.gmms.metrics.MetricsNames;
+import com.king.gmms.throttle.DistributedThrottlingManager;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
 
@@ -65,6 +70,9 @@ public class HttpClientStreamConsumer {
 		private volatile long lastPoolConfigRefreshMs = 0L;
 		private ExecutorService dispatcherThread;
 		private ExecutorService recoveryThread;
+		private ScheduledExecutorService deferThread;
+		/** vendor submits put off for want of a rate permit (OutgoingThrottlingNum) */
+		private StreamDeferrals deferrals;
 		private ThreadPoolExecutor workerPool;
 
 		private HttpFlowConsumer(String configPrefix, String groupName, String consumerBaseName,
@@ -88,6 +96,12 @@ public class HttpClientStreamConsumer {
 			}
 			running = true;
 			workerPool = consumerConfig.newElasticWorkerPool();
+			deferThread = Executors.newSingleThreadScheduledExecutor();
+			deferrals = new StreamDeferrals(deferThread, new StreamDeferrals.Resume() {
+				public void resume(String streamKey) {
+					resumeDeferred(streamKey);
+				}
+			});
 			dispatcherThread = Executors.newSingleThreadExecutor();
 			dispatcherThread.execute(new Runnable() {
 				public void run() {
@@ -99,7 +113,10 @@ public class HttpClientStreamConsumer {
 					streamPrefix + "*", groupName, consumerName, submitMq, queueManager,
 					new RedisStreamAutoClaimRunner.MessageProcessor() {
 						public void process(String streamKey, GmmsMessage msg) {
-							processMessage(streamKey, msg);
+							if (!processMessage(streamKey, msg)) {
+								deferrals.defer(streamKey, java.util.Collections.singletonList(msg),
+										DistributedThrottlingManager.getInstance().retryAfterMs(msg.getRSsID()));
+							}
 						}
 					}));
 			queueManager.reRingExistingStreams(streamPrefix + "*", submitMq);
@@ -115,6 +132,9 @@ public class HttpClientStreamConsumer {
 			if (recoveryThread != null) {
 				recoveryThread.shutdownNow();
 			}
+			if (deferThread != null) {
+				deferThread.shutdownNow();
+			}
 			if (workerPool != null) {
 				workerPool.shutdown();
 			}
@@ -127,9 +147,12 @@ public class HttpClientStreamConsumer {
 					refreshWorkerPoolConfig();
 					String streamKey = queueManager.popResponsibleDoorbell(zsetKey, submitMq);
 					if (streamKey != null) {
-						if (processingMap.putIfAbsent(streamKey, Boolean.TRUE) == null) {
+						if (deferrals.isDeferred(streamKey)) {
+							// its put-off entries go first; the task started for them re-rings afterwards
+							pendingDoorbellMap.put(streamKey, Boolean.TRUE);
+						} else if (processingMap.putIfAbsent(streamKey, Boolean.TRUE) == null) {
 							try {
-								workerPool.submit(new FetchAndProcessTask(streamKey));
+								workerPool.submit(new FetchAndProcessTask(streamKey, null));
 							} catch (RejectedExecutionException full) {
 								// all workers busy: give the stream back instead of running it on the dispatcher
 								processingMap.remove(streamKey);
@@ -157,35 +180,123 @@ public class HttpClientStreamConsumer {
 
 		private final class FetchAndProcessTask implements Runnable {
 			private final String streamKey;
+			/** entries of this stream put off earlier, processed before reading new ones */
+			private final List<GmmsMessage> carried;
 
-			private FetchAndProcessTask(String streamKey) {
+			private FetchAndProcessTask(String streamKey, List<GmmsMessage> carried) {
 				this.streamKey = streamKey;
+				this.carried = carried;
 			}
 
 			public void run() {
+				boolean yielded = false;
 				try {
 					queueManager.createGroup(streamKey, groupName, submitMq);
+					if (carried != null && !processCarried()) {
+						return;
+					}
+					StreamTaskBudget budget = new StreamTaskBudget("Client");
 					while (running) {
 						Map<String, StreamEntryID> query = new HashMap<String, StreamEntryID>();
 						query.put(streamKey, StreamEntryID.UNRECEIVED_ENTRY);
 						List<GmmsMessage> messages = queueManager.consumeBatch(groupName, consumerName,
-								consumerConfig.batchSize(), query, submitMq);
+								batchSize(streamKey), query, submitMq);
 						if (messages == null || messages.isEmpty()) {
 							break;
 						}
-						for (GmmsMessage msg : messages) {
-							processMessage(streamKey, msg);
+						if (!processAll(messages)) {
+							return;
+						}
+						if (budget.spent()) {
+							yielded = true;
+							break;
 						}
 					}
 				} catch (Exception e) {
 					logger.error("Error processing HTTP client stream: " + streamKey, e);
 				} finally {
 					processingMap.remove(streamKey);
-					if (pendingDoorbellMap.remove(streamKey) != null
+					boolean rung = pendingDoorbellMap.remove(streamKey) != null;
+					if ((rung || yielded) && !deferrals.isDeferred(streamKey)
 							&& queueManager.streamLength(streamKey, submitMq) > 0) {
 						queueManager.triggerDoorbell(streamKey, submitMq);
 					}
 				}
+			}
+
+			/** Put-off entries: keep the ones still pending (idle reset) and process them. */
+			private boolean processCarried() {
+				List<String> ids = new ArrayList<String>();
+				for (GmmsMessage m : carried) {
+					ids.add(m.getRedisStreamID());
+				}
+				Set<String> still;
+				try {
+					still = new HashSet<String>(queueManager.keepPending(streamKey, groupName, consumerName, ids, submitMq));
+				} catch (Exception e) {
+					logger.warn("HTTP put-off entries not reclaimed, retried later. streamKey={}", streamKey, e);
+					deferrals.defer(streamKey, carried, 1000L);
+					return false;
+				}
+				List<GmmsMessage> live = new ArrayList<GmmsMessage>();
+				for (GmmsMessage m : carried) {
+					if (still.contains(m.getRedisStreamID())) {
+						live.add(m);
+					}
+				}
+				return processAll(live);
+			}
+
+			/** false when the rest was put off (no rate permit): the task ends. */
+			private boolean processAll(List<GmmsMessage> messages) {
+				for (int i = 0; i < messages.size(); i++) {
+					GmmsMessage msg = messages.get(i);
+					if (!processMessage(streamKey, msg)) {
+						deferrals.defer(streamKey, new ArrayList<GmmsMessage>(messages.subList(i, messages.size())),
+								DistributedThrottlingManager.getInstance().retryAfterMs(msg.getRSsID()));
+						return false;
+					}
+				}
+				return true;
+			}
+		}
+
+		/** Delay over: a task processes the put-off entries, then goes on reading the stream. */
+		private void resumeDeferred(String streamKey) {
+			if (processingMap.putIfAbsent(streamKey, Boolean.TRUE) != null) {
+				deferrals.schedule(streamKey, 20L);    // the task that put them off is still finishing
+				return;
+			}
+			List<GmmsMessage> list = deferrals.take(streamKey);
+			if (list == null) {
+				processingMap.remove(streamKey);
+				return;
+			}
+			try {
+				workerPool.submit(new FetchAndProcessTask(streamKey, list));
+			} catch (RejectedExecutionException full) {
+				processingMap.remove(streamKey);
+				deferrals.defer(streamKey, list, 100L);
+			}
+		}
+
+		/** Vendor submits of a rate limited channel: read at most about one second of its rate. */
+		private int batchSize(String streamKey) {
+			int batch = consumerConfig.batchSize();
+			if (!submitMq) {
+				return batch;
+			}
+			int tps = DistributedThrottlingManager.getInstance().tps(rssidOf(streamKey));
+			return tps > 0 ? Math.max(1, Math.min(batch, tps)) : batch;
+		}
+
+		/** stream:http:submit:{rssid}:{shard} */
+		private int rssidOf(String streamKey) {
+			try {
+				String rest = streamKey.substring(streamPrefix.length());
+				return Integer.parseInt(rest.substring(0, rest.indexOf(':')));
+			} catch (Exception e) {
+				return -1;
 			}
 		}
 
@@ -198,7 +309,11 @@ public class HttpClientStreamConsumer {
 			consumerConfig.applyElasticWorkerPool(workerPool);
 		}
 
-		private void processMessage(String streamKey, GmmsMessage msg) {
+		/**
+		 * @return false when a vendor submit got no rate permit (OutgoingThrottlingNum, per Client
+		 *         node): nothing done, the caller puts it off
+		 */
+		private boolean processMessage(String streamKey, GmmsMessage msg) {
 			long start = System.nanoTime();
 			String processMessageType = submitMq ? "submit" : "dr";
 			int targetSsid = -1;
@@ -208,6 +323,9 @@ public class HttpClientStreamConsumer {
 			boolean markerHeld = false;
 			try {
 				targetSsid = resolveTargetSsid(msg);
+				if (submitMq && !DistributedThrottlingManager.getInstance().tryAcquire(targetSsid)) {
+					return false;
+				}
 				incrementReceivedFromStreamMetric(targetSsid);
 				if (useMarker) {
 					ClientSendMarker.Claim c;
@@ -216,20 +334,20 @@ public class HttpClientStreamConsumer {
 					} catch (Exception e) {
 						logger.error(msg, "HTTP send marker not available, left pending", e);
 						queueManager.logNack(streamKey, groupName, consumerName, msg, submitMq, "send_marker_error");
-						return;
+						return true;
 					}
 					if (c == ClientSendMarker.Claim.ACK_ONLY) {
 						ClientSendMarker.ackFailed(streamKey, groupName, sourceRedisId, msg);
 					}
 					if (c != ClientSendMarker.Claim.SEND) {
-						return;
+						return true;
 					}
 					markerHeld = true;
 				}
 				Session session = clientFactory.getSession(targetSsid);
 				if (session == null) {
 					failToCoreAndAck(streamKey, msg, targetSsid, "http session not found, ssid=" + targetSsid, markerHeld);
-					return;
+					return true;
 				}
 				boolean success = session.submit(msg);
 				if (success) {
@@ -242,14 +360,14 @@ public class HttpClientStreamConsumer {
 								"HTTP client stream ack failed after send success. streamKey={}, sourceRedisId={}, currentRedisId={}",
 								streamKey, sourceRedisId, msg == null ? null : msg.getRedisStreamID());
 					}
-					return;
+					return true;
 				}
 				failToCoreAndAck(streamKey, msg, targetSsid, "http submit returned false, ssid=" + targetSsid, markerHeld);
 			} catch (Exception e) {
 				logger.error(msg, "HTTP client stream message processing failed", e);
 				if (useMarker && !markerHeld) {
 					// sent (only the ack failed) or the marker was settled: the redelivery only acks
-					return;
+					return true;
 				}
 				failToCoreAndAck(streamKey, msg, targetSsid, "exception:" + e.getClass().getSimpleName(), markerHeld);
 			} finally {
@@ -257,6 +375,7 @@ public class HttpClientStreamConsumer {
 						MetricsNames.FLOW_PROCESS, processMessageType, MetricsNames.ACTION_LATENCY),
 						System.nanoTime() - start);
 			}
+			return true;
 		}
 
 		private int resolveTargetSsid(GmmsMessage msg) {

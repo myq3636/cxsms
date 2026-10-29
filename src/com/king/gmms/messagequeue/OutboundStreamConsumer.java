@@ -57,8 +57,8 @@ public class OutboundStreamConsumer {
     private ThreadPoolExecutor workerPool;
     private final ConcurrentHashMap<String, Boolean> processingMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> pendingDoorbellMap = new ConcurrentHashMap<>();
-    /** streams with entries put off (window full / no permit), processed again after a delay */
-    private final Map<String, List<GmmsMessage>> deferred = new HashMap<String, List<GmmsMessage>>();
+    /** entries put off (window full / no permit), processed again after a delay */
+    private StreamDeferrals deferrals;
     private final RedisStreamConsumerConfig consumerConfig;
 
     private enum ProcessResult {
@@ -87,6 +87,11 @@ public class OutboundStreamConsumer {
         dispatcherThread = Executors.newSingleThreadExecutor();
         dispatcherThread.execute(this::dispatcherLoop);
         windowRetryThread = Executors.newSingleThreadScheduledExecutor();
+        deferrals = new StreamDeferrals(windowRetryThread, new StreamDeferrals.Resume() {
+            public void resume(String streamKey) {
+                resumeDeferred(streamKey);
+            }
+        });
         recoveryThread = Executors.newSingleThreadExecutor();
         recoveryThread.execute(new RedisStreamAutoClaimRunner("Client outbound-submit",
                 StreamQueueManager.STR_MT_ROUTED_PREFIX + "*", groupName, consumerName, true, queueManager,
@@ -254,49 +259,20 @@ public class OutboundStreamConsumer {
     }
 
     private boolean isDeferred(String streamKey) {
-        synchronized (deferred) {
-            return deferred.containsKey(streamKey);
-        }
+        return deferrals != null && deferrals.isDeferred(streamKey);
     }
 
-    /** Put entries of a stream off for delayMs, merged with any already put off. */
-    private void defer(final String streamKey, List<GmmsMessage> messages, long delayMs) {
-        boolean schedule;
-        synchronized (deferred) {
-            List<GmmsMessage> list = deferred.get(streamKey);
-            schedule = list == null;
-            if (schedule) {
-                list = new ArrayList<GmmsMessage>();
-                deferred.put(streamKey, list);
-            }
-            list.addAll(messages);
-        }
-        if (schedule) {
-            scheduleDeferred(streamKey, delayMs);
-        }
-    }
-
-    private void scheduleDeferred(final String streamKey, long delayMs) {
-        if (windowRetryThread == null || windowRetryThread.isShutdown()) {
-            return;   // stopping: the entries stay pending for auto-claim
-        }
-        windowRetryThread.schedule(new Runnable() {
-            public void run() {
-                resumeDeferred(streamKey);
-            }
-        }, delayMs, TimeUnit.MILLISECONDS);
+    private void defer(String streamKey, List<GmmsMessage> messages, long delayMs) {
+        deferrals.defer(streamKey, messages, delayMs);
     }
 
     /** Delay over: a task processes the put-off entries, then goes on reading the stream. */
     private void resumeDeferred(String streamKey) {
         if (processingMap.putIfAbsent(streamKey, true) != null) {
-            scheduleDeferred(streamKey, 20L);    // the task that put them off is still finishing
+            deferrals.schedule(streamKey, 20L);    // the task that put them off is still finishing
             return;
         }
-        List<GmmsMessage> list;
-        synchronized (deferred) {
-            list = deferred.remove(streamKey);
-        }
+        List<GmmsMessage> list = deferrals.take(streamKey);
         if (list == null) {
             processingMap.remove(streamKey);
             return;

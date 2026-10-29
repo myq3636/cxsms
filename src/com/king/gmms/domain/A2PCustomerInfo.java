@@ -189,6 +189,9 @@ public abstract class A2PCustomerInfo {
 	 * (ChannelReleaseDispatcher); 0 = not held, sent at once
 	 */
 	protected int coreProcessorThrottlingNum = 0;
+	/** SMSOptionHttpConnectTimeout / SMSOptionHttpReadTimeout (seconds) of an HTTP channel; 0 = module ConnectTimeout / ReadTimeout */
+	protected int httpConnectTimeoutSec = 0;
+	protected int httpReadTimeoutSec = 0;
 
 	protected boolean needAntiSpam = false; // default
 
@@ -856,6 +859,14 @@ public abstract class A2PCustomerInfo {
 	
 	public int getIncomingThrottlingNum() {
 		return incomingThrottlingNum;
+	}
+
+	public int getHttpConnectTimeoutSec() {
+		return httpConnectTimeoutSec;
+	}
+
+	public int getHttpReadTimeoutSec() {
+		return httpReadTimeoutSec;
 	}
 
 	public int getCoreHoldMaxSeconds() {
@@ -1815,6 +1826,8 @@ public abstract class A2PCustomerInfo {
 		outgoingThrottlingNum = cfg.getInt("SMSOptionOutgoingThrottlingNum", 0);
 		coreHoldMaxSeconds = cfg.getInt("CoreHoldMaxSeconds", 21600);
 		coreProcessorThrottlingNum = cfg.getInt("SMSOptionCoreProcessorThrottlingNum", 0);
+		httpConnectTimeoutSec = cfg.getInt("SMSOptionHttpConnectTimeout", 0);
+		httpReadTimeoutSec = cfg.getInt("SMSOptionHttpReadTimeout", 0);
 
 		needAntiSpam = cfg.getBool("needAntiSpam", false);
 
@@ -2861,6 +2874,8 @@ public abstract class A2PCustomerInfo {
 		.append(prefix).append("SMSOptionOutgoingThrottlingNum:").append(this.outgoingThrottlingNum)
 		.append(prefix).append("SMSOptionCoreProcessorThrottlingNum:").append(this.coreProcessorThrottlingNum)
 		.append(prefix).append("CoreHoldMaxSeconds:").append(this.coreHoldMaxSeconds)
+		.append(prefix).append("SMSOptionHttpConnectTimeout:").append(this.httpConnectTimeoutSec)
+		.append(prefix).append("SMSOptionHttpReadTimeout:").append(this.httpReadTimeoutSec)
 		.append(prefix).append("SMSOptionOriNumberLenList:").append(this.oriNumberLens)
 		.append(prefix).append("SMSOptionParseOoperator:").append(this.parseOoperator)
 		.append(prefix).append("SMSOptionHttpPasswdEncryptMethod:").append(this.passwdEncryptMethod)

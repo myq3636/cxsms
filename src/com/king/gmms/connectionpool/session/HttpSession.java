@@ -169,8 +169,8 @@ public abstract class HttpSession extends Session {
 			connection.setUseCaches(false);
 			connection.setRequestMethod("GET");
 
-			connection.setConnectTimeout(this.httpConnTimeOut);
-			connection.setReadTimeout(this.httpReadTimeOut);
+			connection.setConnectTimeout(connectTimeoutMs());
+			connection.setReadTimeout(readTimeoutMs());
 
 			InputStream in = connection.getInputStream();
 			BufferedReader data = new BufferedReader(new InputStreamReader(in));
@@ -217,8 +217,8 @@ public abstract class HttpSession extends Session {
 			connection.setUseCaches(false);
 			connection.setRequestMethod("GET");
 
-			connection.setConnectTimeout(this.httpConnTimeOut);
-			connection.setReadTimeout(this.httpReadTimeOut);
+			connection.setConnectTimeout(connectTimeoutMs());
+			connection.setReadTimeout(readTimeoutMs());
 			if (header != null) {
 				for(String key : header.keySet()){
 					connection.setRequestProperty(key, header.get(key));
@@ -272,8 +272,8 @@ public abstract class HttpSession extends Session {
 			connection.setDoOutput(true);
 			connection.setUseCaches(false);
 			connection.setRequestMethod("POST");
-			connection.setConnectTimeout(this.httpConnTimeOut);
-			connection.setReadTimeout(this.httpReadTimeOut);
+			connection.setConnectTimeout(connectTimeoutMs());
+			connection.setReadTimeout(readTimeoutMs());
 
 			if (cookie != null) {
 				connection.setRequestProperty("Cookie", cookie);
@@ -336,8 +336,8 @@ public abstract class HttpSession extends Session {
 			connection.setDoOutput(true);
 			connection.setUseCaches(false);
 			connection.setRequestMethod("POST");
-			connection.setConnectTimeout(this.httpConnTimeOut);
-			connection.setReadTimeout(this.httpReadTimeOut);
+			connection.setConnectTimeout(connectTimeoutMs());
+			connection.setReadTimeout(readTimeoutMs());
 			
 		
 			if (header != null) {
@@ -507,6 +507,30 @@ public abstract class HttpSession extends Session {
         return "";
     }	
 	
+	/** Channel SMSOptionHttpConnectTimeout (cm.cfg, seconds) when set, else the module ConnectTimeout. */
+	protected int connectTimeoutMs() {
+		A2PCustomerInfo info = channelInfo();
+		return info != null && info.getHttpConnectTimeoutSec() > 0 ? info.getHttpConnectTimeoutSec() * 1000 : httpConnTimeOut;
+	}
+
+	/** Channel SMSOptionHttpReadTimeout (cm.cfg, seconds) when set, else the module ReadTimeout. */
+	protected int readTimeoutMs() {
+		A2PCustomerInfo info = channelInfo();
+		return info != null && info.getHttpReadTimeoutSec() > 0 ? info.getHttpReadTimeoutSec() * 1000 : httpReadTimeOut;
+	}
+
+	/** Read on each request, so a cm.cfg reload applies to the next one. */
+	private A2PCustomerInfo channelInfo() {
+		if (ssId <= 0) {
+			return null;
+		}
+		try {
+			return gmmsUtility.getCustomerManager().getCustomerBySSID(ssId);
+		} catch (Exception e) {
+			return null;
+		}
+	}
+
 	protected String verifyUrl(String url) {
 		if (!url.toLowerCase().startsWith("http://")) {
 			url = "http://" + url;
