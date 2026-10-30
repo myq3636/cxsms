@@ -66,6 +66,13 @@
    - server 默认消费本模块的所有 DR 分片，只参与 TotalShards 一致性比对。
 3. 结论不变时，每 10 分钟最多重复打一次；结论变化时立即打日志。只打日志，不改变任何行为。
 
+**后续修正（2026-10-30）**：
+- **按消费的 stream 分组比对，不再按模块角色。** SMPP Client（`MultiSmppClient*`，消费 `stream:mt:routed:*`）和 HTTP Client（`CommonHttpClient*`，消费 `stream:http:submit:*`、`stream:http:dr:*`）的模块角色都是 `client`，但消费的是两套 stream。
+  - 原来混在一起比对，两者配置相同分片时会误报重叠 WARN。
+  - 更严重的是，缺分片的检查也是合起来算的：只要两类 Client 合起来覆盖了 0 到 TotalShards-1 就不报错。比如 SMPP Client 只配了 8 到 15、HTTP Client 配了 0 到 7，SMPP 的 0 到 7 号分片没有人消费，却不会报错。
+  - 现在 HTTP Client 的分片登记为 `system:shards:httpclient:{模块}:{节点}`（模块心跳的角色仍是 `client`），重叠和缺失都在 core、client、httpclient 各组内单独比对。
+- **新增汇总日志。** 第一次比对时，以及之后任何节点、分片配置发生变化时，打一条 INFO：`[SHARD-CHECK] shard owners: client: ...=0-7, ...=8-15; core: ...; httpclient: ...; server (all DR shards of their module): [...]; TotalShards=[16]`，按组列出每个节点负责的分片。
+
 **配置**：无。
 
 ## E. 停机时把 CDR 写完
