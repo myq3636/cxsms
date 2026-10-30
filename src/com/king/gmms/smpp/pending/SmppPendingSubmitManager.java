@@ -374,8 +374,10 @@ public class SmppPendingSubmitManager {
 			boolean produced = ((PendingSubmitTimeoutHandler) timeoutListener).timeoutPendingSubmit(sequence, message);
 			if (produced) {
 				remove(sequence);
-                log.info(message, "SMPP pending submit timeout result produced. pendingKey={}",
-                        entry.getPendingKey());
+                if (log.isDebugEnabled()) {
+                    log.debug(message, "SMPP pending submit timeout result produced. pendingKey={}",
+                            entry.getPendingKey());
+                }
             } else {
                 entry.releaseProduceClaim(); // 产失败 → 释放认领，允许后续重试再认领
                 entry.markResultPending(message);
@@ -768,7 +770,8 @@ public class SmppPendingSubmitManager {
                     log.warn(message, "Redis SMPP pending timeout result produce failed, requeued. pendingKey={}",
                             pendingKey);
                 } else {
-                    log.warn(message, "Redis SMPP pending submit timeout result produced. pendingKey={}", pendingKey);
+                    log.warn(message, "[RESP-TIMEOUT] no response in time (redis pending), result type={} status={} pendingKey={}",
+                            message.getMessageType(), message.getStatusCode(), pendingKey);
                 }
             } catch (Exception e) {
                 log.warn("Failed to process Redis SMPP pending submit timeout. pendingKey=" + pendingKey, e);

@@ -763,7 +763,7 @@ public class MessageProcessorThread extends RunnableMsgTask{
 					MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
 							MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_ROUTED_TO_REDIS));
 					if (log.isInfoEnabled()) {
-						log.info(msg, "Dispatched HTTP MT task to Redis Stream for target ssid {}", msg.getRSsID());
+						log.info(msg, "[MT-TO-CLIENT] rssid={} protocol=HTTP redisId={}", msg.getRSsID(), msg.getRedisStreamID());
 					}
 					continue;
 				} else {
@@ -783,8 +783,8 @@ public class MessageProcessorThread extends RunnableMsgTask{
 					MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
 							MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_ROUTED_TO_REDIS));
 					if(log.isInfoEnabled()){
-						log.info(msg, "Dispatched SMPP delivery task to Redis Stream for rssid {}, module {}",
-								msg.getRSsID(), moduleName);
+						log.info(msg, "[MO-TO-SERVER] rssid={} module={} redisId={}", msg.getRSsID(), moduleName,
+								msg.getRedisStreamID());
 					}
 				} else {
 					MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
@@ -808,7 +808,10 @@ public class MessageProcessorThread extends RunnableMsgTask{
 				MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
 						MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_ROUTED_TO_REDIS));
 				if(log.isInfoEnabled()){
-					log.info(msg, "Dispatched SMPP MT task to Redis Stream for rssid {}", msg.getRSsID());
+					// held for a rate limited channel: [MT-HOLD] was logged instead, [MT-RELEASE] follows
+					if (!com.king.gmms.messagequeue.ChannelReleaseDispatcher.getInstance().holds(msg)) {
+						log.info(msg, "[MT-TO-CLIENT] rssid={} redisId={}", msg.getRSsID(), msg.getRedisStreamID());
+					}
 				}
 			} else {
 				MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
@@ -909,10 +912,12 @@ public class MessageProcessorThread extends RunnableMsgTask{
 					moduleName = transaction.getModule().getModule();
 				} else if(!isInit(server)){//chlInit=no
 					moduleName = moduleManager.selectChannel(queue);
-					log.info(message, "Can not find customer session to send DR, isInit=false, try random function module");
+					if (log.isDebugEnabled()) {
+						log.debug(message, "Can not find customer session to send DR, isInit=false, try random function module");
+					}
 				} else {
-					if(log.isInfoEnabled()){
-						log.info(message,
+					if(log.isDebugEnabled()){
+						log.debug(message,
 							"Can not find customer session to send message");
 					}
 				}
@@ -921,8 +926,9 @@ public class MessageProcessorThread extends RunnableMsgTask{
 			}
 
 			if (moduleName == null) {
-				if(log.isInfoEnabled()){
-					log.info(message, "Can not find moduleName to send message.");
+				// normal for HTTP customers and stream delivery: the DR goes to the stream below
+				if(log.isDebugEnabled()){
+					log.debug(message, "Can not find moduleName to send message.");
 				}
 				// V4.0 Fallback: Even if no direct moduleName found, we produce to Redis
 				// Core shouldn't care about specific module name in the async model
@@ -960,9 +966,11 @@ public class MessageProcessorThread extends RunnableMsgTask{
 				}
 				if(log.isInfoEnabled()){
 			    	if (streamKey != null) {
-						log.info(message, "Send {} to stream={}",message.getMessageType(), streamKey);
+						log.info(message, "[DR-TO-SERVER] ossid={} status={} stream={} redisId={}", message.getOSsID(),
+								message.getStatusCode(), streamKey, message.getRedisStreamID());
 			    	} else {
-						log.info(message, "Send {} to {}",message.getMessageType(), moduleName);
+						log.info(message, "[DR-TO-HTTP] ossid={} status={} redisId={}", message.getOSsID(),
+								message.getStatusCode(), message.getRedisStreamID());
 			    	}
 				}
 			}

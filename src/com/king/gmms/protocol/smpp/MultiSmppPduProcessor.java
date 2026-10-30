@@ -217,8 +217,8 @@ public class MultiSmppPduProcessor {
 			msg.setAttachment(resp.getCommandStatus());
 		}
 		if(log.isInfoEnabled()){
-			log.info(msg, "SubmitSM receivies response, pdu status:{}, and msg statuscode:{}",
-				resp.getCommandStatus(),msg.getStatusCode());
+			log.info(msg, "[SUBMIT-RESP] seq={} pduStatus={} status={} outMsgId={}",
+				msg.getOutTransID(), resp.getCommandStatus(), msg.getStatusCode(), msg.getOutMsgID());
 		}
 	}
 
@@ -264,7 +264,8 @@ public class MultiSmppPduProcessor {
 					.getMessageType())) { // deliver_report
 				msg.setTransaction(session.getTransactionURI());
 				if(log.isInfoEnabled()){
-					log.info(msg, "Received DR,outmsgid={},status code={}" , msg.getOutMsgID(),msg.getStatusCode());
+					log.info(msg, "[VDR-IN] outMsgId={} status={} seq={}", msg.getOutMsgID(), msg.getStatusCode(),
+							request.getSequenceNumber());
 				}
 			}
 		} catch (WrongLengthOfStringException e) {

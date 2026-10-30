@@ -39,15 +39,19 @@ public class SMSOPBackupChannelRouter extends ChannelRouter {
 			String reRoutessid = msg.getRoutingSsIDs();
 			rSsid = ctm.getCustomerOPBackupSenderRoutingRelay(reRoutessid,ossid, msg, msg.getRoperator());
 			if (rSsid>0) {
-				log.info(msg,"get Rssid: {} by OP backup sender routingRelay",rSsid);
+				log.info(msg, "[MT-ROUTE] ossid={} rssid={} by OP backup sender routingRelay", msg.getOSsID(), rSsid);
 			}else{
 				rSsid = ctm.getCustomerOPBackupContentRoutingRelay(reRoutessid,ossid, msg, msg.getRoperator());
 				if (rSsid>0) {
-					log.info(msg,"get Rssid: {} by OP backup content keyword routingRelay",rSsid);
+					log.info(msg, "[MT-ROUTE] ossid={} rssid={} by OP backup content keyword routingRelay", msg.getOSsID(), rSsid);
 				}else {
 					rSsid = ctm.getCustomerOPBackupRoutingRelay(reRoutessid,ossid, msg, msg.getRoperator());
 					if(log.isInfoEnabled()){
-						log.info(msg,"get Rssid: {} by OP backup routingRelay",rSsid);
+						if (rSsid > 0) {
+							log.info(msg, "[MT-ROUTE] ossid={} rssid={} by OP backup routingRelay", msg.getOSsID(), rSsid);
+						} else if (log.isDebugEnabled()) {
+							log.debug(msg, "no rssid by OP backup routingRelay");
+						}
 					}
 				}
 			}

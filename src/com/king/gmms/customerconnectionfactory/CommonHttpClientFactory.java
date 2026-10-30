@@ -76,18 +76,28 @@ public class CommonHttpClientFactory extends ShortConnectionFactory {
 
 	public Session getSession(int ssid) {
 		A2PCustomerInfo info = cim.getCustomerBySSID(ssid);
+		// configuration problems: they repeat for every message of the channel, one line per 10 min
 		if (info == null) {
-			log.warn("HTTP customer not found. ssid={}", ssid);
+			long n = com.king.gmms.util.LogRateLimiter.allow("http-no-customer:" + ssid, 600000L);
+			if (n > 0) {
+				log.warn("HTTP customer not found. ssid={} ({} message(s) in 10 min)", ssid, n);
+			}
 			return null;
 		}
 		if (!SystemConstants.COMMONHTTPCLIENT_MODULE_TYPE.equalsIgnoreCase(info.getChlQueue())) {
-			log.warn("Customer is not configured for CommonHttpClient. ssid={}, chlQueue={}",
-					ssid, info.getChlQueue());
+			long n = com.king.gmms.util.LogRateLimiter.allow("http-not-client:" + ssid, 600000L);
+			if (n > 0) {
+				log.warn("Customer is not configured for CommonHttpClient. ssid={}, chlQueue={} ({} message(s) in 10 min)",
+						ssid, info.getChlQueue(), n);
+			}
 			return null;
 		}
 		if (info instanceof A2PSingleConnectionInfo
 				&& !((A2PSingleConnectionInfo) info).isChlInit()) {
-			log.warn("HTTP customer is not initialized. ssid={}", ssid);
+			long n = com.king.gmms.util.LogRateLimiter.allow("http-not-init:" + ssid, 600000L);
+			if (n > 0) {
+				log.warn("HTTP customer is not initialized (ChlInit). ssid={} ({} message(s) in 10 min)", ssid, n);
+			}
 			return null;
 		}
 		initializedHttpSsids.put(ssid, Boolean.TRUE);

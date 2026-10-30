@@ -1601,6 +1601,7 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 			else{
 				boolean deleteLookup = false;
 				String lookupHashKey = null;
+				boolean fromDb = false;
 				if(isRedisEnable){
 					String object = redis.getString(finalMsg.getOutMsgID());
 					if(object != null){
@@ -1622,20 +1623,21 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 								deleteLookup = true;
 								lookupHashKey = gmmsUtility.getRedisDateIn(message);
 							}
+							if (log.isInfoEnabled()) {
+								log.info(finalMsg, "[VDR-MATCH] outMsgId={} status={} rssid={} -> msgId={} ossid={} (redis)",
+										finalMsg.getOutMsgID(), finalMsg.getStatusCode(), finalMsg.getRSsID(),
+										message.getMsgID(), message.getOSsID());
+							}
 						}
 					}else{
-						log.warn(finalMsg,
-								"TMP-DRLOOKUP inbound DR redis miss. msgId={}, in={}, out={}, os={}, rs={}, status={}/{}, sender={}, recipient={}, text={}",
-								finalMsg.getMsgID(), finalMsg.getInMsgID(), finalMsg.getOutMsgID(),
-								finalMsg.getOSsID(), finalMsg.getRSsID(), finalMsg.getStatusCode(),
-								finalMsg.getStatusText(), finalMsg.getSenderAddress(),
-								finalMsg.getRecipientAddress(), finalMsg.getTextContent());
-						if(log.isInfoEnabled()){
-							log.info("Can not find the message in redis, and out msg id is {}"
-									, finalMsg.getOutMsgID());	
+						// a DR earlier than its submit result, or after the lookup expired: the DB is tried next
+						if (log.isInfoEnabled()) {
+							log.info(finalMsg, "[VDR-MATCH] outMsgId={} status={} rssid={} not in redis, looking up the DB",
+									finalMsg.getOutMsgID(), finalMsg.getStatusCode(), finalMsg.getRSsID());
 						}
 						try {
 							message = msgStoreManager.getGmmsMessageByOutMsgID(finalMsg.getOutMsgID());
+							fromDb = true;
 						} catch (DataManagerException e) {
 							log.error("Can not find the message in message Queue, and out msg id is {}"
 											,finalMsg.getOutMsgID());
@@ -1646,6 +1648,7 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 				}else{
 					try {
 						message = msgStoreManager.getGmmsMessageByOutMsgID(finalMsg.getOutMsgID());
+						fromDb = true;
 					} catch (DataManagerException e) {
 						log.error("Can not find the message in message Queue, and out msg id is {}"
 										,finalMsg.getOutMsgID());
@@ -1653,6 +1656,10 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 					}
 				}
 				if(message != null){
+					if (fromDb && log.isInfoEnabled()) {
+						log.info(finalMsg, "[VDR-MATCH] outMsgId={} -> msgId={} ossid={} (DB)", finalMsg.getOutMsgID(),
+								message.getMsgID(), message.getOSsID());
+					}
 					mergeInboundDeliveryReport(message, finalMsg);
 					boolean processed = processDeliveryReport(message, finalPdu);
 					if (processed && deleteLookup) {
@@ -1668,6 +1675,10 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 					}
 					return processed;
 				} else {
+					if (log.isInfoEnabled()) {
+						log.info(finalMsg, "[VDR-STORE] outMsgId={} status={} rssid={} has no original yet, stored for later matching",
+								finalMsg.getOutMsgID(), finalMsg.getStatusCode(), finalMsg.getRSsID());
+					}
 					return processStoredDeliveryReport(finalMsg, finalPdu);
 				}
 			}
@@ -1934,12 +1945,12 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 					Date scheduleDate = msg.getScheduleDeliveryTime();
 					if (ctm.isInStoreMode(msg.getOSsID())) { //store mode
 						if (log.isInfoEnabled()) {
-							log.info(msg, "In store mode, send to SMQ");
+							log.info(msg, "[MT-STORE] ossid={} store mode: kept in SMQ", msg.getOSsID());
 						}
 						msgStoreManager.handleInSubmit(msg, true);
 					} else if ((scheduleDate != null && scheduleDate.after(gmmsUtility.getGMTTime()))) { //schedule delivery
 						if (log.isInfoEnabled()) {
-							log.info(msg, "Schedule delivery message, send to SMQ");
+							log.info(msg, "[MT-STORE] ossid={} scheduled for {}: kept in SMQ", msg.getOSsID(), scheduleDate);
 						}
 						msgStoreManager.handleInSubmit(msg, true);
 					} else {

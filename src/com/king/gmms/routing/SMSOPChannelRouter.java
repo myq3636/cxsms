@@ -69,15 +69,19 @@ public class SMSOPChannelRouter extends ChannelRouter {
 				//TODO
 				rSsid = ctm.getCustomerOPSenderRoutingRelay(ossid, msg, msg.getRoperator());
 				if (rSsid>0) {
-					log.info(msg,"get Rssid: {} by OP sender routingRelay",rSsid);
+					log.info(msg, "[MT-ROUTE] ossid={} rssid={} by OP sender routingRelay", msg.getOSsID(), rSsid);
 				}else{
 					rSsid = ctm.getCustomerOPContentRoutingRelay(ossid, msg, msg.getRoperator());
 					if (rSsid>0) {
-						log.info(msg,"get Rssid: {} by OP content keyword routingRelay",rSsid);
+						log.info(msg, "[MT-ROUTE] ossid={} rssid={} by OP content keyword routingRelay", msg.getOSsID(), rSsid);
 					}else {
 						rSsid = ctm.getCustomerOPRoutingRelay(ossid, msg, msg.getRoperator());
 						if(log.isInfoEnabled()){
-							log.info(msg,"get Rssid: {} by OP routingRelay",rSsid);
+							if (rSsid > 0) {
+								log.info(msg, "[MT-ROUTE] ossid={} rssid={} by OP routingRelay", msg.getOSsID(), rSsid);
+							} else if (log.isDebugEnabled()) {
+								log.debug(msg, "no rssid by OP routingRelay");
+							}
 						}
 					}
 				}

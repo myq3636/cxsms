@@ -899,6 +899,13 @@ public class StreamQueueManager {
 				"result=pending reason=" + reason);
 	}
 
+	/** [STREAM-ACK] line for an ack done elsewhere (e.g. in a Lua with the attempt marker). */
+	public void traceAck(String streamKey, String groupName, String redisId, GmmsMessage msg, boolean isSubmitMq,
+			boolean acked) {
+		logStreamTrace("STREAM-ACK", streamKey, groupName, null, redisId, msg, isSubmitMq,
+				acked ? "result=ok" : "result=ack_returned_zero");
+	}
+
 	private void logStreamTrace(String event, String streamKey, String groupName, String consumerName,
 			String redisId, GmmsMessage msg, boolean isSubmitMq, String detail) {
 		if (!isStreamTraceLogEnabled()) {

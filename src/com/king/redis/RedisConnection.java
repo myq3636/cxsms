@@ -1300,7 +1300,11 @@ public class RedisConnection {
 			}
 			return min;
 		} catch (Exception e) {
-			logger.warn("minConsumerIdleMs failed. key={}, group={}", key, group, e);
+			if (isNoGroup(e)) {
+				logger.debug("minConsumerIdleMs: no group yet. key={}, group={}", key, group);
+			} else {
+				logger.warn("minConsumerIdleMs failed. key={}, group={}", key, group, e);
+			}
 			return -1;
 		}
 	}
@@ -1314,9 +1318,19 @@ public class RedisConnection {
 					XPendingParams.xPendingParams(id, id, 1));
 			return entries != null && !entries.isEmpty();
 		} catch (Exception e) {
-			logger.warn("streamPendingEntryExists failed. key={}, group={}, id={}", key, group, id, e);
+			if (isNoGroup(e)) {
+				logger.debug("streamPendingEntryExists: no group yet. key={}, group={}, id={}", key, group, id);
+			} else {
+				logger.warn("streamPendingEntryExists failed. key={}, group={}, id={}", key, group, id, e);
+			}
 			return false;
 		}
+	}
+
+	/** NOGROUP: the consumer group (or the stream) does not exist yet, e.g. nobody read the stream so far. */
+	private static boolean isNoGroup(Exception e) {
+		String m = e.getMessage();
+		return m != null && (m.startsWith("NOGROUP") || m.contains("no such key"));
 	}
 
 	public java.util.Set<String> zrangeDoorbell(String key, long start, long end) {

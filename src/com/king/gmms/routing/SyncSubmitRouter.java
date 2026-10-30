@@ -114,6 +114,8 @@ public class SyncSubmitRouter {
      * with the switch off it is queued to the DBBackupHandler pool as before.
      */
     private boolean dbFallback(GmmsMessage message) {
+        log.info(message, "[MT-FALLBACK] ossid={} rssid={} status={} {}: handled by the DB fallback (CDR, retry queue or failure DR)",
+                message.getOSsID(), message.getRSsID(), message.getStatusCode(), message.getStatusText());
         if (dbBackup.inlineEnabled()) {
             return dbBackup.processInline(message);
         }

@@ -136,6 +136,7 @@ public final class ClientSendMarker {
 		Object r = redis().evalScript(ACK_LUA, Arrays.asList(streamKey, key(msg)),
 				Arrays.asList(group, redisId, sent ? "1" : "0"));
 		boolean acked = r instanceof Long && (Long) r > 0;
+		StreamQueueManager.getInstance().traceAck(streamKey, group, redisId, msg, true, acked);
 		if (!acked) {
 			log.warn(msg, "Outbound stream ack returned 0 (ack_returned_zero). streamKey={}, redisId={}", streamKey, redisId);
 		}

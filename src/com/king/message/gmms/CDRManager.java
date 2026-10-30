@@ -66,7 +66,7 @@ public class CDRManager {
 
 	private boolean add(CDR cdr) {
 		if (!StreamAttempt.once("cdr", cdr.getCdrType() + ":" + cdr.getSplitStatus() + ":" + cdr.getRSsID())) {
-			log.info(cdr, "MT redelivered, {} CDR already written", cdr.getCdrType());
+			log.info(cdr, "[CDR] {} already written by an earlier attempt of this entry, skipped", cdr.getCdrType());
 			return true;
 		}
 		String cdrStr = makeCDR(cdr);
@@ -87,10 +87,21 @@ public class CDRManager {
 			// TODO: handle exception
 		}
 		
-		if (!cdrAsynWriter.recoreCDR(cdrStr + "\n")) {
-			return cdrWriter.recoreCDR(cdrStr + "\n");
+		boolean written = cdrAsynWriter.recoreCDR(cdrStr + "\n") || cdrWriter.recoreCDR(cdrStr + "\n");
+		if (written) {
+			logCdr(cdr);
 		} else {
-			return true;
+			log.error(cdr, "[CDR] {} not written (async queue and file writer both failed)", cdr.getCdrType());
+		}
+		return written;
+	}
+
+	/** One INFO line per CDR: the record itself is in the CDR file, this ties it to the message log. */
+	private void logCdr(CDR cdr) {
+		if (log.isInfoEnabled()) {
+			log.info(cdr, "[CDR] type={} status={} ossid={} rssid={} split={} inMsgId={} outMsgId={}",
+					cdr.getCdrType(), cdr.getStatusCode(), cdr.getOSsID(), cdr.getRSsID(), cdr.getSplitStatus(),
+					cdr.getInMsgID(), cdr.getOutMsgID());
 		}
 	}
 
@@ -193,8 +204,11 @@ public class CDRManager {
 			BillingStatus billingStatus = BillingStatus.getStatus(cdr.getStatusText());
 			sb.append(billingStatus.getBillingCode());
 			stmt = sb.toString();
-			log.info(new StringBuilder(" ").append(cdr.getMsgID()).append(
-					" CDR: ").append(sb).toString());
+			logCdr(cdr);
+			if (log.isDebugEnabled()) {
+				log.debug(new StringBuilder(" ").append(cdr.getMsgID()).append(
+						" CDR: ").append(sb).toString());
+			}
 			/*
 			 * log.fatal(new StringBuilder(" ").append(cdr.getMsgID()).append(
 			 * " CDR: ").append(sb).toString());

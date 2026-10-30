@@ -69,7 +69,7 @@ public class SMSNumberChannelRouter extends ChannelRouter {
 				//TODO
 				rSsid = ctm.getCustomerNumberRoutingRelay(ossid, msg);
 				if (rSsid>0) {
-					log.info(msg,"get Rssid: {} by number routingRelay",rSsid);
+					log.info(msg, "[MT-ROUTE] ossid={} rssid={} by number routingRelay", msg.getOSsID(), rSsid);
 				}
 				//check routing special msg size check.
 				if(rSsid!=0) {

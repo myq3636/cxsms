@@ -201,20 +201,27 @@ public class ResultStreamConsumer {
                 }
                 if (state == StreamAttempt.Start.DONE) {
                     attempt = false;
-                    StreamAttempt.ackDone(streamKey, groupName, msg, streamRedis);
+                    queueManager.traceAck(streamKey, groupName, sourceRedisId, msg, false,
+                            StreamAttempt.ackDone(streamKey, groupName, msg, streamRedis));
                     return;
                 }
             }
             String resultType = msg.getRedisStreamMessageType() != null
                     ? msg.getRedisStreamMessageType() : msg.getMessageType();
-            if (GmmsMessage.MSG_TYPE_SUBMIT_RESP.equalsIgnoreCase(resultType)
-                    && CoreOutboundOutboxManager.getInstance().claimResult(msg) == CoreOutboundOutboxManager.Claim.STALE) {
-                // this outbound attempt already has its result (e.g. a submit_resp after the timeout)
-                logger.warn(msg, "Late or duplicate submit result dropped. streamKey={}, redisId={}, status={}",
-                        streamKey, sourceRedisId, msg.getStatusCode());
+            CoreOutboundOutboxManager.Claim claim = GmmsMessage.MSG_TYPE_SUBMIT_RESP.equalsIgnoreCase(resultType)
+                    ? CoreOutboundOutboxManager.getInstance().claimResult(msg) : null;
+            if (logger.isInfoEnabled()) {
+                logger.info(msg, "[RESULT] type={} status={} ossid={} rssid={} split={} outMsgId={}{}", resultType,
+                        msg.getStatusCode(), msg.getOSsID(), msg.getRSsID(), msg.getSplitStatus(), msg.getOutMsgID(),
+                        claim == null ? "" : " outbox=" + claim);
+            }
+            if (claim == CoreOutboundOutboxManager.Claim.STALE) {
+                // this outbound attempt already has its result (e.g. a submit_resp after the timeout): expected, INFO
+                logger.info(msg, "[RESULT-DROPPED] late or duplicate submit result for an attempt that already has one");
                 processed = true;
                 if (attempt) {
-                    StreamAttempt.finish(streamKey, groupName, sourceRedisId);
+                    queueManager.traceAck(streamKey, groupName, sourceRedisId, msg, false,
+                            StreamAttempt.finish(streamKey, groupName, sourceRedisId));
                 } else {
                     queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);
                 }
@@ -237,6 +244,9 @@ public class ResultStreamConsumer {
             // with an attempt: _done first, then XACK+XDEL+DEL marker
             boolean acked = attempt ? StreamAttempt.finish(streamKey, groupName, sourceRedisId)
                     : queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);
+            if (attempt) {
+                queueManager.traceAck(streamKey, groupName, sourceRedisId, msg, false, acked);
+            }
             if (!acked) {
                 logger.warn(msg,
                         "Result stream ack failed after process success. streamKey={}, sourceRedisId={}, currentRedisId={}",

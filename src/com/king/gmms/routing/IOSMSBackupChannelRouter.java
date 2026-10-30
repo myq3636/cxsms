@@ -39,15 +39,19 @@ public class IOSMSBackupChannelRouter extends ChannelRouter {
 			String reRoutessid = msg.getRoutingSsIDs();
 			rSsid = ctm.getCustomerBackupSenderRoutingRelay(reRoutessid,ossid, msg);
 			if (rSsid>0) {
-				log.info(msg,"get Rssid: {} by backup sender routingRelay",rSsid);
+				log.info(msg, "[MT-ROUTE] ossid={} rssid={} by backup sender routingRelay", msg.getOSsID(), rSsid);
 			}else{
 				rSsid = ctm.getCustomerBackupContentKeywordRoutingRelay(reRoutessid,ossid, msg);
 				if (rSsid>0) {
-					log.info(msg,"get Rssid: {} by backup content keyword routingRelay",rSsid);
+					log.info(msg, "[MT-ROUTE] ossid={} rssid={} by backup content keyword routingRelay", msg.getOSsID(), rSsid);
 				}else {
 					rSsid = ctm.getCustomerBackupRoutingRelay(reRoutessid,ossid, msg);
 					if(log.isInfoEnabled()){
-						log.info(msg,"get Rssid: {} by backup routingRelay",rSsid);
+						if (rSsid > 0) {
+							log.info(msg, "[MT-ROUTE] ossid={} rssid={} by backup routingRelay", msg.getOSsID(), rSsid);
+						} else if (log.isDebugEnabled()) {
+							log.debug(msg, "no rssid by backup routingRelay");
+						}
 					}
 				}
 			}

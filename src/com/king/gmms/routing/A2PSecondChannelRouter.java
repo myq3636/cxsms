@@ -69,15 +69,19 @@ public class A2PSecondChannelRouter extends ChannelRouter {
 				//TODO
 				rSsid = ctm.getSecCustomerSenderRoutingRelay(ossid, msg);
 				if (rSsid>0) {
-					log.info(msg,"get Rssid: {} by second sender routingRelay",rSsid);
+					log.info(msg, "[MT-ROUTE] ossid={} rssid={} by second sender routingRelay", msg.getOSsID(), rSsid);
 				}else{
 					rSsid = ctm.getSecCustomerContentKeywordRoutingRelay(ossid, msg);
 					if (rSsid>0) {
-						log.info(msg,"get Rssid: {} by second content keyword routingRelay",rSsid);
+						log.info(msg, "[MT-ROUTE] ossid={} rssid={} by second content keyword routingRelay", msg.getOSsID(), rSsid);
 					}else {
 						rSsid = ctm.getSecCustomerRoutingRelay(ossid, msg);
 						if(log.isInfoEnabled()){
-							log.info(msg,"get Rssid: {} by second routingRelay",rSsid);
+							if (rSsid > 0) {
+								log.info(msg, "[MT-ROUTE] ossid={} rssid={} by second routingRelay", msg.getOSsID(), rSsid);
+							} else if (log.isDebugEnabled()) {
+								log.debug(msg, "no rssid by second routingRelay");
+							}
 						}
 					}
 				}

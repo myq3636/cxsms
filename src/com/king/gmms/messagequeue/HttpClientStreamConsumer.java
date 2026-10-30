@@ -351,6 +351,7 @@ public class HttpClientStreamConsumer {
 				}
 				boolean success = session.submit(msg);
 				if (success) {
+					logger.info(msg, "[HTTP-OUT] rssid={} sent, outMsgId={}", targetSsid, msg.getOutMsgID());
 					incrementSuccessMetric(targetSsid);
 					markerHeld = false;
 					boolean acked = useMarker ? ClientSendMarker.ackSent(streamKey, groupName, sourceRedisId, msg)

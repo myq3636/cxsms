@@ -1355,10 +1355,14 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                             MetricsNames.FLOW_CLIENT, msg, MetricsNames.ACTION_WRITTEN_TO_REDIS));
                     MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
                             MetricsNames.STAGE_IN_DR, msg, true, MetricsNames.ACTION_WRITTEN_TO_REDIS));
+                    log.info(msg, "[VDR-TO-CORE] outMsgId={} status={}, deliver_sm_resp ROK", msg.getOutMsgID(),
+                            msg.getStatusCode());
                 	GmmsMessage respMsg = new GmmsMessage(msg);
                 	respMsg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP);
                 	sendDeliverSMRespWithoutInnerack(respMsg);
                 } else {
+                    log.warn(msg, "[VDR-TO-CORE] outMsgId={} not written to Redis, deliver_sm rejected (ESME_RX_T_APPN)",
+                            msg.getOutMsgID());
                     sendDeliverSMErrorResp(request, msg);
                 }
         	} else if (msg != null) {
@@ -1381,10 +1385,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             response.setCommandStatus(com.king.gmms.protocol.smpp.util.Data.ESME_RX_T_APPN);
             connection.send(response.getData().getBuffer());
         }catch(Exception e){
-        	log.warn(msg,"Fail to send response");
-        }
-        if(log.isInfoEnabled()){
-			log.info(msg,"send response ok.");
+        	log.warn(msg, "Fail to send deliver_sm_resp ESME_RX_T_APPN: {}", e.toString());
         }
     }
 
@@ -2066,6 +2067,8 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 pduLogger.logSent(isServer ? "server" : "client", sessionName, request);
                 msg.setOutTransID(key);
                 result = true;
+                log.info(msg, "[MT-OUT] rssid={} session={} seq={} split={}", msg.getRSsID(), sessionName, key,
+                        msg.getSarSegmentSeqNum());
                 return SmppSubmitResult.SENT;
 
             }else{
@@ -2446,9 +2449,8 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
 				|| GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP.equalsIgnoreCase(msg.getMessageType())){
 			msg.setStatusCode(1);
 		}
-        if(log.isInfoEnabled()){
-        	log.info(msg,"{} do not receive the response after timeout", msg.getMessageType());
-        }
+        log.warn(msg, "[RESP-TIMEOUT] no response from session={} seq={} in time, result type={} status={}",
+                sessionName, msg.getOutTransID(), msg.getMessageType(), msg.getStatusCode());
         boolean produced = GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP.equalsIgnoreCase(msg.getMessageType())
                 ? produceDrResult(obj, msg) : StreamQueueManager.getInstance().produceResult(msg);
         if(!produced){
@@ -2466,7 +2468,9 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
     	if(!exMsgManager.insertExceptionMessage(msg,name)){
 	    	log.error(msg,"put message into exMsgQueue failed!");        
 		}else{
-			log.info(msg,"put message into exMsgQueue successfully.");
+			if (log.isDebugEnabled()) {
+				log.debug(msg, "put message into exMsgQueue successfully.");
+			}
 		}
     }
     

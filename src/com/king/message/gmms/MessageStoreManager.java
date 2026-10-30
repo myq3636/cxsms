@@ -913,6 +913,11 @@ public class MessageStoreManager extends DataManager {
 	 * @param checkReroute
 	 */
 	public void handleOutSubmitResForInnack(GmmsMessage message) {
+		// every check that rejects an MT inside Core ends here (blacklist, recipient rule, size, 24h limit...)
+		if (log.isInfoEnabled()) {
+			log.info(message, "[MT-REJECT] ossid={} status={} {} rssid={}", message.getOSsID(), message.getStatusCode(),
+					message.getStatusText(), message.getRSsID());
+		}
 		message.setActionCode(-1);
 		boolean supportDR = !gmmsUtility.getCustomerManager()
 				.isRssidNotSupportDR(message.getRSsID());

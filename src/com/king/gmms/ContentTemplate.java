@@ -148,7 +148,7 @@ public class ContentTemplate implements LifecycleListener {
 			templateIdMapBak.clear();
 
 		} catch (Exception e) {
-			log.warn("Parse content template exception:{}", e);
+			log.warn("Parse content template exception: " + e, e);
 			ret = false;
 		}
 

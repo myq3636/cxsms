@@ -80,7 +80,7 @@ public class ChannelReleaseDispatcher {
 			if (cached != null) {
 				cached[0]++;
 			}
-			log.info(msg, "MT held for channel {} (backlog ~{}, {} TPS per Core)", msg.getRSsID(), backlog + 1,
+			log.info(msg, "[MT-HOLD] rssid={} backlog~{} tps={} per Core", msg.getRSsID(), backlog + 1,
 					channel.getCoreProcessorThrottlingNum());
 		}
 		return held;
@@ -210,8 +210,8 @@ public class ChannelReleaseDispatcher {
 			String id = q.releaseHeld(holdKey, GROUP, msg);
 			if (id == null) {
 				log.info(msg, "Held MT already released by another Core. holdId={}", holdId);
-			} else if (log.isDebugEnabled()) {
-				log.debug(msg, "Held MT released to channel {} after {} ms, id={}", msg.getRSsID(), heldMs, id);
+			} else if (log.isInfoEnabled()) {
+				log.info(msg, "[MT-RELEASE] rssid={} heldMs={} redisId={}", msg.getRSsID(), heldMs, id);
 			}
 		} catch (Exception e) {
 			// stays pending on this consumer, retried next tick

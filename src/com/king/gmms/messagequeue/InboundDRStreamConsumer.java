@@ -193,7 +193,8 @@ public class InboundDRStreamConsumer {
                     return;
                 }
                 if (state == StreamAttempt.Start.DONE) {
-                    StreamAttempt.ackDone(streamKey, groupName, msg, streamRedis);
+                    queueManager.traceAck(streamKey, groupName, sourceRedisId, msg, false,
+                            StreamAttempt.ackDone(streamKey, groupName, msg, streamRedis));
                     return;
                 }
             }
@@ -218,6 +219,9 @@ public class InboundDRStreamConsumer {
                 // with an attempt: _done first, then XACK+XDEL+DEL marker
                 boolean acked = attempt ? StreamAttempt.finish(streamKey, groupName, sourceRedisId)
                         : queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);
+                if (attempt) {
+                    queueManager.traceAck(streamKey, groupName, sourceRedisId, msg, false, acked);
+                }
                 if (!acked) {
                     logger.warn(msg,
                             "Inbound DR stream ack failed after process success. streamKey={}, sourceRedisId={}, currentRedisId={}",

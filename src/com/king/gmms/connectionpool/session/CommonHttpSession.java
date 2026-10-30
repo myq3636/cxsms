@@ -181,9 +181,7 @@ public class CommonHttpSession extends HttpSession {
 					msg.setMessageType(GmmsMessage.MSG_TYPE_INNER_ACK);
 					msg.setStatusCode(0);
 					if (!putGmmsMessage2RouterQueue(msg)) {
-						if (log.isInfoEnabled()) {
-							log.info(msg, "Send response to core engine failed!");
-						}
+						log.error(msg, "Result not written to Redis for Core (send response to core engine failed)");
 					}
 					return true;
 				}
@@ -418,9 +416,7 @@ public class CommonHttpSession extends HttpSession {
 				message.setRSsID(cst.getSSID());
 				message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 				if (!putGmmsMessage2RouterQueue(message)) {
-					if(log.isInfoEnabled()){
-						log.info(message, "Send response to core engine failed!");
-					}
+					log.error(message, "Result not written to Redis for Core (send response to core engine failed)");
 				}
 			}
 		}
@@ -464,7 +460,7 @@ public class CommonHttpSession extends HttpSession {
 		}
 
 		if (!putGmmsMessage2RouterQueue(msg)) {
-			log.info(msg, "Send response to core engine failed!");
+			log.error(msg, "Result not written to Redis for Core (send response to core engine failed)");
 		}
 	}
 	
@@ -485,7 +481,7 @@ public class CommonHttpSession extends HttpSession {
 		}
 
 		if (!putGmmsMessage2RouterQueue(msg)) {
-			log.info(msg, "Send response to core engine failed!");
+			log.error(msg, "Result not written to Redis for Core (send response to core engine failed)");
 		}
 	}
 
@@ -539,9 +535,7 @@ public class CommonHttpSession extends HttpSession {
 				}
 			}
 			msg.setOutMsgID(jobid);
-			if(log.isInfoEnabled()){
-				log.info(msg, "received submit resp {}" ,resp);
-			}
+			log.info(msg, "[HTTP-RESP] outMsgId={} resp={}", jobid, resp);
 			HttpStatus status = new HttpStatus(msg_status_code, reason_phrase);
 			GmmsStatus gstatus = hi.mapHttpSubStatus2GmmsStatus(status);
 			msg.setStatus(gstatus);
@@ -752,8 +746,8 @@ public class CommonHttpSession extends HttpSession {
 		if (post.startsWith("&")) {
 			postData.deleteCharAt(0);
 		}
-		if(log.isInfoEnabled()){
-			log.info(message,"post msg {}", postData.toString());
+		if(log.isDebugEnabled()){
+			log.debug(message,"post msg {}", postData.toString());
 		}
 		return postData;
 	}

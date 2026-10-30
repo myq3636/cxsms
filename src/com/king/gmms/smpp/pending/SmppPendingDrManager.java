@@ -327,8 +327,10 @@ public class SmppPendingDrManager {
             boolean produced = ((PendingDrTimeoutHandler) timeoutListener).timeoutPendingDr(sequence, message);
             if (produced) {
                 remove(sequence);
-                log.info(message, "SMPP pending DR timeout result produced. pendingKey={}",
-                        entry.getPendingKey());
+                if (log.isDebugEnabled()) {
+                    log.debug(message, "SMPP pending DR timeout result produced. pendingKey={}",
+                            entry.getPendingKey());
+                }
             } else {
                 entry.releaseProduceClaim(); // 产失败 → 释放认领供重试
                 entry.markResultPending(message);
@@ -744,7 +746,8 @@ public class SmppPendingDrManager {
                     log.warn(message, "Redis SMPP pending DR timeout result produce failed, requeued. pendingKey={}",
                             pendingKey);
                 } else {
-                    log.warn(message, "Redis SMPP pending DR timeout result produced. pendingKey={}", pendingKey);
+                    log.warn(message, "[RESP-TIMEOUT] no response in time (redis pending), result type={} status={} pendingKey={}",
+                            message.getMessageType(), message.getStatusCode(), pendingKey);
                 }
             } catch (Exception e) {
                 log.warn("Failed to process Redis SMPP pending DR timeout. pendingKey=" + pendingKey, e);

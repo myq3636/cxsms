@@ -46,12 +46,12 @@ public class SmppServerDrRouteResolver {
 			if (assignmentResolver.isRestricted(customer)) {
 				String assignedModule = selectAssignedServerModule(customer, msg, originalModule);
 				if (!isBlank(assignedModule)) {
-					log.warn(msg, "SMPP DR registry disabled, fallback by customer assignment. ossid={}, originalModule={}, assignedModule={}, assigned={}",
-							ossid, originalModule, assignedModule, assignmentResolver.assignedModules(customer));
+					logLimited(msg, false, "registry-off-assigned", "SMPP DR registry disabled, fallback by customer assignment. ossid={}, originalModule={}, assignedModule={}, assigned={}",
+					ossid, originalModule, assignedModule, assignmentResolver.assignedModules(customer));
 					return assignedModule;
 				}
-				log.warn(msg, "SMPP DR registry disabled and no assigned online server module found. ossid={}, originalModule={}, assigned={}",
-						ossid, originalModule, assignmentResolver.assignedModules(customer));
+				logLimited(msg, true, "registry-off-none", "SMPP DR registry disabled and no assigned online server module found. ossid={}, originalModule={}, assigned={}",
+					ossid, originalModule, assignmentResolver.assignedModules(customer));
 				return null;
 			}
 			return originalModule;
@@ -64,7 +64,7 @@ public class SmppServerDrRouteResolver {
 		}
 		String fallbackModule = registry.selectActiveModule(ossid, originalModule);
 		if (!isBlank(fallbackModule)) {
-			log.info(msg, "SMPP DR target server module fallback. ossid={}, originalModule={}, fallbackModule={}",
+			logLimited(msg, false, "fallback-active", "SMPP DR target server module fallback. ossid={}, originalModule={}, fallbackModule={}",
 					ossid, originalModule, fallbackModule);
 			return fallbackModule;
 		}
@@ -74,18 +74,18 @@ public class SmppServerDrRouteResolver {
 			if (!isBlank(assignedModule)) {
 				MetricsCollector.getInstance().incrementCounter(MetricsNames.business(MetricsNames.FLOW_CORE,
 						msg, MetricsNames.ACTION_REGISTRY_FALLBACK_CONFIGURED_SERVER));
-				log.warn(msg, "SMPP DR registry has no active server session, fallback by customer assignment. ossid={}, originalModule={}, assignedModule={}, assigned={}",
-						ossid, originalModule, assignedModule, assignmentResolver.assignedModules(customer));
+				logLimited(msg, true, "fallback-assigned", "SMPP DR registry has no active server session, fallback by customer assignment. ossid={}, originalModule={}, assignedModule={}, assigned={}",
+					ossid, originalModule, assignedModule, assignmentResolver.assignedModules(customer));
 				return assignedModule;
 			}
 			MetricsCollector.getInstance().incrementCounter(MetricsNames.business(MetricsNames.FLOW_CORE,
 					msg, MetricsNames.ACTION_REGISTRY_NO_SERVER_MODULE));
-			log.warn(msg, "SMPP DR target server module not found by customer assignment. ossid={}, originalModule={}, assigned={}",
+			logLimited(msg, true, "none-assigned", "SMPP DR target server module not found by customer assignment. ossid={}, originalModule={}, assigned={}",
 					ossid, originalModule, assignmentResolver.assignedModules(customer));
 			return null;
 		}
 		if (!registry.hasKnownModuleData(ossid) && !isBlank(originalModule)) {
-			log.warn(msg, "SMPP DR bind registry has no module data, fallback to original module. ossid={}, originalModule={}",
+			logLimited(msg, false, "no-module-data", "SMPP DR bind registry has no module data, fallback to original module. ossid={}, originalModule={}",
 					ossid, originalModule);
 			return originalModule;
 		}
@@ -93,14 +93,32 @@ public class SmppServerDrRouteResolver {
 		if (!isBlank(configuredModule)) {
 			MetricsCollector.getInstance().incrementCounter(MetricsNames.business(MetricsNames.FLOW_CORE,
 					msg, MetricsNames.ACTION_REGISTRY_FALLBACK_CONFIGURED_SERVER));
-			log.warn(msg, "SMPP DR registry has no active server session, fallback to configured server module. ossid={}, originalModule={}, configuredModule={}",
+			logLimited(msg, true, "fallback-configured", "SMPP DR registry has no active server session, fallback to configured server module. ossid={}, originalModule={}, configuredModule={}",
 					ossid, originalModule, configuredModule);
 			return configuredModule;
 		}
 		MetricsCollector.getInstance().incrementCounter(MetricsNames.business(MetricsNames.FLOW_CORE,
 				msg, MetricsNames.ACTION_REGISTRY_NO_SERVER_MODULE));
-		log.warn(msg, "SMPP DR target server module not found. ossid={}, originalModule={}", ossid, originalModule);
+		logLimited(msg, true, "none", "SMPP DR target server module not found. ossid={}, originalModule={}",
+					ossid, originalModule);
 		return null;
+	}
+
+	/**
+	 * DR routing notes repeat for every DR of a customer while its situation lasts: at most one line
+	 * per customer and reason every 10 minutes, with the number of DRs since the last line.
+	 */
+	private void logLimited(GmmsMessage msg, boolean warn, String reason, String format, Object... args) {
+		long n = com.king.gmms.util.LogRateLimiter.allow("dr-route:" + reason + ":" + msg.getOSsID(), 600000L);
+		if (n <= 0) {
+			return;
+		}
+		String line = format + " (" + n + " DR(s) since the last line, next in 10 min at most)";
+		if (warn) {
+			log.warn(msg, line, args);
+		} else if (log.isInfoEnabled()) {
+			log.info(msg, line, args);
+		}
 	}
 
 	public String originalModule(GmmsMessage msg) {

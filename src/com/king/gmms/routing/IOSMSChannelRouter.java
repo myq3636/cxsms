@@ -69,15 +69,19 @@ public class IOSMSChannelRouter extends ChannelRouter {
 				//TODO
 				rSsid = ctm.getCustomerSenderRoutingRelay(ossid, msg);
 				if (rSsid>0) {
-					log.info(msg,"get Rssid: {} by sender routingRelay",rSsid);
+					log.info(msg, "[MT-ROUTE] ossid={} rssid={} by sender routingRelay", msg.getOSsID(), rSsid);
 				}else{
 					rSsid = ctm.getCustomerContentKeywordRoutingRelay(ossid, msg);
 					if (rSsid>0) {
-						log.info(msg,"get Rssid: {} by content keyword routingRelay",rSsid);
+						log.info(msg, "[MT-ROUTE] ossid={} rssid={} by content keyword routingRelay", msg.getOSsID(), rSsid);
 					}else {
 						rSsid = ctm.getCustomerRoutingRelay(ossid, msg);
 						if(log.isInfoEnabled()){
-							log.info(msg,"get Rssid: {} by routingRelay",rSsid);
+							if (rSsid > 0) {
+								log.info(msg, "[MT-ROUTE] ossid={} rssid={} by routingRelay", msg.getOSsID(), rSsid);
+							} else if (log.isDebugEnabled()) {
+								log.debug(msg, "no rssid by routingRelay");
+							}
 						}
 					}
 				}

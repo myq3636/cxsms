@@ -199,6 +199,9 @@ public class MTStreamConsumer {
                 // with an attempt the ack also removes its marker
                 boolean acked = attempt ? StreamAttempt.finish(streamKey, groupName, sourceRedisId)
                         : queueManager.ackById(streamKey, groupName, sourceRedisId, msg, true);
+                if (attempt) {
+                    queueManager.traceAck(streamKey, groupName, sourceRedisId, msg, true, acked);
+                }
                 if (!acked) {
                     logger.warn(msg,
                             "MT stream ack failed after process success. streamKey={}, sourceRedisId={}, currentRedisId={}",
