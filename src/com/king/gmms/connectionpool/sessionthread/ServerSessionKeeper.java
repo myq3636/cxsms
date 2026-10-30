@@ -11,6 +11,7 @@ import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.connectionpool.ConnectionStatus;
 import com.king.gmms.connectionpool.session.AbstractSession;
+import com.king.gmms.connectionpool.session.MultiSmppSession;
 import com.king.gmms.domain.A2PMultiConnectionInfo;
 import com.king.gmms.domain.MultiNodeCustomerInfo;
 
@@ -21,7 +22,7 @@ import com.king.gmms.domain.MultiNodeCustomerInfo;
  * <li>before bind: stop when disconnected, after SmppServerBindTimeoutMs from accept, or after
  * MaxSilentTime without activity; checked every second;</li>
  * <li>bound: with ServerEnquireLink, send enquire_link every EnquireLinkTime (FailEnquireLinkTime
- * after a missing response) and stop after EnquireLinkFailureNum missing responses or
+ * while an earlier one is still unanswered) and stop after EnquireLinkFailureNum missing responses or
  * ConnectionSilentTime without activity; without it, only the silence check;</li>
  * <li>RECOVER (multi-node customers): back to CONNECT after the node recovery time.</li>
  * </ul>
@@ -143,18 +144,29 @@ public class ServerSessionKeeper implements SessionThread {
 					stopSession();
 					return;
 				}
+				// ping just sent does not count as missing: only one sent earlier and still unanswered
+				// switches to FailEnquireLinkTime (the thread per connection used the count after
+				// sending, so it pinged every FailEnquireLinkTime instead of every EnquireLinkTime)
+				int missing = session instanceof MultiSmppSession
+						? ((MultiSmppSession) session).unansweredEnquireLinks() : -1;
 				int count = session.enquireLink();
 				if (count >= customerInfo.getEnquireLinkFailureNum()) {
 					stopSession();
 					return;
 				}
-				if (count >= 1) {
+				if (missing < 0 ? count >= 1 : missing >= 1) {
 					if (session.getStatus().equals(ConnectionStatus.RECOVER)) {
 						startRecovery();
 					}
 					schedule(customerInfo.getFailEnquireLinkTime());
+				} else if (count > missing) {
+					schedule(customerInfo.getEnquireLinkTime());      // just sent one
 				} else {
-					schedule(customerInfo.getEnquireLinkTime());
+					// nothing sent (traffic or a recent answer): check again when the link has been
+					// idle for EnquireLinkTime, not a whole EnquireLinkTime after this check
+					long idle = System.currentTimeMillis() - session.getLastActivity();
+					schedule(Math.max(100L, Math.min(customerInfo.getEnquireLinkTime(),
+							customerInfo.getEnquireLinkTime() - idle)));
 				}
 			} else if (now - session.getLastActivity() > customerInfo.getConnectionSilentTime()) {
 				stopSession();

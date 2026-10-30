@@ -295,7 +295,7 @@ public class SmppPendingDrManager {
         if (!entry.tryClaimProduce()) {
             return; // H-16: 响应路径已认领并在产 → 跳过，避免重复产结果
         }
-        if (StreamQueueManager.getInstance().produceResult(message)) {
+        if (produceResult(sequence, message)) {
             remove(sequence);
             log.info(message, "Retried pending SMPP DR response result successfully. pendingKey={}",
                     entry.getPendingKey());
@@ -372,7 +372,7 @@ public class SmppPendingDrManager {
                 continue;
             }
             if (entry.isResultPending()) {
-                if (StreamQueueManager.getInstance().produceResult(message)) {
+                if (produceResult(item.getKey(), message)) {
                     deleteRedisPending(item.getKey());
                 } else if (redisBacked) {
                     redisKeyBySequence.remove(item.getKey());
@@ -395,6 +395,14 @@ public class SmppPendingDrManager {
                 deleteRedisPending(item.getKey());
             }
         }
+    }
+
+    /** through the session when it is the listener: it acks the DR stream entry with the result */
+    private boolean produceResult(String sequence, GmmsMessage message) {
+        if (timeoutListener instanceof PendingDrTimeoutHandler) {
+            return ((PendingDrTimeoutHandler) timeoutListener).produceDrResult(sequence, message);
+        }
+        return StreamQueueManager.getInstance().produceResult(message);
     }
 
     private void clear() {

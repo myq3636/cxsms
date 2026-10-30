@@ -338,7 +338,7 @@ public class DRStreamConsumer {
                         MetricsNames.STAGE_OUT_DR, msg, false, MetricsNames.ACTION_SENT_TO_CUSTOMER));
                 if (session instanceof MultiSmppSession && ((MultiSmppSession) session).acksDrOnResult()) {
                     // acked when the customer's deliver_sm_resp (or the timeout) writes the result
-                    ((MultiSmppSession) session).ackDrOnResult(msg.getInTransID(), streamKey, groupName, sourceRedisId);
+                    ((MultiSmppSession) session).ackDrOnResult(msg.getInTransID(), streamKey, groupName, sourceRedisId, msg);
                     return ProcessResult.DONE;
                 }
                 boolean acked = queueManager.ackById(streamKey, groupName, sourceRedisId, msg, false);

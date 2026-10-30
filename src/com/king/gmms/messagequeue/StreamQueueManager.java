@@ -314,6 +314,59 @@ public class StreamQueueManager {
 		}
 	}
 
+	// KEYS: 1 result stream, 2 its doorbell, 3 DR source stream
+	// ARGV: 1 maxLen, 2 '~'|'', 3 nowMs, 4 body, 5 group, 6 source id
+	private static final String RESULT_AND_ACK_LUA =
+			"local args = {KEYS[1], 'MAXLEN'} "
+			+ "if ARGV[2] == '~' then args[#args+1] = '~' end "
+			+ "args[#args+1] = ARGV[1] args[#args+1] = '*' args[#args+1] = 'body' args[#args+1] = ARGV[4] "
+			+ "local id = redis.call('XADD', unpack(args)) "
+			+ "redis.call('ZADD', KEYS[2], ARGV[3], KEYS[1]) "
+			+ "local acked = redis.call('XACK', KEYS[3], ARGV[5], ARGV[6]) "
+			+ "if acked > 0 then redis.call('XDEL', KEYS[3], ARGV[6]) end "
+			+ "return {id, acked}";
+
+	/**
+	 * Server DR: write the customer's result (deliver_sm_resp or timeout) to Core and ack the DR's
+	 * own stream entry in one Lua (both streams are on the report MQ): one round trip instead of
+	 * two, and the entry is never acked without its result. false = nothing written, nothing acked.
+	 */
+	public boolean produceResultAndAck(GmmsMessage msg, String drStream, String group, String drRedisId) {
+		String key = resultStreamKey(msg);
+		String zsetKey = getDoorbellZSet(key);
+		try {
+			if (zsetKey == null || isBackPressureBlocked(key, false)) {
+				// unusual: the two separate steps (produce reports a blocked stream itself)
+				if (!produce(key, msg, false)) {
+					return false;
+				}
+				ackById(drStream, group, drRedisId, msg, false);
+				return true;
+			}
+			List<?> r = (List<?>) redisClient.getReportMqRedis().evalScript(RESULT_AND_ACK_LUA,
+					Arrays.asList(key, zsetKey, drStream),
+					Arrays.asList(String.valueOf(getStreamMaxLen()), isApproximateTrimming() ? "~" : "",
+							String.valueOf(System.currentTimeMillis()),
+							SerializableHandler.convertGmmsMessage2RedisMessage(msg), group, drRedisId));
+			String id = String.valueOf(r.get(0));
+			msg.setRedisStreamID(id);
+			incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_OK);
+			logStreamTrace("STREAM-PUT", key, null, null, id, msg, false, "zset=" + zsetKey + " result=ok");
+			boolean acked = r.get(1) instanceof Long && (Long) r.get(1) > 0;
+			incrementStreamCounter(MetricsNames.FLOW_IN, drStream, msg,
+					acked ? MetricsNames.ACTION_ACK : MetricsNames.ACTION_ACK_FAIL);
+			logStreamTrace("STREAM-ACK", drStream, group, null, drRedisId, msg, false,
+					acked ? "result=ok with_result=" + id : "result=ack_returned_zero with_result=" + id);
+			return true;
+		} catch (Exception e) {
+			logStreamTrace("STREAM-PUT", key, null, null, null, msg, false,
+					"result=fail reason=exception:" + e.getClass().getSimpleName());
+			logger.error("Produce result and ack " + drStream + " failed", e);
+			incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_FAIL);
+			return false;
+		}
+	}
+
 	// KEYS: 1 stream, 2 doorbell, 3 marker|'', 4 outbox|'', 5 outboxZset|'', 6 outboxMeta|''
 	// ARGV: 1 maxLen, 2 '~'|'', 3 nowMs, 4 partField, 5 body, 6 outboxTtl, 7 outboxFirstCheck,
 	//       8 flag count n (pairs), 9.. n field,value pairs

@@ -101,11 +101,11 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
     protected InternalAgentConnectionFactory agentFactory = null;
     protected MessageIdGenerator messageIdGenerator = MessageIdGenerator.getInstance();
     protected ExceptionMessageManager exMsgManager = ExceptionMessageManager.getInstance();
-    protected SmppPendingSubmitManager pendingSubmitManager = null;
+    protected volatile SmppPendingSubmitManager pendingSubmitManager = null;
     // H-15: 每会话独立序列号(取代全局 PDU.sequenceNumber)，消除跨会话碰撞与提早绕回。
     private final java.util.concurrent.atomic.AtomicInteger seqGen =
             new java.util.concurrent.atomic.AtomicInteger(0);
-    protected SmppPendingDrManager pendingDrManager = null;
+    protected volatile SmppPendingDrManager pendingDrManager = null;
     /**
      * DR stream entries sent on this session and acked only once their result is written
      * (deliver_sm_resp, timeout, session shutdown), by sequence: a crash before that leaves them
@@ -1410,6 +1410,50 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
 
     }
 
+    /**
+     * Create the DR pending manager once. Two DR workers (two shard streams of the same customer)
+     * can send this session's first DRs at the same time: creating it twice let the second replace
+     * the first, whose entries were then never found again (response "Can't find the original
+     * message", a false timeout result about BufferTimeout later, a duplicate DR).
+     */
+    private SmppPendingDrManager ensurePendingDrManager() {
+        SmppPendingDrManager m = pendingDrManager;
+        if (m == null) {
+            synchronized (this) {
+                m = pendingDrManager;
+                if (m == null) {
+                    m = new SmppPendingDrManager(buildPendingDrSessionKey(),
+                            customerInfo.getWindowSize(), customerInfo.getBufferTimeout(), this);
+                    pendingDrManager = m;
+                }
+            }
+        }
+        return m;
+    }
+
+    /** Same for the submit pending manager (client sessions, several outbound shard workers). */
+    private SmppPendingSubmitManager ensurePendingSubmitManager() {
+        SmppPendingSubmitManager m = pendingSubmitManager;
+        if (m == null) {
+            synchronized (this) {
+                m = pendingSubmitManager;
+                if (m == null) {
+                    m = new SmppPendingSubmitManager(buildPendingSubmitSessionKey(),
+                            customerInfo.getWindowSize(), customerInfo.getBufferTimeout(), this);
+                    pendingSubmitManager = m;
+                }
+            }
+        }
+        return m;
+    }
+
+    /** enquire_link sent and not answered yet */
+    public int unansweredEnquireLinks() {
+        synchronized (mutex) {
+            return activeTestCount;
+        }
+    }
+
     public void clearActiveTestCount() {
         synchronized (mutex) {
             activeTestCount = 0;
@@ -1465,8 +1509,8 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             }
             processor.handleDeliver_SM_Resp( (DeliverSMResp) response,
                                             bufferedMsg);
-            // V5.0: DR Response 通过 Redis Stream 回传 Core，完成解耦闭环
-            if (!com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceResult(bufferedMsg)) {
+            // V5.0: DR Response 通过 Redis Stream 回传 Core，完成解耦闭环（并确认消费这条 DR 的 stream 记录）
+            if (!produceDrResult(sequenceKey, bufferedMsg)) {
             	log.error(bufferedMsg, "Failed to produce DR_RESP to stream:core:results, sequence={}",
                         sequenceKey);
                 if (pendingDrManager != null && pendingDrEntry != null) {
@@ -1477,7 +1521,6 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 if (pendingDrManager != null && pendingDrEntry != null) {
                     pendingDrManager.remove(sequenceKey);
                 }
-                ackDrStreamEntry(sequenceKey, bufferedMsg);
                 if (log.isInfoEnabled()) {
                     log.info(bufferedMsg, "[DR-RESULT-TO-CORE] ssid={} session={} seq={} status={} redisId={}",
                             bufferedMsg.getOSsID(), sessionName, sequenceKey, bufferedMsg.getStatusCode(),
@@ -1742,16 +1785,16 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
      * The DR sent with this sequence came from streamKey/redisId: ack it when its result is written,
      * or now if the customer's response was already handled (it can be faster than this call).
      */
-    public void ackDrOnResult(String sequence, String streamKey, String group, String redisId) {
+    public void ackDrOnResult(String sequence, String streamKey, String group, String redisId, GmmsMessage msg) {
         if (sequence == null) {
-            StreamQueueManager.getInstance().ackById(streamKey, group, redisId, null, false);
+            StreamQueueManager.getInstance().ackById(streamKey, group, redisId, msg, false);
             return;
         }
         String[] entry = new String[] {streamKey, group, redisId};
         String[] prev = drAwaitingResp.putIfAbsent(sequence, entry);
         if (prev != null && prev.length == 1 && RESULTED.equals(prev[0])) {
             drAwaitingResp.remove(sequence, prev);
-            StreamQueueManager.getInstance().ackById(streamKey, group, redisId, null, false);
+            StreamQueueManager.getInstance().ackById(streamKey, group, redisId, msg, false);
         } else if (prev != null) {
             drAwaitingResp.put(sequence, entry);   // sequence reused after wrap-around
         }
@@ -1764,6 +1807,31 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         }
         String mode = customerInfo == null ? null : customerInfo.getSMPPDRPendingMode();
         return mode == null || "memory".equalsIgnoreCase(mode.trim());
+    }
+
+    /**
+     * Write a DR's result and, when this session acks DRs on their result, ack its stream entry in
+     * the same Lua (one Redis round trip). If the DR worker has not registered the entry yet (the
+     * response was faster), the result is written alone and the entry is acked when it registers.
+     */
+    public boolean produceDrResult(Object key, GmmsMessage msg) {
+        String sequence = key == null ? msg.getInTransID() : String.valueOf(key);
+        if (sequence == null || !acksDrOnResult()) {
+            return StreamQueueManager.getInstance().produceResult(msg);
+        }
+        String[] e = drAwaitingResp.get(sequence);
+        if (e != null && e.length == 3) {
+            if (!StreamQueueManager.getInstance().produceResultAndAck(msg, e[0], e[1], e[2])) {
+                return false;   // nothing written or acked: the entry stays for the retry
+            }
+            drAwaitingResp.remove(sequence, e);
+            return true;
+        }
+        if (!StreamQueueManager.getInstance().produceResult(msg)) {
+            return false;
+        }
+        ackDrStreamEntry(sequence, msg);
+        return true;
     }
 
     private void ackDrStreamEntry(String sequence, GmmsMessage msg) {
@@ -1918,10 +1986,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             msg.setOutTransID(key);
             boolean isPutBuffer = false;
             while (isKeepRunning() && !isPutBuffer) {
-                if (pendingSubmitManager == null) {
-                    pendingSubmitManager = new SmppPendingSubmitManager(buildPendingSubmitSessionKey(),
-                            customerInfo.getWindowSize(), customerInfo.getBufferTimeout(), this);
-                }
+                ensurePendingSubmitManager();
                 isPutBuffer = pendingSubmitManager.put(key, msg);
             }
 
@@ -1984,10 +2049,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
 
             key = Integer.toString(request.getSequenceNumber());
             msg.setOutTransID(key);
-            if (pendingSubmitManager == null) {
-                pendingSubmitManager = new SmppPendingSubmitManager(buildPendingSubmitSessionKey(),
-                        customerInfo.getWindowSize(), customerInfo.getBufferTimeout(), this);
-            }
+            ensurePendingSubmitManager();
             PutResult putResult = pendingSubmitManager.tryPut(key, msg);
             if (putResult == PutResult.WINDOW_FULL) {
                 if(log.isDebugEnabled()){
@@ -2206,10 +2268,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             delivSm.setSequenceNumber(nextSequence()); // H-15: 每会话序列号
             key = Integer.toString(delivSm.getSequenceNumber());
             deliverMsg.setInTransID(key);
-            if (pendingDrManager == null) {
-                pendingDrManager = new SmppPendingDrManager(buildPendingDrSessionKey(),
-                        customerInfo.getWindowSize(), customerInfo.getBufferTimeout(), this);
-            }
+            ensurePendingDrManager();
             SmppPendingDrManager.PutResult putResult = pendingDrManager.tryPut(key, deliverMsg);
             if (putResult == SmppPendingDrManager.PutResult.WINDOW_FULL) {
                 if(log.isDebugEnabled()){
@@ -2390,12 +2449,11 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         if(log.isInfoEnabled()){
         	log.info(msg,"{} do not receive the response after timeout", msg.getMessageType());
         }
-        if(!StreamQueueManager.getInstance().produceResult(msg)){
+        boolean produced = GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP.equalsIgnoreCase(msg.getMessageType())
+                ? produceDrResult(obj, msg) : StreamQueueManager.getInstance().produceResult(msg);
+        if(!produced){
         	log.warn(msg, "Failed to produce {} to stream:core:results.",msg.getMessageType());
             return false;
-        }
-        if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP.equalsIgnoreCase(msg.getMessageType())) {
-            ackDrStreamEntry(msg.getInTransID(), msg);
         }
         return true;
     }
