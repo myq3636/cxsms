@@ -84,7 +84,8 @@ public class SmppServerDrRouteResolver {
 					ossid, originalModule, assignmentResolver.assignedModules(customer));
 			return null;
 		}
-		if (!registry.hasKnownModuleData(ossid) && !isBlank(originalModule)) {
+		if (!registry.hasKnownModuleData(ossid) && !isBlank(originalModule)
+				&& (!livenessCheck() || !knownOffline(originalModule))) {
 			logLimited(msg, false, "no-module-data", "SMPP DR bind registry has no module data, fallback to original module. ossid={}, originalModule={}",
 					ossid, originalModule);
 			return originalModule;
@@ -119,6 +120,24 @@ public class SmppServerDrRouteResolver {
 		} else if (log.isInfoEnabled()) {
 			log.info(msg, line, args);
 		}
+	}
+
+	/** server nodes have registered, and none of them reports this module online */
+	private boolean knownOffline(String module) {
+		try {
+			RedisClient redis = gmmsUtility.getRedisClient();
+			Set<String> nodes = redis == null ? null : redis.smembers("system:server:nodes");
+			if (nodes == null || nodes.isEmpty()) {
+				return false;
+			}
+		} catch (Exception e) {
+			return false;
+		}
+		return !isOnlineServerModule(module);
+	}
+
+	private boolean livenessCheck() {
+		return Boolean.parseBoolean(gmmsUtility.getCommonProperty("SmppServerDrLivenessCheck", "true").trim());
 	}
 
 	public String originalModule(GmmsMessage msg) {

@@ -951,7 +951,7 @@ public class GmmsUtility {
 			"SmppServerBindTimeoutMs", "SmppServerMaxConnections", "SmppServerMaxConnectionsPerIp",
 			"ServerStreamTaskMaxBatches", "ServerStreamTaskMaxMs",
 			"SmppPduLogEnable", "SmppServerSessionKeeperShared", "SmppServerSendQueueMax",
-			"SmppServerSendQueueHighWater", "ServerDrAckOnResp",
+			"SmppServerSendQueueHighWater", "ServerDrAckOnResp", "SmppServerDrLivenessCheck",
 			"ClientOutboundWindowFullRetryMs",
 			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress", "DNSPort",
 			"DNSMaxFailedLimit", "DNSTestPeriod", "DNSTestNumber", "DNSBufferCapacity",
@@ -1078,6 +1078,7 @@ public class GmmsUtility {
 				|| "SmppPduLogEnable".equals(key)
 				|| "SmppServerSessionKeeperShared".equals(key)
 				|| "ServerDrAckOnResp".equals(key)
+				|| "SmppServerDrLivenessCheck".equals(key)
 				|| "SmppServerInboundSharedPoolEnable".equals(key)
 				|| "MultiSmppServer.LongConnectionCustomerSharedQueueEnable".equals(key)
 				|| (isModuleLongConnectionCustomerKey(key) && key.endsWith(".LongConnectionCustomerSharedQueueEnable"))
@@ -1221,6 +1222,7 @@ public class GmmsUtility {
 		if ("SmppServerSendQueueMax".equals(key)) return "20000";
 		if ("SmppServerSendQueueHighWater".equals(key)) return "2000";
 		if ("ServerDrAckOnResp".equals(key)) return "true";
+		if ("SmppServerDrLivenessCheck".equals(key)) return "true";
 		if ("SmppServerInboundSharedPoolEnable".equals(key)) return "true";
 		if ("SmppServerInboundMaxInFlightPerSsid".equals(key)) return "20";
 		if ("SmppServerInboundPerSsidQueueSize".equals(key)) return "10000";

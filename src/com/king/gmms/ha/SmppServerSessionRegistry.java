@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
@@ -36,6 +37,10 @@ public class SmppServerSessionRegistry {
 	private final GmmsUtility gmmsUtility = GmmsUtility.getInstance();
 	private volatile String moduleCleanupCursor = "0";
 	private volatile long lastLegacyCleanupMs = 0L;
+
+	private static final long NODE_ONLINE_CACHE_MS = 1000L;
+	/** module:status key -> {checkedAt, 1 online / 0 offline}: at most one GET per node and second */
+	private final ConcurrentHashMap<String, long[]> nodeOnline = new ConcurrentHashMap<String, long[]>();
 
 	private SmppServerSessionRegistry() {
 	}
@@ -190,18 +195,67 @@ public class SmppServerSessionRegistry {
 			return false;
 		}
 		boolean found = false;
+		boolean offline = false;
 		for (String member : members) {
-			if (isActiveDetail(ossid, member, module)) {
-				found = true;
-			} else {
+			Map<String, String> detail = activeDetail(ossid, member, module);
+			if (detail == null) {
 				redis.zrem(key, new String[] { member });
 				redis.zrem(activeKey(ossid), new String[] { member });
+			} else if (!isNodeOnline(module, detail.get("nodeId"))) {
+				// killed node: its entries live until the TTL; skipped, not removed, so they count
+				// again as soon as the heartbeat is back
+				offline = true;
+			} else {
+				found = true;
 			}
 		}
-		if (!found) {
+		if (!found && !offline) {
 			redis.zrem(moduleKey(ossid), new String[] { module });
 		}
 		return found;
+	}
+
+	/**
+	 * A bind entry is kept for SmppServerSessionRegistryTtlSeconds (default MaxSilentTime + 60 s)
+	 * when a server is killed. The module heartbeat (module:status:server:{module}:{node}, TTL
+	 * ModuleStatusTTLSeconds, default 30 s) tells sooner that the node is gone.
+	 * Unknown node, a node that never registered, or Redis error: online (as before).
+	 */
+	public boolean isNodeOnline(String module, String nodeId) {
+		if (isBlank(module) || isBlank(nodeId) || !booleanProperty("SmppServerDrLivenessCheck", true)) {
+			return true;
+		}
+		String statusKey = "module:status:server:" + module + ":" + nodeId;
+		long now = System.currentTimeMillis();
+		long[] cached = nodeOnline.get(statusKey);
+		if (cached != null && now - cached[0] < NODE_ONLINE_CACHE_MS) {
+			return cached[1] != 0L;
+		}
+		boolean online = true;
+		try {
+			RedisClient redis = redis();
+			// offline only for a node that registered (system:server:nodes, left there when it is
+			// killed) and has no heartbeat now; a node whose status reporter never started keeps
+			// the old behaviour
+			if (redis != null && !"ONLINE".equalsIgnoreCase(redis.getString(statusKey))) {
+				Set<String> nodes = redis.smembers("system:server:nodes");
+				online = nodes == null || !nodes.contains(nodeId);
+			}
+		} catch (Exception e) {
+			online = true;
+		}
+		if (nodeOnline.size() > 1000) {
+			nodeOnline.clear();
+		}
+		nodeOnline.put(statusKey, new long[] { now, online ? 1L : 0L });
+		if (!online) {
+			long n = com.king.gmms.util.LogRateLimiter.allow("dr-route-offline:" + statusKey, 600000L);
+			if (n > 0) {
+				log.info("[DR-ROUTE] server module={} node={} has no heartbeat ({} missing), its bind sessions are not used for DRs"
+						+ " ({} time(s) since the last line, next in 10 min at most)", module, nodeId, statusKey, n);
+			}
+		}
+		return online;
 	}
 
 	public boolean hasKnownModuleData(int ossid) {
@@ -292,21 +346,22 @@ public class SmppServerSessionRegistry {
 		}
 	}
 
-	private boolean isActiveDetail(int ossid, String sessionKey, String expectedModule) {
+	/** the entry's details, or null if it expired or belongs to another module */
+	private Map<String, String> activeDetail(int ossid, String sessionKey, String expectedModule) {
 		RedisClient redis = redis();
 		if (redis == null || isBlank(sessionKey)) {
-			return false;
+			return null;
 		}
 		String value = redis.getString(detailKey(ossid, sessionKey));
 		if (isBlank(value)) {
-			return false;
-		}
-		if (isBlank(expectedModule)) {
-			return true;
+			return null;
 		}
 		Map<String, String> map = parse(value);
+		if (isBlank(expectedModule)) {
+			return map;
+		}
 		String module = map.get("module");
-		return expectedModule.equalsIgnoreCase(module);
+		return expectedModule.equalsIgnoreCase(module) ? map : null;
 	}
 
 	private SessionSnapshot snapshot(MultiSmppSession session, String existingSessionKey) {
