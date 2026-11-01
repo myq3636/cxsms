@@ -70,7 +70,7 @@ public class ExceptionMessageWriter {
         maxFileTime = Integer.parseInt(gmmsUtility.getCommonProperty("ExceptionMsgFileSwitchInterval", "300")) * 1000;
         maxFileSize = Integer.parseInt(gmmsUtility.getCommonProperty("ExceptionMsgFileMaxSize", "10240")) * 1024;
         if(log.isDebugEnabled()){
-        	log.debug("ExceptionMessageWriter initialize() ExceptionMsgFileSwitchInterval is:"+maxFileTime+"   ExceptionMsgFileMaxSize is:"+maxFileSize+"  \n currentFilePath is:"+currentFilePath);
+        	log.debug("ExceptionMessageWriter initialize() ExceptionMsgFileSwitchInterval is:"+maxFileTime()+"   ExceptionMsgFileMaxSize is:"+maxFileSize()+"  \n currentFilePath is:"+currentFilePath);
         }
         backupFile(currentFilePath);
         isOpen = open();
@@ -218,7 +218,7 @@ public class ExceptionMessageWriter {
     private synchronized boolean write(String content) {
         boolean result = false;
         try {
-            if (currentFileSize > maxFileSize) {
+            if (currentFileSize > maxFileSize()) {
                 if (log.isInfoEnabled()) {
                     log.info("SDQWriter up to file max size");
                 }
@@ -265,7 +265,7 @@ public class ExceptionMessageWriter {
      * swichFile
      */
     private synchronized void swichFile() {
-        if(System.currentTimeMillis() - lastFileTime >= maxFileTime) {
+        if(System.currentTimeMillis() - lastFileTime >= maxFileTime()) {
         	if (log.isInfoEnabled()) {
         		log.info("ExceptoinMsgWriter up to file max time");
             }
@@ -283,7 +283,7 @@ public class ExceptionMessageWriter {
             while (isOpen && running) {
                 try{
                     Thread.sleep(1000L);
-                    long waitTime = maxFileTime - (System.currentTimeMillis() - lastFileTime);
+                    long waitTime = maxFileTime() - (System.currentTimeMillis() - lastFileTime);
                     if(waitTime > 0L) {
                         Thread.sleep(waitTime);
                     }
@@ -309,6 +309,23 @@ public class ExceptionMessageWriter {
 
         public void stop(){
             running = false;
+        }
+    }
+
+    /** read on every use, so a GmmsConfig reload of ExceptionMsgFileMaxSize / ExceptionMsgFileSwitchInterval applies */
+    private int maxFileSize() {
+        try {
+            return Integer.parseInt(GmmsUtility.getInstance().getCommonProperty("ExceptionMsgFileMaxSize", "10240").trim()) * 1024;
+        } catch (Exception e) {
+            return maxFileSize;
+        }
+    }
+
+    private long maxFileTime() {
+        try {
+            return Integer.parseInt(GmmsUtility.getInstance().getCommonProperty("ExceptionMsgFileSwitchInterval", "300").trim()) * 1000L;
+        } catch (Exception e) {
+            return maxFileTime;
         }
     }
 }

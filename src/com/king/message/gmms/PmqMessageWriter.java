@@ -403,7 +403,7 @@ public class PmqMessageWriter {
 		boolean result = false;
 		try {
 
-			if (currentFileSize > maxFileSize) {
+			if (currentFileSize > maxFileSize()) {
 				log.info("PMQWriter up to file max size");
 				rotate();
 			}
@@ -440,7 +440,7 @@ public class PmqMessageWriter {
 	 * swichFile
 	 */
 	private synchronized void swichFile() {
-		if (System.currentTimeMillis() - lastFileTime >= maxFileTime) {
+		if (System.currentTimeMillis() - lastFileTime >= maxFileTime()) {
 			log.debug("PMQWriter up to file max time");
 			if (!isOpen || (currentFileSize == 0)) {
 				lastFileTime = System.currentTimeMillis();
@@ -463,7 +463,7 @@ public class PmqMessageWriter {
 			while (isOpen && running) {
 				try {
 					Thread.sleep(1000L);
-					long waitTime = maxFileTime
+					long waitTime = maxFileTime()
 							- (System.currentTimeMillis() - lastFileTime);
 					if (waitTime > 0L) {
 						Thread.sleep(waitTime);
@@ -489,4 +489,21 @@ public class PmqMessageWriter {
 		}
 	}
 
+
+	/** read on every use, so a GmmsConfig reload of PmqFileMaxSize / PmqFileSwitchInterval applies */
+	private int maxFileSize() {
+		try {
+			return Integer.parseInt(GmmsUtility.getInstance().getCommonProperty("PmqFileMaxSize", "10240").trim()) * 1024;
+		} catch (Exception e) {
+			return maxFileSize;
+		}
+	}
+
+	private long maxFileTime() {
+		try {
+			return Integer.parseInt(GmmsUtility.getInstance().getCommonProperty("PmqFileSwitchInterval", "600").trim()) * 1000L;
+		} catch (Exception e) {
+			return maxFileTime;
+		}
+	}
 }

@@ -51,6 +51,8 @@ public class GmmsUtility {
 	private MessageAddressInterpreter messageAddressInterpreter;
 	private boolean initialized;
 	private volatile Properties properties;
+	/** keys changed in the file since startup that are not applied until a restart */
+	private final Set<String> pendingRestartKeys = new TreeSet<String>();
 	private String gmmsConfigFile;
 	private String serverIP;
 	private String serviceIP;
@@ -302,6 +304,7 @@ public class GmmsUtility {
     			redisClient.setRedisHaFlag(false);
     		}
     		startControlSubscriber();
+    		publishEffectiveConfig("startup", "ok");
     		log.info("initRedisClient finished. flag={}", flag);
     		
     	}catch(Exception e){
@@ -651,12 +654,21 @@ public class GmmsUtility {
 			Set<String> changedKeys = diffProperties(oldProps, newProps);
 			if (changedKeys.isEmpty()) {
 				log.info("GmmsConfig reload completed. file={}, changed=0, applied=0, restartRequired=0", configFile);
+				synchronized (pendingRestartKeys) {
+					pendingRestartKeys.clear();             // the file matches what runs
+				}
+				publishEffectiveConfig("reload", "unchanged");
 				return 0;
 			}
 			Properties effectiveProps = copyProperties(oldProps);
 			for (String key : changedKeys) {
 				if (isRuntimeConfigKey(key)) {
-					effectiveProps.setProperty(key, newProps.getProperty(key).trim());
+					String value = newProps.getProperty(key);
+					if (value == null) {
+						effectiveProps.remove(key);      // removed from the file: back to the default
+					} else {
+						effectiveProps.setProperty(key, value.trim());
+					}
 				}
 			}
 			validateRuntimeConfig(effectiveProps, changedKeys);
@@ -672,24 +684,74 @@ public class GmmsUtility {
 					unknown.add(key);
 				}
 			}
+			checkRestartRequiredValues(oldProps, newProps, restartRequired, unknown);
 			properties = effectiveProps;
 			applyRuntimeConfig(effectiveProps, applied);
+			Set<String> pending = diffProperties(effectiveProps, newProps);   // what the file has but the module does not run with
+			synchronized (pendingRestartKeys) {
+				pendingRestartKeys.clear();
+				pendingRestartKeys.addAll(pending);
+			}
 			log.info("GmmsConfig reload completed. file={}, changed={}, applied={}, restartRequired={}, unknown={}",
 					configFile, changedKeys.size(), applied.size(), restartRequired.size(), unknown.size());
 			logConfigChanges("Applied GmmsConfig", oldProps, newProps, applied);
 			logConfigChanges("Restart required GmmsConfig", oldProps, newProps, restartRequired);
 			logConfigChanges("Unknown GmmsConfig", oldProps, newProps, unknown);
+			publishEffectiveConfig("reload", "ok");
 			return 0;
 		} catch (Exception e) {
 			log.error("GmmsConfig reload failed. file=" + configFile, e);
+			publishEffectiveConfig("reload", "failed");
 			return 1;
 		}
+	}
+
+	/**
+	 * Keys that cannot be applied now are not validated by the reload, but a bad value would make
+	 * initUtility exit at the next restart: report it now. A value is judged by the type of the value
+	 * it replaces (number or true/false).
+	 */
+	private void checkRestartRequiredValues(Properties oldProps, Properties newProps, List<String> restartRequired,
+			List<String> unknown) {
+		List<String> keys = new ArrayList<String>(restartRequired);
+		keys.addAll(unknown);
+		for (String key : keys) {
+			String oldValue = normalizePropertyValue(oldProps == null ? null : oldProps.getProperty(key));
+			String newValue = normalizePropertyValue(newProps.getProperty(key));
+			if (oldValue == null || newValue == null) {
+				continue;
+			}
+			boolean bad = (isLongValue(oldValue) && !isLongValue(newValue))
+					|| (isBooleanValue(oldValue) && !isBooleanValue(newValue));
+			if (bad) {
+				log.error("GmmsConfig restart-required key has an invalid value, the module will fail at next restart: key={} old={} new={}",
+						key, maskConfigValue(key, oldValue), maskConfigValue(key, newValue));
+			}
+		}
+	}
+
+	private static boolean isLongValue(String value) {
+		try {
+			Long.parseLong(value.trim());
+			return true;
+		} catch (Exception e) {
+			return false;
+		}
+	}
+
+	private static boolean isBooleanValue(String value) {
+		return "true".equalsIgnoreCase(value.trim()) || "false".equalsIgnoreCase(value.trim());
 	}
 
 	private Set<String> diffProperties(Properties oldProps, Properties newProps) {
 		TreeSet<String> keys = new TreeSet<String>();
 		if (newProps != null) {
 			for (Object key : newProps.keySet()) {
+				keys.add(String.valueOf(key));
+			}
+		}
+		if (oldProps != null) {
+			for (Object key : oldProps.keySet()) {      // keys removed from the file
 				keys.add(String.valueOf(key));
 			}
 		}
@@ -730,30 +792,85 @@ public class GmmsUtility {
 	}
 
 	private void validateRuntimeConfig(Properties props, Set<String> changedKeys) {
+		int newTotalShards = Integer.parseInt(props.getProperty("TotalShards", String.valueOf(totalShards)).trim());
+		if (newTotalShards <= 0) {
+			throw new IllegalArgumentException("TotalShards must be > 0: " + newTotalShards);
+		}
 		for (String key : changedKeys) {
 			if (!isRuntimeConfigKey(key)) {
 				continue;
 			}
-			if (isLongRuntimeKey(key)) {
-				Long.parseLong(props.getProperty(key, getDefaultRuntimeValue(key)).trim());
-			} else if (isIntegerRuntimeKey(key)) {
-				Integer.parseInt(props.getProperty(key, getDefaultRuntimeValue(key)).trim());
-			} else if ("Smpp.ServiceTypeIDTag".equals(key)) {
-				Short.parseShort(props.getProperty(key, "1401").trim(), 16);
+			String value = props.getProperty(key);
+			if (value == null) {
+				continue;                               // removed: the default applies
+			}
+			value = value.trim();
+			if (isStringRuntimeKey(key)) {
+				continue;
+			} else if (isDoubleRuntimeKey(key)) {
+				Double.parseDouble(value);
+			} else if (isLongRuntimeKey(key)) {
+				Long.parseLong(value);
 			} else if (isBooleanRuntimeKey(key)) {
-				Boolean.parseBoolean(props.getProperty(key, "false").trim());
+				if (!isBooleanValue(value)) {
+					throw new IllegalArgumentException("Invalid boolean for " + key + ": " + value);
+				}
+			} else if ("Smpp.ServiceTypeIDTag".equals(key)) {
+				Short.parseShort(value, 16);
 			} else if ("TotalShards".equals(key)) {
-				Integer.parseInt(props.getProperty(key, "1").trim());
+				Integer.parseInt(value);
 			} else if (isShardRuntimeKey(key)) {
-				int oldTotalShards = totalShards;
-				try {
-					totalShards = Integer.parseInt(props.getProperty("TotalShards", String.valueOf(totalShards)).trim());
-					parseShardSet(props.getProperty(key, "0"), key);
-				} finally {
-					totalShards = oldTotalShards;
+				validateShardSet(value, newTotalShards, key);
+			} else if (isIntegerRuntimeKey(key)) {
+				Integer.parseInt(value);
+			}
+		}
+		// MyShards etc. that did not change must still fit a changed TotalShards
+		if (changedKeys.contains("TotalShards")) {
+			for (Object k : props.keySet()) {
+				String key = String.valueOf(k);
+				if (isShardRuntimeKey(key) && !"TotalShards".equals(key)) {
+					validateShardSet(props.getProperty(key), newTotalShards, key);
 				}
 			}
 		}
+	}
+
+	/**
+	 * Strict form of parseShardSet for a reload: any error rejects the reload instead of falling back
+	 * to shard 0, and the shared totalShards field is not touched.
+	 */
+	static Set<Integer> validateShardSet(String shardConfig, int total, String key) {
+		Set<Integer> shards = new HashSet<Integer>();
+		if (shardConfig == null || shardConfig.trim().length() == 0) {
+			throw new IllegalArgumentException("Empty shard assignment for " + key);
+		}
+		for (String segment : shardConfig.split(",")) {
+			String value = segment.trim();
+			if (value.length() == 0) {
+				continue;
+			}
+			int start;
+			int end;
+			if (value.contains("-")) {
+				String[] range = value.split("-", 2);
+				start = Integer.parseInt(range[0].trim());
+				end = Integer.parseInt(range[1].trim());
+			} else {
+				start = Integer.parseInt(value);
+				end = start;
+			}
+			if (start > end || start < 0 || end >= total) {
+				throw new IllegalArgumentException("Invalid shard " + value + " for " + key + ", totalShards=" + total);
+			}
+			for (int i = start; i <= end; i++) {
+				shards.add(i);
+			}
+		}
+		if (shards.isEmpty()) {
+			throw new IllegalArgumentException("Empty shard assignment for " + key);
+		}
+		return shards;
 	}
 
 	private void applyRuntimeConfig(Properties props, List<String> applied) {
@@ -885,10 +1002,24 @@ public class GmmsUtility {
 	}
 
 	private boolean isRuntimeConfigKey(String key) {
+		if (isStartupOnlyKey(key)) {
+			return false;
+		}
 		return isDirectRuntimeKey(key) || isCommonRuntimeKey(key) || isModuleRuntimeKey(key)
 				|| isShardRuntimeKey(key) || isRedisStreamTuningKey(key) || isMqmRuntimeKey(key)
 				|| key.startsWith("SmppServerInbound")
-				|| isLongConnectionCustomerRuntimeKey(key);
+				|| isLongConnectionCustomerRuntimeKey(key)
+				|| "GmmsConfigPublishEnable".equals(key);
+	}
+
+	/** thread pool sizes read once when the pool starts: a reload cannot apply them */
+	private boolean isStartupOnlyKey(String key) {
+		return "SmppServerInboundWorkerMax".equals(key) || "SmppServerInboundWorkerQueue".equals(key)
+				|| "SmppServerInboundDispatcherThreads".equals(key)
+				|| key.endsWith(".LongConnectionCustomerSenderWorkerThreads")
+				|| key.endsWith(".LongConnectionCustomerRespWorkerThreads")
+				|| key.endsWith(".LongConnectionCustomerDispatcherThreads")
+				|| key.endsWith(".LongConnectionCustomerWorkerQueueSize");
 	}
 
 	private boolean isDirectRuntimeKey(String key) {
@@ -953,13 +1084,9 @@ public class GmmsUtility {
 			"SmppPduLogEnable", "SmppServerSessionKeeperShared", "SmppServerSendQueueMax",
 			"SmppServerSendQueueHighWater", "ServerDrAckOnResp", "SmppServerDrLivenessCheck",
 			"ClientOutboundWindowFullRetryMs",
-			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress", "DNSPort",
-			"DNSMaxFailedLimit", "DNSTestPeriod", "DNSTestNumber", "DNSBufferCapacity",
-			"DNSBufferTimeout", "NMGAddress", "NMGPort", "DefaultRetryPolicy",
-			"AntiSpam.Characters2Escape", "DescendingTime", "Skytel_Prefix",
-			"Indigo_prefix", "APBW_CPID", "APBW_SID", "DefaultSuffix", "LocalSuffix",
-			"ReadBuffersize", "enquirelinktime", "SMSQueryDRHttpModule", "MaxCPUUsage",
-			"SystemStatusCheckInterval", "RuninOverloadStatusPeriod", "ExpiredMessageQueueSize",
+			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress",
+			"DescendingTime", "Skytel_Prefix", "Indigo_prefix", "APBW_CPID", "APBW_SID",
+			"ReadBuffersize", "enquirelinktime",
 			"ExceptionMsgFileSwitchInterval", "ExceptionMsgFileMaxSize", "PmqFileSwitchInterval",
 			"PmqFileMaxSize", "SdqFileSwitchInterval", "SdqFileMaxSize"
 		};
@@ -973,9 +1100,8 @@ public class GmmsUtility {
 		}
 		String suffix = key.substring(module.length() + 1);
 		String[] keys = new String[] {
-			"ConnectTimeout", "ReadTimeout", "ContentLength", "Asynchronous", "ClearTime",
-			"ClearProcessedMsgTime", "DRClearTime", "MaxCDRAsynQueueSize",
-			"MaxSDQAsynQueueSize", "OptionCell"
+			"ConnectTimeout", "ReadTimeout", "ContentLength", "ClearTime",
+			"ClearProcessedMsgTime", "DRClearTime", "OptionCell"
 		};
 		return contains(keys, suffix);
 	}
@@ -995,13 +1121,42 @@ public class GmmsUtility {
 				|| "MQM.ActivePriorityDelayMs".equals(key);
 	}
 
+	/** runtime keys whose value is text: not validated as numbers */
+	private boolean isStringRuntimeKey(String key) {
+		String[] keys = new String[] {
+			"Metrics.LogLevel", "DB.StartupCheckSql", "ScreenedIPs", "LoopbackAddresses",
+			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress", "CsmReassembleMode",
+			"Skytel_Prefix", "Indigo_prefix", "APBW_CPID", "APBW_SID", "DescendingTime",
+			"MQM.ActivePriority", "SmppServerInboundQueueFullCommandStatus", "enquirelinktime"
+		};
+		if (contains(keys, key)) {
+			return true;
+		}
+		String module = System.getProperty("module");
+		return module != null && key.equals(module + ".OptionCell");
+	}
+
+	private boolean isDoubleRuntimeKey(String key) {
+		return "Metrics.MinTPS".equals(key);
+	}
+
 	private boolean isIntegerRuntimeKey(String key) {
 		if ("Smpp.ServiceTypeIDTag".equals(key) || isBooleanRuntimeKey(key) || isShardRuntimeKey(key)
-				|| isLongRuntimeKey(key)) {
+				|| isLongRuntimeKey(key) || isStringRuntimeKey(key) || isDoubleRuntimeKey(key)) {
 			return false;
 		}
 		if (key.startsWith("RedisStreamConsumer.") || key.startsWith("RedisStreamMonitor.")) {
 			return true;
+		}
+		if ("ExceptionMsgFileSwitchInterval".equals(key) || "ExceptionMsgFileMaxSize".equals(key)
+				|| "PmqFileSwitchInterval".equals(key) || "PmqFileMaxSize".equals(key)
+				|| "SdqFileSwitchInterval".equals(key) || "SdqFileMaxSize".equals(key)
+				|| "ReadBuffersize".equals(key)) {
+			return true;
+		}
+		String module = System.getProperty("module");
+		if (module != null && key.startsWith(module + ".") && isModuleRuntimeKey(key)) {
+			return true;                               // ConnectTimeout, ReadTimeout, ContentLength, Clear*Time
 		}
 		if ("MQM.ActiveLeaseTtlSeconds".equals(key) || "MQM.ActiveRenewSeconds".equals(key)
 				|| "MQM.StandbyCheckSeconds".equals(key) || "MQM.ActivePriorityDelayMs".equals(key)) {
@@ -1055,6 +1210,8 @@ public class GmmsUtility {
 
 	private boolean isBooleanRuntimeKey(String key) {
 		return "StoreDRModeEnable".equals(key) || "RedisStreamGlobalPELMonitorEnable".equals(key)
+				|| "DB.StartupCheck".equals(key) || "DB.PoolStats.Enable".equals(key)
+				|| "MessageIdIncludeNodeId".equals(key) || "GmmsConfigPublishEnable".equals(key)
 				|| "RedisStreamAutoClaimEnable".equals(key)
 				|| "RedisStreamTraceLogEnable".equals(key)
 				|| "RedisStreamTrimApproximate".equals(key)
@@ -1135,141 +1292,24 @@ public class GmmsUtility {
 				&& key.startsWith(module + ".LongConnectionCustomer");
 	}
 
-	private String getDefaultRuntimeValue(String key) {
-		if ("ConnectionSilentTime".equals(key)) return String.valueOf(connectionSilentTime);
-		if ("AlertMailFrequence".equals(key)) return "100";
-		if ("InitPhoneLen".equals(key)) return "0";
-		if ("MessageExpireTime".equals(key)) return "1380";
-		if ("ResendDRThrottle".equals(key)) return "0";
-		if ("Redis_MinIDExpireTime".equals(key)) return "300";
-		if ("MessageFinalExpireTime".equals(key)) return "1440";
-		if ("DRInterval".equals(key)) return "20";
-		if ("MaxSilentTime".equals(key)) return "60";
-		if ("CacheMessageTimeout".equals(key)) return "180000";
-		if ("CsmIntegrityCacheTimeout".equals(key)) return "3600000";
-		if ("CsmIntegrityCacheCapacity".equals(key)) return "100000";
-		if ("WaitingEnquireLinkResponseTime".equals(key)) return "100";
-		if ("BlackholeSsid".equals(key)) return "-1";
-		if ("DNSTimeOut".equals(key)) return "20";
-		if ("MaxServiceTypeID".equals(key)) return "3";
-		if ("MinMessageExpireTimeFromCust".equals(key)) return "60";
-		if ("MaxMessageExpireTimeFromCust".equals(key)) return "10080";
-		if ("CDRFileSwitchInterval".equals(key)) return "300";
-		if ("CDRFileMaxSize".equals(key)) return "100";
-		if ("Metrics.ReportIntervalSeconds".equals(key)) return "30";
-		if ("Metrics.LogLevel".equals(key)) return "DEBUG";
-		if ("Metrics.PrintZero".equals(key)) return "false";
-		if ("Metrics.PrintGauge".equals(key)) return "false";
-		if ("Metrics.MinTPS".equals(key)) return "0.01";
-		if ("Metrics.Ssid.Enable".equals(key)) return "false";
-		if ("DB.PoolStats.Enable".equals(key)) return "false";
-		if ("DB.PoolStats.IntervalSeconds".equals(key)) return "60";
-		if ("RedisStreamMaxLen".equals(key)) return "1000000";
-		if ("RedisStreamTrimApproximate".equals(key)) return "true";
-		if ("RedisStreamBackPressureEnable".equals(key)) return "false";
-		if ("RedisStreamMonitor.Enable".equals(key)) return "false";
-		if ("RedisStreamMonitor.IntervalSeconds".equals(key)) return "30";
-		if ("RedisStreamMonitor.WarnXLEN".equals(key)) return "100000";
-		if ("RedisStreamMonitor.BlockXLEN".equals(key)) return "500000";
-		if ("RedisStreamMonitor.WarnPending".equals(key)) return "10000";
-		if ("MQM.ActiveStandbyEnable".equals(key)) return "true";
-		if ("MQM.ActivePriority".equals(key)) return "MsgQueueMonitor1,MsgQueueMonitor2";
-		if ("MQM.ActiveLeaseTtlSeconds".equals(key)) return "30";
-		if ("MQM.ActiveRenewSeconds".equals(key)) return "10";
-		if ("MQM.StandbyCheckSeconds".equals(key)) return "5";
-		if ("MQM.ActivePriorityDelayMs".equals(key)) return "3000";
-		if ("AutoInDR.DirectStreamEnable".equals(key)) return "false";
-		if ("AutoInDR.DelayDispatcherEnable".equals(key)) return "true";
-		if ("AutoInDR.DelayBatchSize".equals(key)) return "200";
-		if ("AutoInDR.DelayClaimTimeoutMs".equals(key)) return "60000";
-		if ("AutoInDR.DelayRetryDelayMs".equals(key)) return "3000";
-		if ("AutoInDR.DelayMaxRetry".equals(key)) return "20";
-		if ("AutoInDR.FallbackToLegacyDelayDR".equals(key)) return "true";
-		if ("AutoInDR.DelayPayloadTTLSeconds".equals(key)) return "172800";
-		if ("AutoInDR.DispatcherIdleSleepMs".equals(key)) return "200";
-		if ("CoreOutboundOutboxEnable".equals(key)) return "true";
-		if ("CoreOutboundOutboxRecheckMs".equals(key)) return "60000";
-		if ("CoreOutboundUnreadStallMs".equals(key)) return "120000";
-		if ("CoreOutboundRespTimeoutMs".equals(key)) return "180000";
-		if ("CoreDrInlineDispatch".equals(key)) return "true";
-		if ("CoreMtIdempotency".equals(key)) return "true";
-		if ("CoreMtLeaseMs".equals(key)) return "60000";
-		if ("CoreMtMarkerTtlSeconds".equals(key)) return "604800";
-		if ("CoreHoldReleaseTickMs".equals(key)) return "100";
-		if ("CoreHoldRecoverIntervalMs".equals(key)) return "30000";
-		if ("CoreHoldRecoverIdleMs".equals(key)) return "60000";
-		if ("ServerDrStreamShardFilter".equals(key)) return "false";
-		if ("RedisStreamMaxDeliveries".equals(key)) return "10";
-		if ("CoreResultStreamSharded".equals(key)) return "true";
-		if ("CoreDrResultIdempotency".equals(key)) return "true";
-		if ("CoreDbFallbackInline".equals(key)) return "true";
-		if ("CsmReassembleMode".equals(key)) return "redis";
-		if ("CoreCsmExpirySweep".equals(key)) return "true";
-		if ("CoreCsmExpiryIntervalSec".equals(key)) return "60";
-		if ("CoreCsmExpiryBatch".equals(key)) return "200";
-		if ("CoreCsmExpiryLeaseMs".equals(key)) return "300000";
-		if ("ClientSendIdempotency".equals(key)) return "true";
-		if ("ClientSendLeaseMs".equals(key)) return "60000";
-		if ("ClientStreamTaskMaxBatches".equals(key)) return "10";
-		if ("ClientStreamTaskMaxMs".equals(key)) return "2000";
-		if ("SmppServerBindTimeoutMs".equals(key)) return "30000";
-		if ("SmppServerMaxConnections".equals(key)) return "0";
-		if ("SmppServerMaxConnectionsPerIp".equals(key)) return "0";
-		if ("ServerStreamTaskMaxBatches".equals(key)) return "10";
-		if ("ServerStreamTaskMaxMs".equals(key)) return "2000";
-		if ("SmppPduLogEnable".equals(key)) return "true";
-		if ("SmppServerSessionKeeperShared".equals(key)) return "true";
-		if ("SmppServerSendQueueMax".equals(key)) return "20000";
-		if ("SmppServerSendQueueHighWater".equals(key)) return "2000";
-		if ("ServerDrAckOnResp".equals(key)) return "true";
-		if ("SmppServerDrLivenessCheck".equals(key)) return "true";
-		if ("SmppServerInboundSharedPoolEnable".equals(key)) return "true";
-		if ("SmppServerInboundMaxInFlightPerSsid".equals(key)) return "20";
-		if ("SmppServerInboundPerSsidQueueSize".equals(key)) return "10000";
-		if ("SmppServerInboundGlobalQueueLimit".equals(key)) return "200000";
-		if ("SmppServerInboundWorkerMax".equals(key)) return "50";
-		if ("SmppServerInboundWorkerQueue".equals(key)) return "1000";
-		if ("CoreStreamTaskMaxBatches".equals(key)) return "10";
-		if ("CoreStreamTaskMaxMs".equals(key)) return "2000";
-		if ("CoreOutboundOutboxHardTimeoutMs".equals(key)) return "10800000";
-		if ("CoreOutboundOutboxPayloadTTLSeconds".equals(key)) return "14400";
-		if ("CoreOutboundOutboxScanBatchSize".equals(key)) return "100";
-		if ("CoreOutboundOutboxResultRetryMs".equals(key)) return "5000";
-		if ("SmppServerSessionRegistryEnable".equals(key)) return "true";
-		if ("SmppServerSessionRegistryRefreshIntervalMs".equals(key)) return "30000";
-		if ("SmppServerSessionRegistryReconcileIntervalMs".equals(key)) return "60000";
-		if ("SmppServerSessionRegistryTtlSeconds".equals(key)) return "-1";
-		if ("SmppServerRegistryLegacyCleanupEnable".equals(key)) return "true";
-		if ("SmppServerRegistryLegacyCleanupIntervalMs".equals(key)) return "300000";
-		if ("SmppServerRegistryLegacyCleanupScanCount".equals(key)) return "200";
-		if ("SmppServerRegistryLegacyCleanupMaxKeysPerRun".equals(key)) return "2000";
-		if ("MultiSmppServer.LongConnectionCustomerSharedQueueEnable".equals(key)) return "false";
-		if ("MultiSmppServer.LongConnectionCustomerSenderWorkerThreads".equals(key)) return "64";
-		if ("MultiSmppServer.LongConnectionCustomerRespWorkerThreads".equals(key)) return "64";
-		if ("MultiSmppServer.LongConnectionCustomerDispatcherThreads".equals(key)) return "2";
-		if ("MultiSmppServer.LongConnectionCustomerWorkerQueueSize".equals(key)) return "1000";
-		if ("MultiSmppServer.LongConnectionCustomerPerSsidQueueSize".equals(key)) return "50000";
-		if ("MultiSmppServer.LongConnectionCustomerGlobalQueueLimit".equals(key)) return "2000000";
-		if ("MultiSmppServer.LongConnectionCustomerWarnQueueSize".equals(key)) return "30000";
-		if ("MultiSmppServer.LongConnectionCustomerWarnWaitMs".equals(key)) return "1000";
-		if ("MultiSmppServer.LongConnectionCustomerMaxInFlightPerSsid".equals(key)) return "50";
-		if ("MultiSmppServer.LongConnectionCustomerDispatchBatchPerSsid".equals(key)) return "10";
-		if (key.endsWith(".LongConnectionCustomerSharedQueueEnable")) return "false";
-		if (key.endsWith(".LongConnectionCustomerSenderWorkerThreads")) return "64";
-		if (key.endsWith(".LongConnectionCustomerRespWorkerThreads")) return "64";
-		if (key.endsWith(".LongConnectionCustomerDispatcherThreads")) return "2";
-		if (key.endsWith(".LongConnectionCustomerWorkerQueueSize")) return "1000";
-		if (key.endsWith(".LongConnectionCustomerPerSsidQueueSize")) return "50000";
-		if (key.endsWith(".LongConnectionCustomerGlobalQueueLimit")) return "2000000";
-		if (key.endsWith(".LongConnectionCustomerWarnQueueSize")) return "30000";
-		if (key.endsWith(".LongConnectionCustomerWarnWaitMs")) return "1000";
-		if (key.endsWith(".LongConnectionCustomerMaxInFlightPerSsid")) return "50";
-		if (key.endsWith(".LongConnectionCustomerDispatchBatchPerSsid")) return "10";
-		return "0";
-	}
+	/** read once at startup (no longer in the reload whitelist), reported as restart required */
+	private static final String[] STARTUP_READ_KEYS = new String[] {
+		"MaxCPUUsage", "SystemStatusCheckInterval", "RuninOverloadStatusPeriod", "ExpiredMessageQueueSize",
+		"DNSPort", "DNSMaxFailedLimit", "DNSTestPeriod", "DNSTestNumber", "DNSBufferCapacity",
+		"DNSBufferTimeout", "NMGAddress", "NMGPort", "DefaultRetryPolicy", "AntiSpam.Characters2Escape",
+		"DefaultSuffix", "LocalSuffix", "SMSQueryDRHttpModule"
+	};
 
 	private boolean isRestartRequiredConfigKey(String key) {
 		String module = System.getProperty("module");
+		if (isStartupOnlyKey(key) || contains(STARTUP_READ_KEYS, key)
+				|| (module != null && (key.equals(module + ".Asynchronous") || key.equals(module + ".MaxCDRAsynQueueSize")
+						|| key.equals(module + ".MaxSDQAsynQueueSize")))
+				|| key.startsWith("AsyncSql") || key.startsWith("DbHa.") || key.startsWith("ModuleStatus")
+				|| key.startsWith("DataControl_") || key.startsWith("SystemManager.") || key.startsWith("MGM.")
+				|| key.startsWith("Mail")) {
+			return true;
+		}
 		return "NodeID".equals(key) || "RouterModule".equals(key) || "ServerIP".equals(key)
 				|| "ServiceIP".equals(key) || "SystemManager.enable".equals(key)
 				|| "DB.AccessMode".equals(key) || key.startsWith("DB.Hikari.")
@@ -1308,6 +1348,66 @@ public class GmmsUtility {
 			log.info("{}: {} {} -> {}", title, key,
 					maskConfigValue(key, oldProps == null ? null : oldProps.getProperty(key)),
 					maskConfigValue(key, newProps == null ? null : newProps.getProperty(key)));
+		}
+	}
+
+	private static final String EFFECTIVE_CONFIG_PREFIX = "config:effective:";
+	private static final String EFFECTIVE_CONFIG_MODULES = "config:effective:modules";
+	private static final String PUBLISH_CONFIG_LUA =
+			"redis.call('DEL', KEYS[1]) "
+			+ "for i = 1, #ARGV, 2 do redis.call('HSET', KEYS[1], ARGV[i], ARGV[i + 1]) end "
+			+ "redis.call('SADD', KEYS[2], ARGV[2]) return 1";
+
+	/**
+	 * Write the GmmsConfig this module runs with to config:effective:{module}:{nodeId} (state Redis):
+	 * every key of the effective properties (passwords masked) plus _meta.* fields. Called at startup
+	 * once Redis is up and after every reload. A Redis error is only logged.
+	 */
+	public void publishEffectiveConfig(String source, String reloadResult) {
+		Properties props = properties;
+		if (props == null || redisClient == null
+				|| "false".equalsIgnoreCase(props.getProperty("GmmsConfigPublishEnable", "true").trim())) {
+			return;
+		}
+		String module = System.getProperty("module", "");
+		String node = getNodeId();
+		String id = module + ":" + node;
+		try {
+			List<String> args = new ArrayList<String>();
+			args.add("_meta.id");
+			args.add(id);                                // ARGV[2]: member of the module set
+			args.add("_meta.module");
+			args.add(module);
+			args.add("_meta.nodeId");
+			args.add(node == null ? "" : node);
+			args.add("_meta.file");
+			args.add(gmmsConfigFile == null ? "" : gmmsConfigFile);
+			args.add("_meta.loadedAt");
+			args.add(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSZ").format(new Date()));
+			args.add("_meta.source");
+			args.add(source);
+			args.add("_meta.reloadResult");
+			args.add(reloadResult);
+			args.add("_meta.pendingRestart");
+			synchronized (pendingRestartKeys) {
+				StringBuilder sb = new StringBuilder();
+				for (String k : pendingRestartKeys) {
+					if (sb.length() > 0) sb.append(',');
+					sb.append(k);
+				}
+				args.add(sb.toString());
+			}
+			for (String key : new TreeSet<String>(props.stringPropertyNames())) {
+				args.add(key);
+				String value = props.getProperty(key);
+				args.add(maskConfigValue(key, value == null ? "" : value.trim()));
+			}
+			redisClient.getStateRedis().evalScript(PUBLISH_CONFIG_LUA,
+					Arrays.asList(EFFECTIVE_CONFIG_PREFIX + id, EFFECTIVE_CONFIG_MODULES), args);
+			log.info("Effective GmmsConfig written to Redis. key={}{}, items={}, source={}, result={}",
+					EFFECTIVE_CONFIG_PREFIX, id, props.size(), source, reloadResult);
+		} catch (Exception e) {
+			log.warn("Failed to write the effective GmmsConfig to Redis. key={}{}", EFFECTIVE_CONFIG_PREFIX, id, e);
 		}
 	}
 

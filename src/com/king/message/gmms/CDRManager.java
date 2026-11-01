@@ -50,11 +50,13 @@ public class CDRManager {
 	}
 
 	public static long getMaxFileTime() {
-		return maxFileTime;
+		long seconds = GmmsUtility.getInstance().getCdrMaxTime();
+		return seconds > 0 ? seconds * 1000L : maxFileTime;
 	}
 
 	public static int getMaxFileSize() {
-		return maxFileSize;
+		int kb = GmmsUtility.getInstance().getCdrMaxSize();
+		return kb > 0 ? kb * 1024 : maxFileSize;
 	}
 
 	/** Message statistics (StMsgCount); a redelivered stream entry does not count twice. */

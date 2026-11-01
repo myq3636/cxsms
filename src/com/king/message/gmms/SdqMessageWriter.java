@@ -269,7 +269,7 @@ public class SdqMessageWriter {
 	private synchronized boolean write(String content) {
 		boolean result = false;
 		try {
-			if (currentFileSize > maxFileSize) {
+			if (currentFileSize > maxFileSize()) {
 				log.info("SDQWriter up to file max size");
 				rotate();
 			}
@@ -307,7 +307,7 @@ public class SdqMessageWriter {
 	 * swichFile
 	 */
 	private synchronized void swichFile() {
-		if (System.currentTimeMillis() - lastFileTime >= maxFileTime) {
+		if (System.currentTimeMillis() - lastFileTime >= maxFileTime()) {
 			//log.debug("SDQWriter up to file max time");
 			if (!isOpen || (currentFileSize == 0)) {
 				lastFileTime = System.currentTimeMillis();
@@ -330,7 +330,7 @@ public class SdqMessageWriter {
 			while (isOpen && running) {
 				try {
 					Thread.sleep(1000L);
-					long waitTime = maxFileTime
+					long waitTime = maxFileTime()
 							- (System.currentTimeMillis() - lastFileTime);
 					if (waitTime > 0L) {
 						Thread.sleep(waitTime);
@@ -356,4 +356,21 @@ public class SdqMessageWriter {
 		}
 	}
 
+
+	/** read on every use, so a GmmsConfig reload of SdqFileMaxSize / SdqFileSwitchInterval applies */
+	private int maxFileSize() {
+		try {
+			return Integer.parseInt(GmmsUtility.getInstance().getCommonProperty("SdqFileMaxSize", "10240").trim()) * 1024;
+		} catch (Exception e) {
+			return maxFileSize;
+		}
+	}
+
+	private long maxFileTime() {
+		try {
+			return Integer.parseInt(GmmsUtility.getInstance().getCommonProperty("SdqFileSwitchInterval", "300").trim()) * 1000L;
+		} catch (Exception e) {
+			return maxFileTime;
+		}
+	}
 }

@@ -182,7 +182,7 @@ public class CDRAsynWriter implements LifecycleListener, SignalHandler {
 	private boolean write(String content) {
 		boolean result = false;
 		try {
-			if (currentFileSize > maxFileSize) {
+			if (currentFileSize > maxFileSize()) {
 				log.info("CDRWriter up to file max size");
 				newLog();
 			}
@@ -208,7 +208,7 @@ public class CDRAsynWriter implements LifecycleListener, SignalHandler {
 	}
 
 	private void swichFile() {
-		if (System.currentTimeMillis() - lastFileTime >= maxFileTime) {
+		if (System.currentTimeMillis() - lastFileTime >= maxFileTime()) {
 			log.debug("CDRWriter up to file max time");
 			if (!isOpen || (currentFileSize == 0)) {
 				lastFileTime = System.currentTimeMillis();
@@ -302,7 +302,7 @@ public class CDRAsynWriter implements LifecycleListener, SignalHandler {
 			while (isOpen && running) {
 				try {
 					Thread.sleep(1000L);
-					long waitTime = maxFileTime
+					long waitTime = maxFileTime()
 							- (System.currentTimeMillis() - lastFileTime);
 					if (waitTime > 0L) {
 						Thread.sleep(waitTime);
@@ -359,4 +359,13 @@ public class CDRAsynWriter implements LifecycleListener, SignalHandler {
 		}
 	}
 
+
+	/** read on every use, so a GmmsConfig reload of CDRFileMaxSize / CDRFileSwitchInterval applies */
+	private int maxFileSize() {
+		return CDRManager.getMaxFileSize();
+	}
+
+	private long maxFileTime() {
+		return CDRManager.getMaxFileTime();
+	}
 }
