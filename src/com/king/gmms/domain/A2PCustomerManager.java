@@ -167,62 +167,13 @@ public class A2PCustomerManager implements LifecycleListener {
 	
 	// cache (OOP,ROP),Rssid
 	private Map<String, Integer> routingRelayInfo = new ConcurrentHashMap<String, Integer>();
-	//<ossid,<prefix, rssid>
-	private Map<String, Map<String,String>> customerRoutingRelayInfo = new ConcurrentHashMap<String, Map<String,String>>();
-	private Map<String, Map<String,String>> customerBackupRoutingRelayInfo = new ConcurrentHashMap<String, Map<String,String>>();
 	
-	//<ossid,<sender_prefix, rssid>>
-	private Map<String, Map<String,String>> customerSenderRoutingRelayInfo = new ConcurrentHashMap<String, Map<String,String>>();
-	private Map<String, Map<String,String>> customerBackupSenderRoutingRelayInfo = new ConcurrentHashMap<String, Map<String,String>>();
 	
-	//<ossid,<prefix, <keywordId,rssid>>>
-	private Map<String, Map<String,Map<String,String>>> customerContentKeywordRoutingRelayInfo = new ConcurrentHashMap<String, Map<String,Map<String,String>>>();
-	private Map<String, Map<String,Map<String,String>>> customerBackupContentKeywordRoutingRelayInfo = new ConcurrentHashMap<String, Map<String,Map<String,String>>>();
 	
-	private Map<String,List<Pattern>> customerPerfixInfo = new ConcurrentHashMap<String,List<Pattern>>();
-	private Map<String,List<Pattern>> customerBackupPerfixInfo = new ConcurrentHashMap<String,List<Pattern>>();
-	private Map<String,List<Pattern>> customerSenderPerfixInfo = new ConcurrentHashMap<String,List<Pattern>>();
-	private Map<String,List<Pattern>> customerBackupSenderPerfixInfo = new ConcurrentHashMap<String,List<Pattern>>();
-	private Map<String,List<Pattern>> customerContentKeywordPerfixInfo = new ConcurrentHashMap<String,List<Pattern>>();
-	private Map<String,List<Pattern>> customerBackupContentKeywordPerfixInfo = new ConcurrentHashMap<String,List<Pattern>>();
-	private Map<String,List<Pattern>> customerDefaultPerfixInfo = new ConcurrentHashMap<String,List<Pattern>>();
-	private Map<String,List<Pattern>> customerBackupDefaultPerfixInfo = new ConcurrentHashMap<String,List<Pattern>>();
-	private Map<String, Map<String,String>> defaultBackupRoutingRelayInfo = new ConcurrentHashMap<String, Map<String,String>>();
-	private Map<String, Map<String,String>> defaultRoutingRelayInfo = new ConcurrentHashMap<String, Map<String,String>>();
     
-	//2-time-routing
-	private Map<String, Map<String,String>> customerRoutingRelayInfo2 = new ConcurrentHashMap<String, Map<String,String>>();
-	private Map<String, Map<String,String>> customerBackupRoutingRelayInfo2 = new ConcurrentHashMap<String, Map<String,String>>();
 	
-	//2-time-routing-<ossid,<sender_prefix, rssid>>
-	private Map<String, Map<String,String>> customerSenderRoutingRelayInfo2 = new ConcurrentHashMap<String, Map<String,String>>();
-	private Map<String, Map<String,String>> customerBackupSenderRoutingRelayInfo2 = new ConcurrentHashMap<String, Map<String,String>>();
 	
-	//2-time-routing-<ossid,<prefix, <keywordId,rssid>>>
-	private Map<String, Map<String,Map<String,String>>> customerContentKeywordRoutingRelayInfo2 = new ConcurrentHashMap<String, Map<String,Map<String,String>>>();
-	private Map<String, Map<String,Map<String,String>>> customerBackupContentKeywordRoutingRelayInfo2 = new ConcurrentHashMap<String, Map<String,Map<String,String>>>();
-	//2-time-routing
-	private Map<String,List<Pattern>> customerPerfixInfo2 = new ConcurrentHashMap<String,List<Pattern>>();
-	private Map<String,List<Pattern>> customerBackupPerfixInfo2 = new ConcurrentHashMap<String,List<Pattern>>();
-	private Map<String,List<Pattern>> customerSenderPerfixInfo2 = new ConcurrentHashMap<String,List<Pattern>>();
-	private Map<String,List<Pattern>> customerBackupSenderPerfixInfo2 = new ConcurrentHashMap<String,List<Pattern>>();
-	private Map<String,List<Pattern>> customerContentKeywordPerfixInfo2 = new ConcurrentHashMap<String,List<Pattern>>();
-	private Map<String,List<Pattern>> customerBackupContentKeywordPerfixInfo2 = new ConcurrentHashMap<String,List<Pattern>>();
-    //op content routing
-	//<ossid, opid, <keyword, priority, rssids>>
-	private HashBasedTable<String,Integer,HashBasedTable<String,Integer,String>> customeropContentKeywordRoutingRelayInfo= HashBasedTable.create();
-	private HashBasedTable<String,Integer,HashBasedTable<String,Integer,String>> customeropBackupContentKeywordRoutingRelayInfo= HashBasedTable.create();
-	//op sender routing
-	//<ossid, opid, <sender, priority, rssids>>
-	private HashBasedTable<String,Integer,HashBasedTable<String,Integer,String>> customeropSenderRoutingRelayInfo= HashBasedTable.create();
-	private HashBasedTable<String,Integer,HashBasedTable<String,Integer,String>> customeropBackupSenderRoutingRelayInfo= HashBasedTable.create();
-	//op routing
-	//<ossid, opid, <priority, rssids>>
-	private HashBasedTable<String,Integer,Map<Integer,String>> customeropRoutingRelayInfo= HashBasedTable.create();
-	private HashBasedTable<String,Integer,Map<Integer,String>> customeropBackupRoutingRelayInfo= HashBasedTable.create();
 	
-	//<ossid, phone, <priority, rssids>>
-	private HashBasedTable<String,Long,Map<Integer,String>> customerNumberRoutingRelayInfo= HashBasedTable.create();
 	private HashBasedTable<String,Long,Map<Integer,String>> customerNumberBackupRoutingRelayInfo= HashBasedTable.create();
 	/**
 	 * key: Ossid_ROP </br>
@@ -325,10 +276,6 @@ public class A2PCustomerManager implements LifecycleListener {
 	 */
 	private Map<Integer, Map<String, Integer>> contentKeywordMap = new ConcurrentHashMap<Integer, Map<String, Integer>>();
 	
-	/**
-	 * contentTemplateMap<OSSID+RSSID,HashMap<countryCode,templateId>>
-	 */
-	private Map<String, Map<String, String>> contentTemplateMap = new ConcurrentHashMap<String, Map<String, String>>();
 
 	private static final String CONF_SEPERATOR = "_";
 
@@ -369,6 +316,69 @@ public class A2PCustomerManager implements LifecycleListener {
 	//random for loadbalance routing;
 	private int loadbalanceRandom = 0;
 	
+	/**
+	 * Routing tables of one RELOAD_ROUTING. Published by one volatile reference and never changed
+	 * after that, so a lookup reads one complete version whatever a reload does meanwhile.
+	 */
+	private static final class RoutingTables {
+		//<ossid,<prefix, rssid>
+		Map<String, Map<String,String>> customerRoutingRelayInfo = new ConcurrentHashMap<String, Map<String,String>>();
+		Map<String,List<Pattern>> customerPerfixInfo = new ConcurrentHashMap<String,List<Pattern>>();
+		Map<String, Map<String,String>> customerBackupRoutingRelayInfo = new ConcurrentHashMap<String, Map<String,String>>();
+		Map<String, Map<String,String>> defaultRoutingRelayInfo = new ConcurrentHashMap<String, Map<String,String>>();
+		Map<String, Map<String,String>> defaultBackupRoutingRelayInfo = new ConcurrentHashMap<String, Map<String,String>>();
+		Map<String,List<Pattern>> customerDefaultPerfixInfo = new ConcurrentHashMap<String,List<Pattern>>();
+		Map<String,List<Pattern>> customerBackupDefaultPerfixInfo = new ConcurrentHashMap<String,List<Pattern>>();
+		Map<String,List<Pattern>> customerBackupPerfixInfo = new ConcurrentHashMap<String,List<Pattern>>();
+		/**
+		 * contentTemplateMap<OSSID+RSSID,HashMap<countryCode,templateId>>
+		 */
+		Map<String, Map<String, String>> contentTemplateMap = new ConcurrentHashMap<String, Map<String, String>>();
+		//<ossid,<sender_prefix, rssid>>
+		Map<String, Map<String,String>> customerSenderRoutingRelayInfo = new ConcurrentHashMap<String, Map<String,String>>();
+		Map<String,List<Pattern>> customerSenderPerfixInfo = new ConcurrentHashMap<String,List<Pattern>>();
+		Map<String, Map<String,String>> customerBackupSenderRoutingRelayInfo = new ConcurrentHashMap<String, Map<String,String>>();
+		Map<String,List<Pattern>> customerBackupSenderPerfixInfo = new ConcurrentHashMap<String,List<Pattern>>();
+		//<ossid,<prefix, <keywordId,rssid>>>
+		Map<String, Map<String,Map<String,String>>> customerContentKeywordRoutingRelayInfo = new ConcurrentHashMap<String, Map<String,Map<String,String>>>();
+		Map<String,List<Pattern>> customerContentKeywordPerfixInfo = new ConcurrentHashMap<String,List<Pattern>>();
+		Map<String, Map<String,Map<String,String>>> customerBackupContentKeywordRoutingRelayInfo = new ConcurrentHashMap<String, Map<String,Map<String,String>>>();
+		Map<String,List<Pattern>> customerBackupContentKeywordPerfixInfo = new ConcurrentHashMap<String,List<Pattern>>();
+		//2-time-routing
+		Map<String, Map<String,String>> customerRoutingRelayInfo2 = new ConcurrentHashMap<String, Map<String,String>>();
+		//2-time-routing
+		Map<String,List<Pattern>> customerPerfixInfo2 = new ConcurrentHashMap<String,List<Pattern>>();
+		Map<String, Map<String,String>> customerBackupRoutingRelayInfo2 = new ConcurrentHashMap<String, Map<String,String>>();
+		Map<String,List<Pattern>> customerBackupPerfixInfo2 = new ConcurrentHashMap<String,List<Pattern>>();
+		//2-time-routing-<ossid,<sender_prefix, rssid>>
+		Map<String, Map<String,String>> customerSenderRoutingRelayInfo2 = new ConcurrentHashMap<String, Map<String,String>>();
+		Map<String,List<Pattern>> customerSenderPerfixInfo2 = new ConcurrentHashMap<String,List<Pattern>>();
+		Map<String, Map<String,String>> customerBackupSenderRoutingRelayInfo2 = new ConcurrentHashMap<String, Map<String,String>>();
+		Map<String,List<Pattern>> customerBackupSenderPerfixInfo2 = new ConcurrentHashMap<String,List<Pattern>>();
+		//2-time-routing-<ossid,<prefix, <keywordId,rssid>>>
+		Map<String, Map<String,Map<String,String>>> customerContentKeywordRoutingRelayInfo2 = new ConcurrentHashMap<String, Map<String,Map<String,String>>>();
+		Map<String,List<Pattern>> customerContentKeywordPerfixInfo2 = new ConcurrentHashMap<String,List<Pattern>>();
+		Map<String, Map<String,Map<String,String>>> customerBackupContentKeywordRoutingRelayInfo2 = new ConcurrentHashMap<String, Map<String,Map<String,String>>>();
+		Map<String,List<Pattern>> customerBackupContentKeywordPerfixInfo2 = new ConcurrentHashMap<String,List<Pattern>>();
+	    //op content routing
+		//<ossid, opid, <keyword, priority, rssids>>
+		HashBasedTable<String,Integer,HashBasedTable<String,Integer,String>> customeropContentKeywordRoutingRelayInfo= HashBasedTable.create();
+		HashBasedTable<String,Integer,HashBasedTable<String,Integer,String>> customeropBackupContentKeywordRoutingRelayInfo= HashBasedTable.create();
+		//op sender routing
+		//<ossid, opid, <sender, priority, rssids>>
+		HashBasedTable<String,Integer,HashBasedTable<String,Integer,String>> customeropSenderRoutingRelayInfo= HashBasedTable.create();
+		HashBasedTable<String,Integer,HashBasedTable<String,Integer,String>> customeropBackupSenderRoutingRelayInfo= HashBasedTable.create();
+		//op routing
+		//<ossid, opid, <priority, rssids>>
+		HashBasedTable<String,Integer,Map<Integer,String>> customeropRoutingRelayInfo= HashBasedTable.create();
+		HashBasedTable<String,Integer,Map<Integer,String>> customeropBackupRoutingRelayInfo= HashBasedTable.create();
+		//<ossid, phone, <priority, rssids>>
+		HashBasedTable<String,Long,Map<Integer,String>> customerNumberRoutingRelayInfo= HashBasedTable.create();
+	}
+
+	private volatile RoutingTables routingTables = new RoutingTables();
+	private static final int CONFIG_FILE_STABLE_ATTEMPTS = 10;
+
 	public A2PCustomerManager(String conFile) {
 		this.confFile = conFile;
 		init();
@@ -1650,15 +1660,33 @@ public class A2PCustomerManager implements LifecycleListener {
 			}
 			if (path != null) {
 				File conf = new File(path);
-				routingInfoMap.clear();
-				this.routingInfoMap = A2PCustomerConfig.parseRoutingInfo(conf);
+				String routingState = stableFileState(conf);
+				if (routingState == null) {
+					log.error("routing files are still being written, reload rejected, routing stays as it is. Send the reload again when they are complete. path={}", path);
+					ConfigFilePublisher.getInstance().publishFailure("routing", "file still being written");
+					return 1;
+				}
+				Map<String, A2PCustomerConfig> parsedRouting = A2PCustomerConfig.parseRoutingInfo(conf);
 				log.info("Parsed routingInfo config. action={}, path={}, blockCount={}", action, path,
-						routingInfoMap == null ? 0 : routingInfoMap.size());
-
-                if(routingInfoMap == null || routingInfoMap.isEmpty()){
-                    log.info("Reload routingInfo warning, routingFile is null. action={}, path={}", action, path);
-                    return 1;
-                }
+						parsedRouting == null ? 0 : parsedRouting.size());
+				if (parsedRouting == null || parsedRouting.isEmpty()) {
+					log.error("no routing block found, reload rejected, routing stays as it is. action={}, path={}", action, path);
+					ConfigFilePublisher.getInstance().publishFailure("routing", "no routing block");
+					return 1;
+				}
+				for (Map.Entry<String, A2PCustomerConfig> e : parsedRouting.entrySet()) {
+					if (e.getValue().getLines().isEmpty()) {
+						log.error("routing file of {} is empty, reload rejected, routing stays as it is. path={}", e.getKey(), path);
+						ConfigFilePublisher.getInstance().publishFailure("routing", "empty routing file: " + e.getKey());
+						return 1;
+					}
+				}
+				if (!routingState.equals(fileState(conf))) {
+					log.error("routing files changed while being read, reload rejected, routing stays as it is. path={}", path);
+					ConfigFilePublisher.getInstance().publishFailure("routing", "file changed while reading");
+					return 1;
+				}
+				this.routingInfoMap = parsedRouting;
 				
 				Map<String, Map<String,String>> temp_routingRelay = new ConcurrentHashMap<String, Map<String,String>>();
 				Map<String, Map<String,String>> temp_backupRoutingRelay = new ConcurrentHashMap<String, Map<String,String>>();
@@ -1939,205 +1967,46 @@ public class A2PCustomerManager implements LifecycleListener {
 					}
 
 				}
-
-				
-				Map routing = this.customerRoutingRelayInfo;
-				this.customerRoutingRelayInfo = temp_routingRelay;
-				
-				Map prefixs = this.customerPerfixInfo;
-				this.customerPerfixInfo = temp_customerPrefixList;
-				
-				Map backupRouting = this.customerBackupRoutingRelayInfo;
-				this.customerBackupRoutingRelayInfo = temp_backupRoutingRelay;
-
-				Map defaultRouting = this.defaultRoutingRelayInfo;
-				this.defaultRoutingRelayInfo = temp_defaultRoutingRelay;
-				
-				Map defalutBackupRouting = this.defaultBackupRoutingRelayInfo;
-				this.defaultBackupRoutingRelayInfo = temp_backupDefaultRoutingRelay;
-				
-				Map<String,List<Pattern>> defaultPrefixs = this.customerDefaultPerfixInfo;
-				this.customerDefaultPerfixInfo = temp_defaultPrefixList;
-				
-				Map<String,List<Pattern>> backupDefaultPrefixs = this.customerBackupDefaultPerfixInfo;
-				this.customerBackupDefaultPerfixInfo = temp_backupDefaultPrefixList;
-				backupDefaultPrefixs.clear();
-				
-				Map backupPrefixs = this.customerBackupPerfixInfo;
-				this.customerBackupPerfixInfo = temp_backupCustomerPrefixList;
-				backupPrefixs.clear();
-				
-				Map<String, Map<String, String>> contentTemp = this.contentTemplateMap;
-				this.contentTemplateMap = temp_contentTemplateMap;
-				contentTemp.clear();
-				
-				Map sendRouting = this.customerSenderRoutingRelayInfo;
-				this.customerSenderRoutingRelayInfo = temp_sendroutingRelay;
-				
-				Map sendprefixs = this.customerSenderPerfixInfo;
-				this.customerSenderPerfixInfo = temp_sendcustomerPrefixList;
-				
-				Map sendbackupRouting = this.customerBackupSenderRoutingRelayInfo;
-				this.customerBackupSenderRoutingRelayInfo = temp_sendbackupRoutingRelay;
-				
-				Map sendbackupprefixs = this.customerBackupSenderPerfixInfo;
-				this.customerBackupSenderPerfixInfo = temp_sendBackupcustomerPrefixList;
-				
-				sendRouting.clear();
-				sendprefixs.clear();
-				sendbackupRouting.clear();
-				sendbackupprefixs.clear();
-				
-				Map contentRouting = this.customerContentKeywordRoutingRelayInfo;
-				this.customerContentKeywordRoutingRelayInfo = temp_contentkeyroutingRelay;
-				
-				Map contentprefixs = this.customerContentKeywordPerfixInfo;
-				this.customerContentKeywordPerfixInfo = temp_contentkeycustomerPrefixList;
-				
-				Map contentbackupRouting = this.customerBackupContentKeywordRoutingRelayInfo;
-				this.customerBackupContentKeywordRoutingRelayInfo = temp_contentkeybackupRoutingRelay;
-				
-				Map contentbackupprefixs = this.customerBackupContentKeywordPerfixInfo;
-				this.customerBackupContentKeywordPerfixInfo = temp_contentkeybackupcustomerPrefixList;
-				
-				contentRouting.clear();
-				contentprefixs.clear();
-				contentbackupRouting.clear();
-				contentbackupprefixs.clear();
-				
-				
-				/*Map policy = this.policyInfo;
-				this.policyInfo = temp_policyInfo;
-
-				Map allowMap = this.allowRoutingInfoMap;
-				this.allowRoutingInfoMap = temp_allowRoutingInfo;
-
-				Map charset = this.charsetRelay;
-				this.charsetRelay = temp_charsetRelay;
-
-				Map<String, List<String>> contentWhitelist = this.contentWhiteListInfo;
-				this.contentWhiteListInfo = temp_contentWhiteListInfo;
-
-				Map<String, List<RelayMark>> contentRelay = this.contentRelayInfo;
-				this.contentRelayInfo = temp_contentRelayInfo;
-
-				Map<String, List<RelayMark>> senderAddrRelay = this.senderAddrRelayInfo;
-				this.senderAddrRelayInfo = temp_senderAddrRelayInfo;
-
-				Map<String, String> senderAddrReplace = this.senderAddrReplaceInfo;
-				this.senderAddrReplaceInfo = temp_senderAddrReplaceInfo;
-
-				Map<String, String> recipientAddrReplace = this.recipientAddrReplaceInfo;
-				this.recipientAddrReplaceInfo = temp_recipientAddrReplaceInfo;
-
-				Map<Integer, Map<String, Map<String, String>>> contentSignature = this.contentSignatureMap;
-				this.contentSignatureMap = temp_contentSignatureMap;
-
-				Map<String, Integer> serviceTypeIDRelay = this.serviceTypeIDRelayInfo;
-				this.serviceTypeIDRelayInfo = temp_serviceTypeIDRelayMap;
-
-				Map<Integer, Map<String, Integer>> contentKeyword = this.contentKeywordMap;
-				this.contentKeywordMap = temp_contentKeywordMap;*/
-
-				/*vp.clear();
-				smsCon.clear();
-				smsIP.clear();
-				smsSS7.clear();				
-				policy.clear();
-				allowMap.clear();
-				charset.clear();
-				contentWhitelist.clear();
-				contentRelay.clear();
-				senderAddrRelay.clear();
-				senderAddrReplace.clear();
-				recipientAddrReplace.clear();
-				contentSignature.clear();
-				serviceTypeIDRelay.clear();
-				contentKeyword.clear();*/
-				
-				routing.clear();
-				prefixs.clear();
-				defalutBackupRouting.clear();
-				defaultRouting.clear();
-				defaultPrefixs.clear();
-				backupRouting.clear();
-				
-				//2-time retry				
-				routing = this.customerRoutingRelayInfo2;
-				this.customerRoutingRelayInfo2 = temp_routingRelay2;
-
-				prefixs = this.customerPerfixInfo2;
-				this.customerPerfixInfo2 = temp_customerPrefixList2;
-
-				backupRouting = this.customerBackupRoutingRelayInfo2;
-				this.customerBackupRoutingRelayInfo2 = temp_backupRoutingRelay2;
-				backupPrefixs = this.customerBackupPerfixInfo2;
-				this.customerBackupPerfixInfo2 = temp_backupCustomerPrefixList2;
-				routing.clear();
-				prefixs.clear();
-				backupPrefixs.clear();
-				backupRouting.clear();
-				sendRouting = this.customerSenderRoutingRelayInfo2;
-				this.customerSenderRoutingRelayInfo2 = temp_sendroutingRelay2;
-
-				sendprefixs = this.customerSenderPerfixInfo2;
-				this.customerSenderPerfixInfo2 = temp_sendcustomerPrefixList2;
-
-				sendbackupRouting = this.customerBackupSenderRoutingRelayInfo2;
-				this.customerBackupSenderRoutingRelayInfo2 = temp_sendbackupRoutingRelay2;
-
-				sendbackupprefixs = this.customerBackupSenderPerfixInfo2;
-				this.customerBackupSenderPerfixInfo2 = temp_sendBackupcustomerPrefixList2;
-				sendRouting.clear();
-				sendprefixs.clear();
-				sendbackupRouting.clear();
-				sendbackupprefixs.clear();
-
-				contentRouting = this.customerContentKeywordRoutingRelayInfo2;
-				this.customerContentKeywordRoutingRelayInfo2 = temp_contentkeyroutingRelay2;
-
-				contentprefixs = this.customerContentKeywordPerfixInfo2;
-				this.customerContentKeywordPerfixInfo2 = temp_contentkeycustomerPrefixList2;
-
-				contentbackupRouting = this.customerBackupContentKeywordRoutingRelayInfo2;
-				this.customerBackupContentKeywordRoutingRelayInfo2 = temp_contentkeybackupRoutingRelay2;
-
-				contentbackupprefixs = this.customerBackupContentKeywordPerfixInfo2;
-				this.customerBackupContentKeywordPerfixInfo2 = temp_contentkeybackupcustomerPrefixList2;
-
-				contentRouting.clear();
-				contentprefixs.clear();
-				contentbackupRouting.clear();
-				contentbackupprefixs.clear();
-				
-				//op routing
-				HashBasedTable tempcustomeropContentKeywordRoutingRelayInfo = this.customeropContentKeywordRoutingRelayInfo;
-				this.customeropContentKeywordRoutingRelayInfo = temp_customeropContentKeywordRoutingRelayInfo;
-				HashBasedTable tempcustomeropBackupContentKeywordRoutingRelayInfo = this.customeropBackupContentKeywordRoutingRelayInfo;
-				this.customeropBackupContentKeywordRoutingRelayInfo = temp_customeropBackupContentKeywordRoutingRelayInfo;
-				//op sender routing
-				//<ossid, opid, <sender, priority, rssids>>
-				HashBasedTable tempcustomeropSenderRoutingRelayInfo= this.customeropSenderRoutingRelayInfo;
-				this.customeropSenderRoutingRelayInfo = temp_customeropSenderRoutingRelayInfo;
-				HashBasedTable tempcustomeropBackupSenderRoutingRelayInfo= this.customeropBackupSenderRoutingRelayInfo;
-				this.customeropBackupSenderRoutingRelayInfo = temp_customeropBackupSenderRoutingRelayInfo;
-				//op routing
-				//<ossid, opid, <priority, rssids>>
-				HashBasedTable tempcustomeropRoutingRelayInfo= this.customeropRoutingRelayInfo;
-				this.customeropRoutingRelayInfo = temp_customeropRoutingRelayInfo;
-				HashBasedTable tempcustomeropBackupRoutingRelayInfo= this.customeropBackupRoutingRelayInfo;
-				this.customeropBackupRoutingRelayInfo = temp_customeropBackupRoutingRelayInfo;
-				//number routing
-				HashBasedTable tempcustomerNumberRoutingRelayInfo= this.customerNumberRoutingRelayInfo;
-				this.customerNumberRoutingRelayInfo = temp_customerNumberRoutingRelayInfo;
-				
-				tempcustomeropContentKeywordRoutingRelayInfo.clear();
-				tempcustomeropBackupContentKeywordRoutingRelayInfo.clear();
-				tempcustomeropSenderRoutingRelayInfo.clear();
-				tempcustomeropBackupSenderRoutingRelayInfo.clear();
-				tempcustomeropRoutingRelayInfo.clear();
-				tempcustomeropBackupRoutingRelayInfo.clear();
-				tempcustomerNumberRoutingRelayInfo.clear();
+				// every table is replaced by one reference: a lookup sees one complete version, and the old
+				// tables are left to lookups still using them (never cleared)
+				RoutingTables next = new RoutingTables();
+				next.customerRoutingRelayInfo = temp_routingRelay;
+				next.customerPerfixInfo = temp_customerPrefixList;
+				next.customerBackupRoutingRelayInfo = temp_backupRoutingRelay;
+				next.defaultRoutingRelayInfo = temp_defaultRoutingRelay;
+				next.defaultBackupRoutingRelayInfo = temp_backupDefaultRoutingRelay;
+				next.customerDefaultPerfixInfo = temp_defaultPrefixList;
+				next.customerBackupDefaultPerfixInfo = temp_backupDefaultPrefixList;
+				next.customerBackupPerfixInfo = temp_backupCustomerPrefixList;
+				next.contentTemplateMap = temp_contentTemplateMap;
+				next.customerSenderRoutingRelayInfo = temp_sendroutingRelay;
+				next.customerSenderPerfixInfo = temp_sendcustomerPrefixList;
+				next.customerBackupSenderRoutingRelayInfo = temp_sendbackupRoutingRelay;
+				next.customerBackupSenderPerfixInfo = temp_sendBackupcustomerPrefixList;
+				next.customerContentKeywordRoutingRelayInfo = temp_contentkeyroutingRelay;
+				next.customerContentKeywordPerfixInfo = temp_contentkeycustomerPrefixList;
+				next.customerBackupContentKeywordRoutingRelayInfo = temp_contentkeybackupRoutingRelay;
+				next.customerBackupContentKeywordPerfixInfo = temp_contentkeybackupcustomerPrefixList;
+				next.customerRoutingRelayInfo2 = temp_routingRelay2;
+				next.customerPerfixInfo2 = temp_customerPrefixList2;
+				next.customerBackupRoutingRelayInfo2 = temp_backupRoutingRelay2;
+				next.customerBackupPerfixInfo2 = temp_backupCustomerPrefixList2;
+				next.customerSenderRoutingRelayInfo2 = temp_sendroutingRelay2;
+				next.customerSenderPerfixInfo2 = temp_sendcustomerPrefixList2;
+				next.customerBackupSenderRoutingRelayInfo2 = temp_sendbackupRoutingRelay2;
+				next.customerBackupSenderPerfixInfo2 = temp_sendBackupcustomerPrefixList2;
+				next.customerContentKeywordRoutingRelayInfo2 = temp_contentkeyroutingRelay2;
+				next.customerContentKeywordPerfixInfo2 = temp_contentkeycustomerPrefixList2;
+				next.customerBackupContentKeywordRoutingRelayInfo2 = temp_contentkeybackupRoutingRelay2;
+				next.customerBackupContentKeywordPerfixInfo2 = temp_contentkeybackupcustomerPrefixList2;
+				next.customeropContentKeywordRoutingRelayInfo = temp_customeropContentKeywordRoutingRelayInfo;
+				next.customeropBackupContentKeywordRoutingRelayInfo = temp_customeropBackupContentKeywordRoutingRelayInfo;
+				next.customeropSenderRoutingRelayInfo = temp_customeropSenderRoutingRelayInfo;
+				next.customeropBackupSenderRoutingRelayInfo = temp_customeropBackupSenderRoutingRelayInfo;
+				next.customeropRoutingRelayInfo = temp_customeropRoutingRelayInfo;
+				next.customeropBackupRoutingRelayInfo = temp_customeropBackupRoutingRelayInfo;
+				next.customerNumberRoutingRelayInfo = temp_customerNumberRoutingRelayInfo;
+				this.routingTables = next;
 				
 			}
 			String moduleName = System.getProperty("module");
@@ -2150,7 +2019,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			
 		} catch (Exception ex) {
 			log.warn("reload routing info error. action=" + action + ", path=" + path, ex);
-			ConfigFilePublisher.getInstance().publishFailure("routing");
+			ConfigFilePublisher.getInstance().publishFailure("routing", String.valueOf(ex));
 			return 1;
 		}
 		ConfigFilePublisher.getInstance().publishBlocks("routing", path, routingInfoMap, "ok", null, null);
@@ -2160,6 +2029,7 @@ public class A2PCustomerManager implements LifecycleListener {
 
 	
 	public void loadRoutingInfoToRedis(String core){
+		final RoutingTables rt = routingTables;
 		Set<String> keys = GmmsUtility.getInstance().getRedisClient().smembers("routingkey");
 		if (keys != null && !keys.isEmpty()) {
 			for (String key : keys) {
@@ -2168,24 +2038,24 @@ public class A2PCustomerManager implements LifecycleListener {
 				}				
 			}			
 		}		
-		if(customerRoutingRelayInfo!= null && !customerRoutingRelayInfo.isEmpty()){
-			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo"+core+".RoutingRelayInfo", customerRoutingRelayInfo);
+		if(rt.customerRoutingRelayInfo!= null && !rt.customerRoutingRelayInfo.isEmpty()){
+			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo"+core+".RoutingRelayInfo", rt.customerRoutingRelayInfo);
 		}
-		if(customerBackupRoutingRelayInfo!= null && !customerBackupRoutingRelayInfo.isEmpty()){
-			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo"+core+".BackupRoutingRelayInfo", customerBackupRoutingRelayInfo);
-		}
-		
-		if(customerSenderRoutingRelayInfo!= null && !customerSenderRoutingRelayInfo.isEmpty()){
-			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo"+core+".SenderRoutingRelayInfo", customerSenderRoutingRelayInfo);
+		if(rt.customerBackupRoutingRelayInfo!= null && !rt.customerBackupRoutingRelayInfo.isEmpty()){
+			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo"+core+".BackupRoutingRelayInfo", rt.customerBackupRoutingRelayInfo);
 		}
 		
-		if(customerBackupSenderRoutingRelayInfo!= null && !customerBackupSenderRoutingRelayInfo.isEmpty()){
-			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo"+core+".BackupSenderRoutingRelayInfo", customerBackupSenderRoutingRelayInfo);
+		if(rt.customerSenderRoutingRelayInfo!= null && !rt.customerSenderRoutingRelayInfo.isEmpty()){
+			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo"+core+".SenderRoutingRelayInfo", rt.customerSenderRoutingRelayInfo);
 		}
 		
-		if(customerContentKeywordRoutingRelayInfo!= null && !customerContentKeywordRoutingRelayInfo.isEmpty()){
+		if(rt.customerBackupSenderRoutingRelayInfo!= null && !rt.customerBackupSenderRoutingRelayInfo.isEmpty()){
+			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo"+core+".BackupSenderRoutingRelayInfo", rt.customerBackupSenderRoutingRelayInfo);
+		}
+		
+		if(rt.customerContentKeywordRoutingRelayInfo!= null && !rt.customerContentKeywordRoutingRelayInfo.isEmpty()){
 			Map<String, Map<String, String>> redisMap  = new HashMap<String, Map<String,String>>();
-			for (Map.Entry<String,Map<String,Map<String,String>>> entry : customerContentKeywordRoutingRelayInfo.entrySet()) {
+			for (Map.Entry<String,Map<String,Map<String,String>>> entry : rt.customerContentKeywordRoutingRelayInfo.entrySet()) {
 				Map<String,Map<String,String>> prefixMap = entry.getValue();
 				String ossid = entry.getKey();
 				Map<String, String> prefixRedisMap = redisMap.get(ossid);
@@ -2207,9 +2077,9 @@ public class A2PCustomerManager implements LifecycleListener {
 			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo"+core+".ContentKeywordRoutingRelayInfo", redisMap);
 		}
 		
-		if(customerBackupContentKeywordRoutingRelayInfo!= null && !customerBackupContentKeywordRoutingRelayInfo.isEmpty()){
+		if(rt.customerBackupContentKeywordRoutingRelayInfo!= null && !rt.customerBackupContentKeywordRoutingRelayInfo.isEmpty()){
 			Map<String, Map<String, String>> redisMap  = new HashMap<String, Map<String,String>>();
-			for (Map.Entry<String,Map<String,Map<String,String>>> entry : customerBackupContentKeywordRoutingRelayInfo.entrySet()) {
+			for (Map.Entry<String,Map<String,Map<String,String>>> entry : rt.customerBackupContentKeywordRoutingRelayInfo.entrySet()) {
 				Map<String,Map<String,String>> prefixMap = entry.getValue();
 				String ossid = entry.getKey();
 				Map<String, String> prefixRedisMap = redisMap.get(ossid);
@@ -2231,34 +2101,34 @@ public class A2PCustomerManager implements LifecycleListener {
 			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo"+core+".BackupContentKeywordRoutingRelayInfo", redisMap);
 		}
 		
-		if(contentTemplateMap!= null && !contentTemplateMap.isEmpty()){
-			GmmsUtility.getInstance().getRedisClient().setContentTemplate("routingInfo"+core+".ContentReplaceTemplateInfo", contentTemplateMap);
+		if(rt.contentTemplateMap!= null && !rt.contentTemplateMap.isEmpty()){
+			GmmsUtility.getInstance().getRedisClient().setContentTemplate("routingInfo"+core+".ContentReplaceTemplateInfo", rt.contentTemplateMap);
 		}
 		
 		//2-time routing
 
-		if (customerRoutingRelayInfo2 != null && !customerRoutingRelayInfo2.isEmpty()) {
+		if (rt.customerRoutingRelayInfo2 != null && !rt.customerRoutingRelayInfo2.isEmpty()) {
 			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo" + core + ".SecRoutingRelayInfo",
-					customerRoutingRelayInfo2);
+					rt.customerRoutingRelayInfo2);
 		}
-		if (customerBackupRoutingRelayInfo2 != null && !customerBackupRoutingRelayInfo2.isEmpty()) {
+		if (rt.customerBackupRoutingRelayInfo2 != null && !rt.customerBackupRoutingRelayInfo2.isEmpty()) {
 			GmmsUtility.getInstance().getRedisClient().setRoutingInfo(
-					"routingInfo" + core + ".SecBackupRoutingRelayInfo", customerBackupRoutingRelayInfo2);
+					"routingInfo" + core + ".SecBackupRoutingRelayInfo", rt.customerBackupRoutingRelayInfo2);
 		}
 
-		if (customerSenderRoutingRelayInfo2 != null && !customerSenderRoutingRelayInfo2.isEmpty()) {
+		if (rt.customerSenderRoutingRelayInfo2 != null && !rt.customerSenderRoutingRelayInfo2.isEmpty()) {
 			GmmsUtility.getInstance().getRedisClient().setRoutingInfo(
-					"routingInfo" + core + ".SecSenderRoutingRelayInfo", customerSenderRoutingRelayInfo2);
+					"routingInfo" + core + ".SecSenderRoutingRelayInfo", rt.customerSenderRoutingRelayInfo2);
 		}
 
-		if (customerBackupSenderRoutingRelayInfo2 != null && !customerBackupSenderRoutingRelayInfo2.isEmpty()) {
+		if (rt.customerBackupSenderRoutingRelayInfo2 != null && !rt.customerBackupSenderRoutingRelayInfo2.isEmpty()) {
 			GmmsUtility.getInstance().getRedisClient().setRoutingInfo(
-					"routingInfo" + core + ".SecBackupSenderRoutingRelayInfo", customerBackupSenderRoutingRelayInfo2);
+					"routingInfo" + core + ".SecBackupSenderRoutingRelayInfo", rt.customerBackupSenderRoutingRelayInfo2);
 		}
 
-		if (customerContentKeywordRoutingRelayInfo2 != null && !customerContentKeywordRoutingRelayInfo2.isEmpty()) {
+		if (rt.customerContentKeywordRoutingRelayInfo2 != null && !rt.customerContentKeywordRoutingRelayInfo2.isEmpty()) {
 			Map<String, Map<String, String>> redisMap = new HashMap<String, Map<String, String>>();
-			for (Map.Entry<String, Map<String, Map<String, String>>> entry : customerContentKeywordRoutingRelayInfo2
+			for (Map.Entry<String, Map<String, Map<String, String>>> entry : rt.customerContentKeywordRoutingRelayInfo2
 					.entrySet()) {
 				Map<String, Map<String, String>> prefixMap = entry.getValue();
 				String ossid = entry.getKey();
@@ -2281,10 +2151,10 @@ public class A2PCustomerManager implements LifecycleListener {
 					.setRoutingInfo("routingInfo" + core + ".SecContentKeywordRoutingRelayInfo", redisMap);
 		}
 
-		if (customerBackupContentKeywordRoutingRelayInfo2 != null
-				&& !customerBackupContentKeywordRoutingRelayInfo2.isEmpty()) {
+		if (rt.customerBackupContentKeywordRoutingRelayInfo2 != null
+				&& !rt.customerBackupContentKeywordRoutingRelayInfo2.isEmpty()) {
 			Map<String, Map<String, String>> redisMap = new HashMap<String, Map<String, String>>();
-			for (Map.Entry<String, Map<String, Map<String, String>>> entry : customerBackupContentKeywordRoutingRelayInfo2
+			for (Map.Entry<String, Map<String, Map<String, String>>> entry : rt.customerBackupContentKeywordRoutingRelayInfo2
 					.entrySet()) {
 				Map<String, Map<String, String>> prefixMap = entry.getValue();
 				String ossid = entry.getKey();
@@ -2307,10 +2177,10 @@ public class A2PCustomerManager implements LifecycleListener {
 					.setRoutingInfo("routingInfo" + core + ".SecBackupContentKeywordRoutingRelayInfo", redisMap);
 		}
 		
-		if(customerNumberRoutingRelayInfo!= null && !customerNumberRoutingRelayInfo.isEmpty()){
+		if(rt.customerNumberRoutingRelayInfo!= null && !rt.customerNumberRoutingRelayInfo.isEmpty()){
 			//op routing
 			//<ossid, opid, <priority, rssids>> => <ossid, <opid_prority, rssids>>
-			Map<String, Map<Long, Map<Integer, String>>> oproutingmap  = customerNumberRoutingRelayInfo.rowMap();
+			Map<String, Map<Long, Map<Integer, String>>> oproutingmap  = rt.customerNumberRoutingRelayInfo.rowMap();
 			Map<String, Map<String, String>> opNewRouting = new HashMap<>();
 			for(Map.Entry<String, Map<Long, Map<Integer, String>>> oproutingentry : oproutingmap.entrySet()) {
 				String oproutingKey = oproutingentry.getKey();
@@ -2333,10 +2203,10 @@ public class A2PCustomerManager implements LifecycleListener {
 			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo"+core+".NumberRoutingRelayInfo", opNewRouting);
 		}
 		
-		if(customeropRoutingRelayInfo!= null && !customeropRoutingRelayInfo.isEmpty()){
+		if(rt.customeropRoutingRelayInfo!= null && !rt.customeropRoutingRelayInfo.isEmpty()){
 			//op routing
 			//<ossid, opid, <priority, rssids>> => <ossid, <opid_prority, rssids>>
-			Map<String, Map<Integer, Map<Integer, String>>> oproutingmap  = customeropRoutingRelayInfo.rowMap();
+			Map<String, Map<Integer, Map<Integer, String>>> oproutingmap  = rt.customeropRoutingRelayInfo.rowMap();
 			Map<String, Map<String, String>> opNewRouting = new HashMap<>();
 			for(Map.Entry<String, Map<Integer, Map<Integer, String>>> oproutingentry : oproutingmap.entrySet()) {
 				String oproutingKey = oproutingentry.getKey();
@@ -2358,10 +2228,10 @@ public class A2PCustomerManager implements LifecycleListener {
 			}
 			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo"+core+".OPRoutingRelayInfo", opNewRouting);
 		}
-		if(customeropBackupRoutingRelayInfo!= null && !customeropBackupRoutingRelayInfo.isEmpty()){
+		if(rt.customeropBackupRoutingRelayInfo!= null && !rt.customeropBackupRoutingRelayInfo.isEmpty()){
 			//op routing
 			//<ossid, opid, <priority, rssids>> => <ossid, <opid_prority, rssids>>
-			Map<String, Map<Integer, Map<Integer, String>>> oproutingmap  = customeropBackupRoutingRelayInfo.rowMap();
+			Map<String, Map<Integer, Map<Integer, String>>> oproutingmap  = rt.customeropBackupRoutingRelayInfo.rowMap();
 			Map<String, Map<String, String>> opNewRouting = new HashMap<>();
 			for(Map.Entry<String, Map<Integer, Map<Integer, String>>> oproutingentry : oproutingmap.entrySet()) {
 				String oproutingKey = oproutingentry.getKey();
@@ -2384,10 +2254,10 @@ public class A2PCustomerManager implements LifecycleListener {
 			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo"+core+".OPBackupRoutingRelayInfo", opNewRouting);
 		}
 		
-		if(customeropSenderRoutingRelayInfo!= null && !customeropSenderRoutingRelayInfo.isEmpty()){
+		if(rt.customeropSenderRoutingRelayInfo!= null && !rt.customeropSenderRoutingRelayInfo.isEmpty()){
 			//op sender routing
 			//<ossid, opid, <sender, priority, rssids>>=> <ossid, <opid_sender_prority, rssids>>
-			Map<String,Map<Integer,HashBasedTable<String,Integer,String>>> oproutingmap  = customeropSenderRoutingRelayInfo.rowMap();
+			Map<String,Map<Integer,HashBasedTable<String,Integer,String>>> oproutingmap  = rt.customeropSenderRoutingRelayInfo.rowMap();
 			Map<String, Map<String, String>> opNewRouting = new HashMap<>();
 			for(Map.Entry<String,Map<Integer,HashBasedTable<String,Integer,String>>> oproutingentry : oproutingmap.entrySet()) {
 				String oproutingKey = oproutingentry.getKey();
@@ -2412,10 +2282,10 @@ public class A2PCustomerManager implements LifecycleListener {
 			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo"+core+".OPSenderRoutingRelayInfo", opNewRouting);
 		}
 		
-		if(customeropBackupSenderRoutingRelayInfo!= null && !customeropBackupSenderRoutingRelayInfo.isEmpty()){
+		if(rt.customeropBackupSenderRoutingRelayInfo!= null && !rt.customeropBackupSenderRoutingRelayInfo.isEmpty()){
 			//op sender routing
 			//<ossid, opid, <sender, priority, rssids>>=> <ossid, <opid_sender_prority, rssids>>
-			Map<String,Map<Integer,HashBasedTable<String,Integer,String>>> oproutingmap  = customeropBackupSenderRoutingRelayInfo.rowMap();
+			Map<String,Map<Integer,HashBasedTable<String,Integer,String>>> oproutingmap  = rt.customeropBackupSenderRoutingRelayInfo.rowMap();
 			Map<String, Map<String, String>> opNewRouting = new HashMap<>();
 			for(Map.Entry<String,Map<Integer,HashBasedTable<String,Integer,String>>> oproutingentry : oproutingmap.entrySet()) {
 				String oproutingKey = oproutingentry.getKey();
@@ -2440,10 +2310,10 @@ public class A2PCustomerManager implements LifecycleListener {
 			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo"+core+".OPBackupSenderRoutingRelayInfo", opNewRouting);
 		}
 		
-		if(customeropContentKeywordRoutingRelayInfo!= null && !customeropContentKeywordRoutingRelayInfo.isEmpty()){
+		if(rt.customeropContentKeywordRoutingRelayInfo!= null && !rt.customeropContentKeywordRoutingRelayInfo.isEmpty()){
 			//op content routing
 			//<ossid, opid, <keyword, priority, rssids>>=> <ossid, <opid_keyword_prority, rssids>>
-			Map<String,Map<Integer,HashBasedTable<String,Integer,String>>> oproutingmap  = customeropContentKeywordRoutingRelayInfo.rowMap();
+			Map<String,Map<Integer,HashBasedTable<String,Integer,String>>> oproutingmap  = rt.customeropContentKeywordRoutingRelayInfo.rowMap();
 			Map<String, Map<String, String>> opNewRouting = new HashMap<>();
 			for(Map.Entry<String,Map<Integer,HashBasedTable<String,Integer,String>>> oproutingentry : oproutingmap.entrySet()) {
 				String oproutingKey = oproutingentry.getKey();
@@ -2467,10 +2337,10 @@ public class A2PCustomerManager implements LifecycleListener {
 			GmmsUtility.getInstance().getRedisClient().setRoutingInfo("routingInfo"+core+".OPContentKeywordRoutingRelayInfo", opNewRouting);
 		}
 		
-		if(customeropBackupContentKeywordRoutingRelayInfo!= null && !customeropBackupContentKeywordRoutingRelayInfo.isEmpty()){
+		if(rt.customeropBackupContentKeywordRoutingRelayInfo!= null && !rt.customeropBackupContentKeywordRoutingRelayInfo.isEmpty()){
 			//op content routing
 			//<ossid, opid, <keyword, priority, rssids>>=> <ossid, <opid_keyword_prority, rssids>>
-			Map<String,Map<Integer,HashBasedTable<String,Integer,String>>> oproutingmap  = customeropBackupContentKeywordRoutingRelayInfo.rowMap();
+			Map<String,Map<Integer,HashBasedTable<String,Integer,String>>> oproutingmap  = rt.customeropBackupContentKeywordRoutingRelayInfo.rowMap();
 			Map<String, Map<String, String>> opNewRouting = new HashMap<>();
 			for(Map.Entry<String,Map<Integer,HashBasedTable<String,Integer,String>>> oproutingentry : oproutingmap.entrySet()) {
 				String oproutingKey = oproutingentry.getKey();
@@ -2697,6 +2567,102 @@ public class A2PCustomerManager implements LifecycleListener {
 	 *
 	 * @return
 	 */
+	/** size and modification time of a file or of every file under a directory; null if not readable */
+	private static String fileState(File file) {
+		if (file == null || !file.exists()) {
+			return null;
+		}
+		if (file.isFile()) {
+			return file.getName() + ":" + file.length() + ":" + file.lastModified();
+		}
+		File[] children = file.listFiles();
+		if (children == null) {
+			return null;
+		}
+		Arrays.sort(children);
+		StringBuilder sb = new StringBuilder();
+		for (File child : children) {
+			sb.append(fileState(child)).append(';');
+		}
+		return sb.toString();
+	}
+
+	private static long newestModified(File file) {
+		long newest = file.lastModified();
+		File[] children = file.isDirectory() ? file.listFiles() : null;
+		if (children != null) {
+			for (File child : children) {
+				newest = Math.max(newest, newestModified(child));
+			}
+		}
+		return newest;
+	}
+
+	/**
+	 * The state of a file that stopped changing (the same for ConfigFileStableCheckMs), so a reload does
+	 * not read a file still being written; null if it keeps changing or cannot be read.
+	 */
+	private String stableFileState(File file) {
+		long waitMs = 500L;
+		try {
+			waitMs = Long.parseLong(GmmsUtility.getInstance().getCommonProperty("ConfigFileStableCheckMs", "500").trim());
+		} catch (Exception e) {
+			log.warn("Invalid ConfigFileStableCheckMs, using {}", waitMs);
+		}
+		String state = fileState(file);
+		// last written long enough ago: nothing is writing it, no need to wait
+		if (waitMs <= 0 || (state != null && System.currentTimeMillis() - newestModified(file) >= waitMs)) {
+			return state;
+		}
+		for (int i = 0; i < CONFIG_FILE_STABLE_ATTEMPTS && state != null; i++) {
+			try {
+				Thread.sleep(waitMs);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				return null;
+			}
+			String now = fileState(file);
+			if (state.equals(now)) {
+				return state;
+			}
+			state = now;
+		}
+		return null;
+	}
+
+	/**
+	 * A half-written or wrong file looks like many customers removed: why it must be rejected, or null.
+	 * Limit ReloadCustomerMaxRemovePercent (default 20); 100 allows anything, even an empty file.
+	 */
+	private String tooManyRemoved(CustomerSnapshot old, Map<String, A2PCustomerConfig> blocks) {
+		int total = old.confBlockMap.size();
+		if (total == 0) {
+			return null;
+		}
+		int maxPercent = 20;
+		try {
+			maxPercent = Integer.parseInt(GmmsUtility.getInstance().getCommonProperty("ReloadCustomerMaxRemovePercent", "20").trim());
+		} catch (Exception e) {
+			log.warn("Invalid ReloadCustomerMaxRemovePercent, using {}", maxPercent);
+		}
+		if (maxPercent >= 100) {
+			return null;
+		}
+		int removed = 0;
+		for (String name : old.confBlockMap.keySet()) {
+			if (!blocks.containsKey(name)) {
+				removed++;
+			}
+		}
+		if (blocks.isEmpty()) {
+			return "no customer in the file";
+		}
+		if (removed * 100L > (long) maxPercent * total) {
+			return removed + " of " + total + " customers would be removed, limit " + maxPercent + "%";
+		}
+		return null;
+	}
+
 	/**
 	 * Customers as the snapshot runs them (a customer that failed to load keeps its old block) to
 	 * Redis for the portal, with the ssid -> shortName index.
@@ -2720,11 +2686,24 @@ public class A2PCustomerManager implements LifecycleListener {
 
 	private int loadCustomers() {
 		File conf = new File(confFile);
+		String routingPath = GmmsUtility.getInstance().getRoutingFilePath();
+		String routingState = routingPath == null ? null : fileState(new File(routingPath));
+		String confState = stableFileState(conf);
+		if (confState == null) {
+			log.error("cm.cfg is still being written, reload rejected, every customer keeps its config. Send the reload again when the file is complete");
+			ConfigFilePublisher.getInstance().publishFailure("cm", "file still being written");
+			return 1;
+		}
 		String md5Sum = this.getFileCheckSum(conf);
 		CustomerSnapshot old = cs();
-		if (md5Sum == null || (md5Sum.equals(old.confFileVersion) && old.complete)) {
-			log.warn("No need to load cm.cfg or md5Sum error. confFileVersion={}, md5Sum={}",
-					new Object[] { old.confFileVersion, md5Sum });
+		if (md5Sum == null) {
+			log.error("cm.cfg is empty or cannot be read, reload rejected, every customer keeps its config");
+			ConfigFilePublisher.getInstance().publishFailure("cm", "file empty or unreadable");
+			return 1;
+		}
+		if (md5Sum.equals(old.confFileVersion) && old.complete) {
+			log.warn("No need to load cm.cfg. confFileVersion={}, md5Sum={}", new Object[] { old.confFileVersion, md5Sum });
+			ConfigFilePublisher.getInstance().publishResultOk("cm");    // a rejected reload is over: the file is what runs
 			return 1;
 		}
 		log.info("ConfBlock change, confFileVersion={}, md5Sum={}", new Object[] { old.confFileVersion, md5Sum });
@@ -2734,15 +2713,30 @@ public class A2PCustomerManager implements LifecycleListener {
 		} catch (Exception e) {
 			// nothing published: every customer keeps its current config
 			log.error("parse cm.cfg failed, keep the current customers", e);
-			ConfigFilePublisher.getInstance().publishFailure("cm");
+			ConfigFilePublisher.getInstance().publishFailure("cm", "parse failed");
+			return 1;
+		}
+		if (!confState.equals(fileState(conf))) {
+			log.error("cm.cfg changed while it was being read, reload rejected, every customer keeps its config");
+			ConfigFilePublisher.getInstance().publishFailure("cm", "file changed while reading");
+			return 1;
+		}
+		String tooMany = tooManyRemoved(old, blocks);
+		if (tooMany != null) {
+			log.error("cm.cfg reload rejected, every customer keeps its config: {}. If this is intended, raise ReloadCustomerMaxRemovePercent and reload", tooMany);
+			ConfigFilePublisher.getInstance().publishFailure("cm", tooMany);
 			return 1;
 		}
 		// A2P will check each customer info is right by traversing
 		// routingInfoMap and phonePrefixMap
-		try {
-			this.initRoutingInfoBlocks();
-		} catch (CustomerConfigurationException e1) {
-			log.error("init RoutinfInfoBlocks error in loadCustomers() function.", e1);
+		if (routingState != null && routingState.equals(fileState(new File(routingPath)))) {
+			try {
+				this.initRoutingInfoBlocks();
+			} catch (CustomerConfigurationException e1) {
+				log.error("init RoutinfInfoBlocks error in loadCustomers() function.", e1);
+			}
+		} else {
+			log.warn("routing files are being written, not re-read by this cm.cfg reload");
 		}
 		// senderReplacement.cfg is not re-read here: RELOAD_PHONE_PREFIX finds its changes by comparing
 		// with phonePrefixMap, so replacing the map here would make that command see nothing to do
@@ -4671,12 +4665,14 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 		
 	public int getCustomerRoutingRelay(int ossid, GmmsMessage msg) {
-		return doGetCustomerRoutingRelay(A2P_ROUTING_RELAY, ossid, msg,customerPerfixInfo,customerRoutingRelayInfo);						
+		final RoutingTables rt = routingTables;
+		return doGetCustomerRoutingRelay(A2P_ROUTING_RELAY, ossid, msg,rt.customerPerfixInfo,rt.customerRoutingRelayInfo);						
 	}
 	
 	public int getCustomerBackupRoutingRelay(String routingSsids, int ossid, GmmsMessage msg) {
+		final RoutingTables rt = routingTables;
 		int result = 0;
-		if (customerBackupPerfixInfo.isEmpty()) {
+		if (rt.customerBackupPerfixInfo.isEmpty()) {
 			return result;
 		}
 		for (int i = 0; i < 10; i++) {
@@ -4684,7 +4680,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			if (i>0) {
 				key= key+i;
 			}
-			result = doGetCustomerRoutingRelay(key, ossid, msg,customerBackupPerfixInfo,customerBackupRoutingRelayInfo);								
+			result = doGetCustomerRoutingRelay(key, ossid, msg,rt.customerBackupPerfixInfo,rt.customerBackupRoutingRelayInfo);								
 			if ((routingSsids == null || (routingSsids!=null && !routingSsids.contains(","+result+","))) && result >0) {
 				return result;
 			}
@@ -4693,12 +4689,14 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	public int getSecCustomerRoutingRelay(int ossid, GmmsMessage msg) {
-		return doGetCustomerRoutingRelay(A2P_SEC_ROUTING_RELAY, ossid, msg,customerPerfixInfo2,customerRoutingRelayInfo2);						
+		final RoutingTables rt = routingTables;
+		return doGetCustomerRoutingRelay(A2P_SEC_ROUTING_RELAY, ossid, msg,rt.customerPerfixInfo2,rt.customerRoutingRelayInfo2);						
 	}
 	
 	public int getSecCustomerBackupRoutingRelay(String routingSsids, int ossid, GmmsMessage msg) {
+		final RoutingTables rt = routingTables;
 		int result = 0;
-		if (customerBackupPerfixInfo2.isEmpty()) {
+		if (rt.customerBackupPerfixInfo2.isEmpty()) {
 			return result;
 		}
 		for (int i = 0; i < 10; i++) {
@@ -4706,7 +4704,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			if (i>0) {
 				key= key+i;
 			}
-			result = doGetCustomerRoutingRelay(key, ossid, msg,customerBackupPerfixInfo2,customerBackupRoutingRelayInfo2);								
+			result = doGetCustomerRoutingRelay(key, ossid, msg,rt.customerBackupPerfixInfo2,rt.customerBackupRoutingRelayInfo2);								
 			if ((routingSsids == null || (routingSsids!=null && !routingSsids.contains(","+result+","))) && result >0) {
 				return result;
 			}
@@ -5138,12 +5136,14 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	public int getCustomerSenderRoutingRelay(int ossid, GmmsMessage msg) {
-		return doGetCustomerSenderRoutingRelay(A2P_SENDER_ROUTING_RELAY, ossid, msg,customerSenderPerfixInfo,customerSenderRoutingRelayInfo);						
+		final RoutingTables rt = routingTables;
+		return doGetCustomerSenderRoutingRelay(A2P_SENDER_ROUTING_RELAY, ossid, msg,rt.customerSenderPerfixInfo,rt.customerSenderRoutingRelayInfo);						
 	}
 	
 	public int getCustomerBackupSenderRoutingRelay(String routingSsids, int ossid, GmmsMessage msg) {
+		final RoutingTables rt = routingTables;
 		int result = 0;
-		if (customerBackupSenderPerfixInfo.isEmpty()) {
+		if (rt.customerBackupSenderPerfixInfo.isEmpty()) {
 			return result;
 		}
 		for (int i = 0; i < 10; i++) {
@@ -5151,7 +5151,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			if (i>0) {
 				key= key+i;
 			}
-			result = doGetCustomerSenderRoutingRelay(key, ossid, msg,customerBackupSenderPerfixInfo,customerBackupSenderRoutingRelayInfo);						
+			result = doGetCustomerSenderRoutingRelay(key, ossid, msg,rt.customerBackupSenderPerfixInfo,rt.customerBackupSenderRoutingRelayInfo);						
 			if ((routingSsids == null || (routingSsids!=null && !routingSsids.contains(","+result+","))) && result >0) {
 				return result;
 			}
@@ -5160,12 +5160,14 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	public int getSecCustomerSenderRoutingRelay(int ossid, GmmsMessage msg) {
-		return doGetCustomerSenderRoutingRelay(A2P_SEC_SENDER_ROUTING_RELAY, ossid, msg,customerSenderPerfixInfo2,customerSenderRoutingRelayInfo2);						
+		final RoutingTables rt = routingTables;
+		return doGetCustomerSenderRoutingRelay(A2P_SEC_SENDER_ROUTING_RELAY, ossid, msg,rt.customerSenderPerfixInfo2,rt.customerSenderRoutingRelayInfo2);						
 	}
 	
 	public int getSecCustomerBackupSenderRoutingRelay(String routingSsids, int ossid, GmmsMessage msg) {
+		final RoutingTables rt = routingTables;
 		int result = 0;
-		if (customerBackupSenderPerfixInfo2.isEmpty()) {
+		if (rt.customerBackupSenderPerfixInfo2.isEmpty()) {
 			return result;
 		}
 		for (int i = 0; i < 10; i++) {
@@ -5173,7 +5175,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			if (i>0) {
 				key= key+i;
 			}
-			result = doGetCustomerSenderRoutingRelay(key, ossid, msg,customerBackupSenderPerfixInfo2,customerBackupSenderRoutingRelayInfo2);						
+			result = doGetCustomerSenderRoutingRelay(key, ossid, msg,rt.customerBackupSenderPerfixInfo2,rt.customerBackupSenderRoutingRelayInfo2);						
 			if ((routingSsids == null || (routingSsids!=null && !routingSsids.contains(","+result+","))) && result >0) {
 				return result;
 			}
@@ -5220,12 +5222,14 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	public int getCustomerContentKeywordRoutingRelay(int ossid, GmmsMessage msg) {
-		return doGetCustomerContentKeywordRoutingRelay(A2P_CONTENT_KEYWORD_ROUTING_RELAY, ossid, msg,customerContentKeywordPerfixInfo,customerContentKeywordRoutingRelayInfo);						
+		final RoutingTables rt = routingTables;
+		return doGetCustomerContentKeywordRoutingRelay(A2P_CONTENT_KEYWORD_ROUTING_RELAY, ossid, msg,rt.customerContentKeywordPerfixInfo,rt.customerContentKeywordRoutingRelayInfo);						
 	}
 	
 	public int getCustomerBackupContentKeywordRoutingRelay(String routingSsids, int ossid, GmmsMessage msg) {
+		final RoutingTables rt = routingTables;
 		int result = 0;
-		if (customerBackupContentKeywordPerfixInfo.isEmpty()) {
+		if (rt.customerBackupContentKeywordPerfixInfo.isEmpty()) {
 			return result;
 		}
 		for (int i = 0; i < 10; i++) {
@@ -5233,7 +5237,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			if (i>0) {
 				key= key+i;
 			}
-			result = doGetCustomerContentKeywordRoutingRelay(key, ossid, msg,customerBackupContentKeywordPerfixInfo,customerBackupContentKeywordRoutingRelayInfo);							
+			result = doGetCustomerContentKeywordRoutingRelay(key, ossid, msg,rt.customerBackupContentKeywordPerfixInfo,rt.customerBackupContentKeywordRoutingRelayInfo);							
 			if ((routingSsids == null || (routingSsids!=null && !routingSsids.contains(","+result+","))) && result >0) {
 				return result;
 			}
@@ -5242,12 +5246,14 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	public int getSecCustomerContentKeywordRoutingRelay(int ossid, GmmsMessage msg) {
-		return doGetCustomerContentKeywordRoutingRelay(A2P_SEC_CONTENT_KEYWORD_ROUTING_RELAY, ossid, msg,customerContentKeywordPerfixInfo2,customerContentKeywordRoutingRelayInfo2);						
+		final RoutingTables rt = routingTables;
+		return doGetCustomerContentKeywordRoutingRelay(A2P_SEC_CONTENT_KEYWORD_ROUTING_RELAY, ossid, msg,rt.customerContentKeywordPerfixInfo2,rt.customerContentKeywordRoutingRelayInfo2);						
 	}
 	
 	public int getSecCustomerBackupContentKeywordRoutingRelay(String routingSsids, int ossid, GmmsMessage msg) {
+		final RoutingTables rt = routingTables;
 		int result = 0;
-		if (customerBackupContentKeywordPerfixInfo2.isEmpty()) {
+		if (rt.customerBackupContentKeywordPerfixInfo2.isEmpty()) {
 			return result;
 		}
 		for (int i = 0; i < 10; i++) {
@@ -5255,7 +5261,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			if (i>0) {
 				key= key+i;
 			}
-			result = doGetCustomerContentKeywordRoutingRelay(key, ossid, msg,customerBackupContentKeywordPerfixInfo2,customerBackupContentKeywordRoutingRelayInfo2);							
+			result = doGetCustomerContentKeywordRoutingRelay(key, ossid, msg,rt.customerBackupContentKeywordPerfixInfo2,rt.customerBackupContentKeywordRoutingRelayInfo2);							
 			if ((routingSsids == null || (routingSsids!=null && !routingSsids.contains(","+result+","))) && result >0) {
 				return result;
 			}
@@ -5491,10 +5497,11 @@ public class A2PCustomerManager implements LifecycleListener {
 	
 	
 	private int getDefaultRoutingRelay(int ossid, GmmsMessage msg) {
+		final RoutingTables rt = routingTables;
 		int rssid= 0;
 		A2PCustomerInfo customerInfo = this.getCustomerBySSID(ossid);
-		List<Pattern> prefixList = customerDefaultPerfixInfo.get(customerInfo.getCustomerServiceType()+Constant.DEFAULT_ROUTING_SUFFER);
-		Map<String, String> routing = defaultRoutingRelayInfo.get(customerInfo.getCustomerServiceType()+Constant.DEFAULT_ROUTING_SUFFER);
+		List<Pattern> prefixList = rt.customerDefaultPerfixInfo.get(customerInfo.getCustomerServiceType()+Constant.DEFAULT_ROUTING_SUFFER);
+		Map<String, String> routing = rt.defaultRoutingRelayInfo.get(customerInfo.getCustomerServiceType()+Constant.DEFAULT_ROUTING_SUFFER);
 		if (prefixList == null || prefixList.isEmpty()) {			
 			log.trace(msg,"can't found routing config, please config default routing config first.");
 			if (routing != null && !routing.isEmpty()) {
@@ -5547,10 +5554,11 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	private int getBackupDefaultRoutingRelay(int ossid, GmmsMessage msg) {
+		final RoutingTables rt = routingTables;
 		int rssid= 0;
 		A2PCustomerInfo customerInfo = this.getCustomerBySSID(ossid);
-		List<Pattern> prefixList = customerDefaultPerfixInfo.get(customerInfo.getCustomerServiceType()+Constant.DEFAULT_ROUTING_SUFFER);;
-		Map<String, String> routing = defaultBackupRoutingRelayInfo.get(customerInfo.getCustomerServiceType()+Constant.DEFAULT_ROUTING_SUFFER);;
+		List<Pattern> prefixList = rt.customerDefaultPerfixInfo.get(customerInfo.getCustomerServiceType()+Constant.DEFAULT_ROUTING_SUFFER);;
+		Map<String, String> routing = rt.defaultBackupRoutingRelayInfo.get(customerInfo.getCustomerServiceType()+Constant.DEFAULT_ROUTING_SUFFER);;
 		if (prefixList == null || prefixList.isEmpty()) {
 			log.error(msg,"can't found routing config, please config default routing config first.");
 			if (routing != null && !routing.isEmpty()) {
@@ -5604,9 +5612,10 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	public int getBackupCustomerRoutingRelay(int ossid, GmmsMessage msg) {
+		final RoutingTables rt = routingTables;
 		int rssid = 0;
-		List<Pattern> prefixList = customerBackupPerfixInfo.get(ossid);
-		Map<String, String> routing = customerBackupRoutingRelayInfo.get(ossid);
+		List<Pattern> prefixList = rt.customerBackupPerfixInfo.get(ossid);
+		Map<String, String> routing = rt.customerBackupRoutingRelayInfo.get(ossid);
 		if (prefixList == null || prefixList.isEmpty()) {
 			return this.getBackupDefaultRoutingRelay(ossid, msg);			
 		}else {
@@ -6042,12 +6051,13 @@ public class A2PCustomerManager implements LifecycleListener {
 
 	@SuppressWarnings("unchecked")
 	private void initRoutingRelay(A2PCustomerConfig cfg) throws Exception {
+		final RoutingTables rt = routingTables;
 		try {
 			doLoadRoutingRelay(cfg, A2P_ROUTING_RELAY,
-					customerRoutingRelayInfo, 
-					customerPerfixInfo, defaultRoutingRelayInfo,
-					customerDefaultPerfixInfo,
-					contentTemplateMap);
+					rt.customerRoutingRelayInfo, 
+					rt.customerPerfixInfo, rt.defaultRoutingRelayInfo,
+					rt.customerDefaultPerfixInfo,
+					rt.contentTemplateMap);
 		} catch (Exception e) {
 			log.error("init routing relay error", e);
 		}
@@ -6059,10 +6069,10 @@ public class A2PCustomerManager implements LifecycleListener {
 			}
 			try {
 				doLoadRoutingRelay(cfg, key,
-						customerBackupRoutingRelayInfo, 
-						customerBackupPerfixInfo, defaultBackupRoutingRelayInfo,
-						customerBackupDefaultPerfixInfo,
-						contentTemplateMap);					
+						rt.customerBackupRoutingRelayInfo, 
+						rt.customerBackupPerfixInfo, rt.defaultBackupRoutingRelayInfo,
+						rt.customerBackupDefaultPerfixInfo,
+						rt.contentTemplateMap);					
 			} catch (Exception e) {
 				log.error("init backup routing relay error", e);
 			}
@@ -6070,9 +6080,10 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	private void initSenderRoutingRelay(A2PCustomerConfig cfg) throws Exception {
+		final RoutingTables rt = routingTables;
 		try {
-			doLoadSenderRoutingRelay(cfg, A2P_SENDER_ROUTING_RELAY, customerSenderRoutingRelayInfo, 
-					customerSenderPerfixInfo, contentTemplateMap);
+			doLoadSenderRoutingRelay(cfg, A2P_SENDER_ROUTING_RELAY, rt.customerSenderRoutingRelayInfo, 
+					rt.customerSenderPerfixInfo, rt.contentTemplateMap);
 		} catch (Exception e) {
 			log.error("init sender routing relay error", e);
 		}
@@ -6082,8 +6093,8 @@ public class A2PCustomerManager implements LifecycleListener {
 				key= key+i;
 			}
 			try {							
-				doLoadSenderRoutingRelay(cfg, key, customerBackupSenderRoutingRelayInfo, 
-						customerBackupSenderPerfixInfo, contentTemplateMap);
+				doLoadSenderRoutingRelay(cfg, key, rt.customerBackupSenderRoutingRelayInfo, 
+						rt.customerBackupSenderPerfixInfo, rt.contentTemplateMap);
 			} catch (Exception e) {
 				log.error("init backup sender routing relay error", e);
 			}
@@ -6092,9 +6103,10 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	private void initContentKeywordRoutingRelay(A2PCustomerConfig cfg) throws Exception {
+		final RoutingTables rt = routingTables;
 		try {
-			doLoadCustomerContentKeywordRoutingRelay(cfg, A2P_CONTENT_KEYWORD_ROUTING_RELAY, contentTemplateMap,
-					customerContentKeywordRoutingRelayInfo,customerContentKeywordPerfixInfo);
+			doLoadCustomerContentKeywordRoutingRelay(cfg, A2P_CONTENT_KEYWORD_ROUTING_RELAY, rt.contentTemplateMap,
+					rt.customerContentKeywordRoutingRelayInfo,rt.customerContentKeywordPerfixInfo);
 		} catch (Exception e) {
 			log.error("init content routing relay error", e);
 		}
@@ -6105,8 +6117,8 @@ public class A2PCustomerManager implements LifecycleListener {
 				key= key+i;
 			}
 			try {
-				doLoadCustomerContentKeywordRoutingRelay(cfg, key, contentTemplateMap,
-						customerBackupContentKeywordRoutingRelayInfo,customerBackupContentKeywordPerfixInfo);		
+				doLoadCustomerContentKeywordRoutingRelay(cfg, key, rt.contentTemplateMap,
+						rt.customerBackupContentKeywordRoutingRelayInfo,rt.customerBackupContentKeywordPerfixInfo);		
 			} catch (Exception e) {
 				log.error("init backup content routing relay error", e);
 			}
@@ -6115,12 +6127,13 @@ public class A2PCustomerManager implements LifecycleListener {
 
 	@SuppressWarnings("unchecked")
 	private void initSecRoutingRelay(A2PCustomerConfig cfg) throws Exception {
+		final RoutingTables rt = routingTables;
 		try {
 			doLoadRoutingRelay(cfg, A2P_SEC_ROUTING_RELAY,
-					customerRoutingRelayInfo2, 
-					customerPerfixInfo2, defaultRoutingRelayInfo,
-					customerDefaultPerfixInfo,
-					contentTemplateMap);
+					rt.customerRoutingRelayInfo2, 
+					rt.customerPerfixInfo2, rt.defaultRoutingRelayInfo,
+					rt.customerDefaultPerfixInfo,
+					rt.contentTemplateMap);
 		} catch (Exception e) {
 			log.error("init 2-time routing relay error", e);
 		}
@@ -6132,10 +6145,10 @@ public class A2PCustomerManager implements LifecycleListener {
 			}
 			try {
 				doLoadRoutingRelay(cfg, key,
-						customerBackupRoutingRelayInfo2, 
-						customerBackupPerfixInfo2, defaultBackupRoutingRelayInfo,
-						customerBackupDefaultPerfixInfo,
-						contentTemplateMap);					
+						rt.customerBackupRoutingRelayInfo2, 
+						rt.customerBackupPerfixInfo2, rt.defaultBackupRoutingRelayInfo,
+						rt.customerBackupDefaultPerfixInfo,
+						rt.contentTemplateMap);					
 			} catch (Exception e) {
 				log.error("init 2-time backup routing relay error", e);
 			}
@@ -6143,9 +6156,10 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	private void initSecSenderRoutingRelay(A2PCustomerConfig cfg) throws Exception {
+		final RoutingTables rt = routingTables;
 		try {
-			doLoadSenderRoutingRelay(cfg, A2P_SEC_SENDER_ROUTING_RELAY, customerSenderRoutingRelayInfo2, 
-					customerSenderPerfixInfo2, contentTemplateMap);
+			doLoadSenderRoutingRelay(cfg, A2P_SEC_SENDER_ROUTING_RELAY, rt.customerSenderRoutingRelayInfo2, 
+					rt.customerSenderPerfixInfo2, rt.contentTemplateMap);
 		} catch (Exception e) {
 			log.error("init 2-time sender routing relay error", e);
 		}
@@ -6155,8 +6169,8 @@ public class A2PCustomerManager implements LifecycleListener {
 				key= key+i;
 			}
 			try {							
-				doLoadSenderRoutingRelay(cfg, key, customerBackupSenderRoutingRelayInfo2, 
-						customerBackupSenderPerfixInfo2, contentTemplateMap);
+				doLoadSenderRoutingRelay(cfg, key, rt.customerBackupSenderRoutingRelayInfo2, 
+						rt.customerBackupSenderPerfixInfo2, rt.contentTemplateMap);
 			} catch (Exception e) {
 				log.error("init 2-time backup sender routing relay error", e);
 			}
@@ -6165,9 +6179,10 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	private void initSecContentKeywordRoutingRelay(A2PCustomerConfig cfg) throws Exception {
+		final RoutingTables rt = routingTables;
 		try {
-			doLoadCustomerContentKeywordRoutingRelay(cfg, A2P_SEC_CONTENT_KEYWORD_ROUTING_RELAY, contentTemplateMap,
-					customerContentKeywordRoutingRelayInfo2,customerContentKeywordPerfixInfo2);
+			doLoadCustomerContentKeywordRoutingRelay(cfg, A2P_SEC_CONTENT_KEYWORD_ROUTING_RELAY, rt.contentTemplateMap,
+					rt.customerContentKeywordRoutingRelayInfo2,rt.customerContentKeywordPerfixInfo2);
 		} catch (Exception e) {
 			log.error("init 2-time content routing relay error", e);
 		}
@@ -6178,8 +6193,8 @@ public class A2PCustomerManager implements LifecycleListener {
 				key= key+i;
 			}
 			try {
-				doLoadCustomerContentKeywordRoutingRelay(cfg, key, contentTemplateMap,
-						customerBackupContentKeywordRoutingRelayInfo2,customerBackupContentKeywordPerfixInfo2);		
+				doLoadCustomerContentKeywordRoutingRelay(cfg, key, rt.contentTemplateMap,
+						rt.customerBackupContentKeywordRoutingRelayInfo2,rt.customerBackupContentKeywordPerfixInfo2);		
 			} catch (Exception e) {
 				log.error("init 2-time backup content routing relay error", e);
 			}
@@ -6190,7 +6205,7 @@ public class A2PCustomerManager implements LifecycleListener {
 		private void initNumberRoutingRelay(A2PCustomerConfig cfg) throws Exception {
 			try {
 				doLoadNumberRoutingRelay(cfg, A2P_NUMBER_ROUTING_RELAY,
-						customerNumberRoutingRelayInfo);
+						routingTables.customerNumberRoutingRelayInfo);
 			} catch (Exception e) {
 				log.error("reload number routing error", e);
 			}
@@ -6199,11 +6214,12 @@ public class A2PCustomerManager implements LifecycleListener {
 	
 	//init op routing
 	private void initOPRoutingRelay(A2PCustomerConfig cfg) throws Exception {
+		final RoutingTables rt = routingTables;
 		
 		
 		try {
 			doLoadOPRoutingRelay(cfg, A2P_OP_ROUTING_RELAY,
-					customeropRoutingRelayInfo);
+					rt.customeropRoutingRelayInfo);
 		} catch (Exception e) {
 			log.error("reload operator routing error", e);
 		}
@@ -6215,7 +6231,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			}
 			try {
 				doLoadOPRoutingRelay(cfg, key,
-						customeropBackupRoutingRelayInfo);
+						rt.customeropBackupRoutingRelayInfo);
 			} catch (Exception e) {
 				log.error("reload operator backup routing error", e);
 			}
@@ -6223,9 +6239,10 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	private void initOPSenderRoutingRelay(A2PCustomerConfig cfg) throws Exception {
+		final RoutingTables rt = routingTables;
 		try {
 			doLoadOPSenderRoutingRelay(cfg, A2P_OP_SENDER_ROUTING_RELAY,
-					customeropSenderRoutingRelayInfo);
+					rt.customeropSenderRoutingRelayInfo);
 		} catch (Exception e) {
 			log.error("reload operator sender routing error", e);
 		}
@@ -6237,16 +6254,17 @@ public class A2PCustomerManager implements LifecycleListener {
 			}
 			try {
 				doLoadOPSenderRoutingRelay(cfg, key,
-						customeropBackupSenderRoutingRelayInfo);
+						rt.customeropBackupSenderRoutingRelayInfo);
 			} catch (Exception e) {
 				log.error("reload operator backupsender routing error", e);
 			}
 		}					
 	}
 	private void initOPContentRoutingRelay(A2PCustomerConfig cfg) throws Exception {
+		final RoutingTables rt = routingTables;
 		try {
 			doLoadCustomerOPContentKeywordRoutingRelay(cfg, A2P_OP_CONTENT_KEYWORD_ROUTING_RELAY,
-					customeropContentKeywordRoutingRelayInfo);
+					rt.customeropContentKeywordRoutingRelayInfo);
 		} catch (Exception e) {
 			log.error("reload operator contentkeyword routing error", e);
 		}
@@ -6258,7 +6276,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			}
 			try {
 				doLoadCustomerOPContentKeywordRoutingRelay(cfg, key,
-						customeropBackupContentKeywordRoutingRelayInfo);
+						rt.customeropBackupContentKeywordRoutingRelayInfo);
 			} catch (Exception e) {
 				log.error("reload operator backupcontentkeyword routing error", e);
 			}
@@ -7723,9 +7741,10 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	public boolean isContentReplace(int ossid, int rssid, String raddr, String sender) {
-		Map<String, String> contentTemplate = this.contentTemplateMap.get(ossid+":"+rssid+":"+sender);
+		final RoutingTables rt = routingTables;
+		Map<String, String> contentTemplate = rt.contentTemplateMap.get(ossid+":"+rssid+":"+sender);
 		if (contentTemplate == null || contentTemplate.isEmpty()) {
-			contentTemplate = this.contentTemplateMap.get(ossid+":"+rssid);
+			contentTemplate = rt.contentTemplateMap.get(ossid+":"+rssid);
 			if (contentTemplate == null || contentTemplate.isEmpty()) {
 				return false;
 			}			
@@ -7741,10 +7760,11 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	public List<String> getTemplateContent(String code, String contentType, int ossid, int rssid, String raddr, String sender) {
+		final RoutingTables rt = routingTables;
 
-		Map<String, String> contentTemplate = this.contentTemplateMap.get(ossid+":"+rssid+":"+sender);
+		Map<String, String> contentTemplate = rt.contentTemplateMap.get(ossid+":"+rssid+":"+sender);
 		if (contentTemplate == null || contentTemplate.isEmpty()) {
-			contentTemplate = this.contentTemplateMap.get(ossid+":"+rssid);
+			contentTemplate = rt.contentTemplateMap.get(ossid+":"+rssid);
 			if (contentTemplate == null || contentTemplate.isEmpty()) {
 				log.error("contentTemplate not found by key {}", ossid+":"+rssid);
 				return null;
@@ -8860,24 +8880,29 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	public int getCustomerOPSenderRoutingRelay(int ossid, GmmsMessage msg, int opId) {
-		return doGetCustomerOPSenderRoutingRelay(A2P_OP_SENDER_ROUTING_RELAY, ossid, msg, customeropSenderRoutingRelayInfo, opId);						
+		final RoutingTables rt = routingTables;
+		return doGetCustomerOPSenderRoutingRelay(A2P_OP_SENDER_ROUTING_RELAY, ossid, msg, rt.customeropSenderRoutingRelayInfo, opId);						
 	}
 	
 	public int getCustomerOPContentRoutingRelay(int ossid, GmmsMessage msg, int opId) {
-		return doGetCustomerOPContentKeywordRoutingRelay(A2P_OP_CONTENT_KEYWORD_ROUTING_RELAY, ossid, msg, customeropContentKeywordRoutingRelayInfo, opId);						
+		final RoutingTables rt = routingTables;
+		return doGetCustomerOPContentKeywordRoutingRelay(A2P_OP_CONTENT_KEYWORD_ROUTING_RELAY, ossid, msg, rt.customeropContentKeywordRoutingRelayInfo, opId);						
 	}
 	
 	public int getCustomerOPRoutingRelay(int ossid, GmmsMessage msg, int opId) {
-		return doGetCustomerOPRoutingRelay(A2P_OP_ROUTING_RELAY, ossid, msg, customeropRoutingRelayInfo, opId);						
+		final RoutingTables rt = routingTables;
+		return doGetCustomerOPRoutingRelay(A2P_OP_ROUTING_RELAY, ossid, msg, rt.customeropRoutingRelayInfo, opId);						
 	}
 	
 	public int getCustomerNumberRoutingRelay(int ossid, GmmsMessage msg) {
-		return doGetRoutingRssidByNumber(A2P_NUMBER_ROUTING_RELAY, ossid, msg, customerNumberRoutingRelayInfo);						
+		final RoutingTables rt = routingTables;
+		return doGetRoutingRssidByNumber(A2P_NUMBER_ROUTING_RELAY, ossid, msg, rt.customerNumberRoutingRelayInfo);						
 	}
 	
 	public int getCustomerOPBackupSenderRoutingRelay(String routingSsids, int ossid, GmmsMessage msg, int opId) {
+		final RoutingTables rt = routingTables;
 		int result = 0;
-		if (customeropBackupSenderRoutingRelayInfo.isEmpty()) {
+		if (rt.customeropBackupSenderRoutingRelayInfo.isEmpty()) {
 			return result;
 		}
 		for (int i = 0; i < 10; i++) {
@@ -8885,7 +8910,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			if (i>0) {
 				key= key+i;
 			}
-			result = doGetCustomerOPSenderRoutingRelay(key, ossid, msg, customeropBackupSenderRoutingRelayInfo, opId);								
+			result = doGetCustomerOPSenderRoutingRelay(key, ossid, msg, rt.customeropBackupSenderRoutingRelayInfo, opId);								
 			if ((routingSsids == null || (routingSsids!=null && !routingSsids.contains(","+result+","))) && result >0) {
 				return result;
 			}
@@ -8894,8 +8919,9 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	public int getCustomerOPBackupContentRoutingRelay(String routingSsids, int ossid, GmmsMessage msg, int opId) {
+		final RoutingTables rt = routingTables;
 		int result = 0;
-		if (customeropBackupContentKeywordRoutingRelayInfo.isEmpty()) {
+		if (rt.customeropBackupContentKeywordRoutingRelayInfo.isEmpty()) {
 			return result;
 		}
 		for (int i = 0; i < 10; i++) {
@@ -8903,7 +8929,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			if (i>0) {
 				key= key+i;
 			}
-			result = doGetCustomerOPContentKeywordRoutingRelay(key, ossid, msg, customeropBackupContentKeywordRoutingRelayInfo, opId);								
+			result = doGetCustomerOPContentKeywordRoutingRelay(key, ossid, msg, rt.customeropBackupContentKeywordRoutingRelayInfo, opId);								
 			if ((routingSsids == null || (routingSsids!=null && !routingSsids.contains(","+result+","))) && result >0) {
 				return result;
 			}
@@ -8912,8 +8938,9 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	public int getCustomerOPBackupRoutingRelay(String routingSsids, int ossid, GmmsMessage msg, int opId) {
+		final RoutingTables rt = routingTables;
 		int result = 0;
-		if (customeropBackupRoutingRelayInfo.isEmpty()) {
+		if (rt.customeropBackupRoutingRelayInfo.isEmpty()) {
 			return result;
 		}
 		for (int i = 0; i < 10; i++) {
@@ -8921,7 +8948,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			if (i>0) {
 				key= key+i;
 			}
-			result = doGetCustomerOPRoutingRelay(key, ossid, msg, customeropBackupRoutingRelayInfo, opId);								
+			result = doGetCustomerOPRoutingRelay(key, ossid, msg, rt.customeropBackupRoutingRelayInfo, opId);								
 			if ((routingSsids == null || (routingSsids!=null && !routingSsids.contains(","+result+","))) && result >0) {
 				return result;
 			}

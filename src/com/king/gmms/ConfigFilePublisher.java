@@ -163,7 +163,20 @@ public final class ConfigFilePublisher {
 	}
 
 	/** a reload failed: the module keeps the version it runs, only the result is recorded */
-	public void publishFailure(final String name) {
+	public void publishFailure(String name) {
+		publishFailure(name, "");
+	}
+
+	public void publishFailure(String name, String reason) {
+		record(name, "failed", reason);
+	}
+
+	/** a reload found nothing to do: the file is what the module runs */
+	public void publishResultOk(String name) {
+		record(name, "ok", "");
+	}
+
+	private void record(final String name, final String result, final String reason) {
 		if (!enabled()) {
 			return;
 		}
@@ -175,7 +188,8 @@ public final class ConfigFilePublisher {
 						return;
 					}
 					redis.evalScript(HSET_NO_TTL_LUA, Arrays.asList(moduleKey()),
-							Arrays.asList(name + ".result", "failed", name + ".failedAt", now()));
+							Arrays.asList(name + ".result", result, name + ".failReason", reason, name + ".failedAt",
+									"failed".equals(result) ? now() : ""));
 				} catch (Exception e) {
 					log.warn("Failed to record a config reload failure. name={}", name, e);
 				}
@@ -251,6 +265,7 @@ public final class ConfigFilePublisher {
 				c.name + ".version", version,
 				c.name + ".loadedAt", now(),
 				c.name + ".result", c.result,
+				c.name + ".failReason", "",
 				c.name + ".file", c.file == null ? "" : c.file,
 				c.name + ".entries", String.valueOf(c.entries.size())));
 		if (c.moduleFields != null) {

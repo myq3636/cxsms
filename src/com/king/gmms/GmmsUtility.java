@@ -1083,6 +1083,7 @@ public class GmmsUtility {
 			"ServerStreamTaskMaxBatches", "ServerStreamTaskMaxMs",
 			"SmppPduLogEnable", "SmppServerSessionKeeperShared", "SmppServerSendQueueMax",
 			"SmppServerSendQueueHighWater", "ServerDrAckOnResp", "SmppServerDrLivenessCheck",
+			"ConfigFileStableCheckMs", "ReloadCustomerMaxRemovePercent",
 			"ClientOutboundWindowFullRetryMs",
 			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress",
 			"DescendingTime", "Skytel_Prefix", "Indigo_prefix", "APBW_CPID", "APBW_SID",
@@ -1146,6 +1147,9 @@ public class GmmsUtility {
 			return false;
 		}
 		if (key.startsWith("RedisStreamConsumer.") || key.startsWith("RedisStreamMonitor.")) {
+			return true;
+		}
+		if ("ReloadCustomerMaxRemovePercent".equals(key)) {
 			return true;
 		}
 		if ("ExceptionMsgFileSwitchInterval".equals(key) || "ExceptionMsgFileMaxSize".equals(key)
@@ -1246,6 +1250,7 @@ public class GmmsUtility {
 
 	private boolean isLongRuntimeKey(String key) {
 		return "RedisStreamMaxLen".equals(key)
+				|| "ConfigFileStableCheckMs".equals(key)
 				|| "RedisStreamAutoClaimIdleMs".equals(key)
 				|| "RedisStreamAutoClaimIntervalMs".equals(key)
 				|| "SmppPendingDrTimeoutStateLogIntervalMs".equals(key)
