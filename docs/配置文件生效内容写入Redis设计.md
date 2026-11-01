@@ -13,8 +13,8 @@ GmmsConfig 已经在启动和热加载后写到 `config:effective:{模块}:{Node
 | 名称 | 文件 | 内存里的数据 | 写入的内容 | 写入时机 |
 |---|---|---|---|---|
 | `cm` | `conf/cm.cfg` | 客户快照的块（`CustomerSnapshot.confBlockMap`，失败的客户保留旧块） | 每个客户一项 | 启动、`RELOAD_CUSTOMER` |
-| `routing` | `conf/routing/` | `routingInfoMap` | 每个块一项 | 启动、`RELOAD_ROUTING`、`RELOAD_CUSTOMER`（会重读路由） |
-| `phonePrefix` | `conf/senderReplacement.cfg` | `phonePrefixMap` | 每个块一项 | 启动、`RELOAD_PHONE_PREFIX`、`RELOAD_CUSTOMER` |
+| `routing` | `conf/routing/` | `routingInfoMap` | 每个块一项 | 启动、`RELOAD_ROUTING` |
+| `phonePrefix` | `conf/senderReplacement.cfg` | `phonePrefixMap` | 每个块一项 | 启动、`RELOAD_PHONE_PREFIX` |
 | `vendorTemplate` | `conf/vendorTemplateReplacement.cfg` | `vendorTemplatePrefixMap` | 每个块一项 | 启动、`RELOAD_VENDOR_REPLACE` |
 | `systemVendorReplace` | `conf/vendorRoutingReplacement.cfg` | `systemRoutingReplacementMap`（国家 → 供应商） | 每个国家一项 | 启动、`RELOAD_SYSTEM_REPLACE` |
 | `recipientRule` | `conf/recipientRuleFile.cfg` | 加载成功后的文件内容 | 每行一项 | 启动、`RELOAD_RECIPIENT_RULE` |
