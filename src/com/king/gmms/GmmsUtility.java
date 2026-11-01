@@ -1009,7 +1009,7 @@ public class GmmsUtility {
 				|| isShardRuntimeKey(key) || isRedisStreamTuningKey(key) || isMqmRuntimeKey(key)
 				|| key.startsWith("SmppServerInbound")
 				|| isLongConnectionCustomerRuntimeKey(key)
-				|| "GmmsConfigPublishEnable".equals(key);
+				|| "GmmsConfigPublishEnable".equals(key) || "ConfigFilePublishEnable".equals(key);
 	}
 
 	/** thread pool sizes read once when the pool starts: a reload cannot apply them */
@@ -1212,6 +1212,7 @@ public class GmmsUtility {
 		return "StoreDRModeEnable".equals(key) || "RedisStreamGlobalPELMonitorEnable".equals(key)
 				|| "DB.StartupCheck".equals(key) || "DB.PoolStats.Enable".equals(key)
 				|| "MessageIdIncludeNodeId".equals(key) || "GmmsConfigPublishEnable".equals(key)
+				|| "ConfigFilePublishEnable".equals(key)
 				|| "RedisStreamAutoClaimEnable".equals(key)
 				|| "RedisStreamTraceLogEnable".equals(key)
 				|| "RedisStreamTrimApproximate".equals(key)

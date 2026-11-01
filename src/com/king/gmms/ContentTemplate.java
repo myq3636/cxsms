@@ -146,9 +146,13 @@ public class ContentTemplate implements LifecycleListener {
 			this.signatureMaps = tempsignatureMap;						
 			signatureMapBak.clear();
 			templateIdMapBak.clear();
+			ConfigFilePublisher.getInstance().publishFileLines("contentTemplate", new File(confPath + "contentTemplate.cfg"));
+			ConfigFilePublisher.getInstance().publishFileLines("portalContentTemplate", new File(confPath + "portalContentTemplate.cfg"));
+			ConfigFilePublisher.getInstance().publishFileLines("templateId", new File(tempateIdCfg));
 
 		} catch (Exception e) {
 			log.warn("Parse content template exception: " + e, e);
+			ConfigFilePublisher.getInstance().publishFailure("contentTemplate");
 			ret = false;
 		}
 

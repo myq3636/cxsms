@@ -102,12 +102,18 @@ public class AntiSpamFilter implements LifecycleListener {
 
 				}
 				isLoad = true; // L-5: 解析成功置位，使调用方能区分加载成败
+				Map<String, A2PCustomerConfig> blocks = new HashMap<String, A2PCustomerConfig>();
+				for (A2PCustomerConfig block : confBlockList) {
+					blocks.put(block.getShortName(), block);
+				}
+				ConfigFilePublisher.getInstance().publishBlocks("antiSpam", strPath, blocks, "ok", null, null);
 			}
 
 		} catch (Exception ex) {
 			if(log.isInfoEnabled()){
 				log.info("load antiSpam error:{}",ex);
 			}
+			ConfigFilePublisher.getInstance().publishFailure("antiSpam");
 		}
 
 		return isLoad;			

@@ -32,6 +32,8 @@ public class A2PCustomerConfig implements Comparable{
 	private int ssid = -1;
 	private String shortName = null;
 	private HashMap<String, String> lines = new HashMap<String, String>();
+	/** lower-case name -> the name as written in the file, for display (lookups stay case-insensitive) */
+	private HashMap<String, String> names = new HashMap<String, String>();
 
 	public A2PCustomerConfig() {
 		super();
@@ -74,6 +76,9 @@ public class A2PCustomerConfig implements Comparable{
 				value = oriValue + this.VALUE_SEP + value;
 		}
 		this.lines.put(name.trim().toLowerCase(), value);
+		if (!names.containsKey(name.trim().toLowerCase())) {
+			names.put(name.trim().toLowerCase(), name.trim());
+		}
 	}
 
 	/**
@@ -950,5 +955,15 @@ public class A2PCustomerConfig implements Comparable{
 
 	public HashMap<String, String> getLines() {
 		return lines;
+	}
+
+	/** the items with their names as written in the file */
+	public Map<String, String> getLinesWithOriginalNames() {
+		Map<String, String> out = new TreeMap<String, String>();
+		for (Map.Entry<String, String> e : lines.entrySet()) {
+			String name = names.get(e.getKey());
+			out.put(name == null ? e.getKey() : name, e.getValue());
+		}
+		return out;
 	}
 }

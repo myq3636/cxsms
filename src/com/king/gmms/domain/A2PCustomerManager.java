@@ -1,4 +1,6 @@
 package com.king.gmms.domain;
+
+import com.king.gmms.ConfigFilePublisher;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -508,9 +510,11 @@ public class A2PCustomerManager implements LifecycleListener {
 				constructPhonePrefixPattern(ccList, regexs);
 				this.recipientRuleRegexs = regexs;
 				this.recipientRuleMap = map;
+				ConfigFilePublisher.getInstance().publishFileLines("recipientRule", conf);
 			}
 		} catch (Exception e) {
 			log.error("load recipientRule file failed", e);
+			ConfigFilePublisher.getInstance().publishFailure("recipientRule");
 		}
 		return 0;
 	}
@@ -645,6 +649,7 @@ public class A2PCustomerManager implements LifecycleListener {
 							
 				Map<String, Map<String,Integer>> temp = this.systemRoutingReplacementMap;
 				this.systemRoutingReplacementMap = ccVendorReplacementMap;
+				ConfigFilePublisher.getInstance().publishMap("systemVendorReplace", path, ccVendorReplacementMap);
 				temp.clear();
 				if(systemRoutingReplacementMap!=null && !systemRoutingReplacementMap.isEmpty()) {
 					List<String> ccList = new ArrayList<>();
@@ -676,6 +681,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			}							
 		} catch (Exception e) {
 			log.error("load VendorReplacement file failed", e);
+			ConfigFilePublisher.getInstance().publishFailure("systemVendorReplace");
 		}
 		return 0;
 	}
@@ -2144,9 +2150,10 @@ public class A2PCustomerManager implements LifecycleListener {
 			
 		} catch (Exception ex) {
 			log.warn("reload routing info error. action=" + action + ", path=" + path, ex);
+			ConfigFilePublisher.getInstance().publishFailure("routing");
 			return 1;
 		}
-
+		ConfigFilePublisher.getInstance().publishBlocks("routing", path, routingInfoMap, "ok", null, null);
 		log.info("Reload routingInfo completed. action={}, path={}", action, path);
 		return 0;
 	}
@@ -2604,6 +2611,7 @@ public class A2PCustomerManager implements LifecycleListener {
 				log.warn("{} not loaded, no sender replacement prefix", path);
 				phonePrefixMap = new HashMap<String, A2PCustomerConfig>();
 			}
+			ConfigFilePublisher.getInstance().publishBlocks("phonePrefix", path, phonePrefixMap, "ok", null, null);
 			for (A2PCustomerConfig block : phonePrefixMap.values()) {
 				try {
 
@@ -2625,6 +2633,7 @@ public class A2PCustomerManager implements LifecycleListener {
 
 			this.routingInfoMap = A2PCustomerConfig.parseRoutingInfo(conf);
 			initRoutingBlockMaps();
+			ConfigFilePublisher.getInstance().publishBlocks("routing", path, routingInfoMap, "ok", null, null);
 		}
 	}
 
@@ -2682,6 +2691,26 @@ public class A2PCustomerManager implements LifecycleListener {
 	 *
 	 * @return
 	 */
+	/**
+	 * Customers as the snapshot runs them (a customer that failed to load keeps its old block) to
+	 * Redis for the portal, with the ssid -> shortName index.
+	 */
+	private void publishCustomers(CustomerSnapshot snapshot, List<String> failed) {
+		try {
+			Map<String, String> ssidIndex = new HashMap<String, String>();
+			for (Map.Entry<Integer, A2PCustomerInfo> e : snapshot.ssid_cust_map.entrySet()) {
+				ssidIndex.put(String.valueOf(e.getKey()), e.getValue().getShortName());
+			}
+			Map<String, String> fields = new HashMap<String, String>();
+			fields.put("cm.failed", failed == null ? "" : String.join(",", failed));
+			fields.put("cm.fileMd5", snapshot.confFileVersion == null ? "" : snapshot.confFileVersion);
+			ConfigFilePublisher.getInstance().publishBlocks("cm", confFile, snapshot.confBlockMap,
+					failed == null || failed.isEmpty() ? "ok" : "partial", ssidIndex, fields);
+		} catch (Exception e) {
+			log.warn("cm.cfg content not published to Redis", e);
+		}
+	}
+
 	private int loadCustomers() {
 		File conf = new File(confFile);
 		String md5Sum = this.getFileCheckSum(conf);
@@ -2698,6 +2727,7 @@ public class A2PCustomerManager implements LifecycleListener {
 		} catch (Exception e) {
 			// nothing published: every customer keeps its current config
 			log.error("parse cm.cfg failed, keep the current customers", e);
+			ConfigFilePublisher.getInstance().publishFailure("cm");
 			return 1;
 		}
 		// A2P will check each customer info is right by traversing
@@ -2722,6 +2752,7 @@ public class A2PCustomerManager implements LifecycleListener {
 		log.info("customer snapshot {} published, changed customers: {}, failed customers: {}",
 				new Object[] { changes.snapshot.generation, changes.changed.size(), changes.failed });
 		applyCustomerChanges(changes);
+		publishCustomers(cs(), changes.failed);
 		return changes.failed.isEmpty() ? 0 : 1;
 	}
 
@@ -3262,6 +3293,7 @@ public class A2PCustomerManager implements LifecycleListener {
 		if (!changes.failed.isEmpty()) {
 			log.error("customers not loaded at startup: {}", changes.failed);
 		}
+		publishCustomers(cs(), changes.failed);
 
 		Map<Integer, RetryPolicyInfo> retryPolicies = RetryPolicyManager.getInstance().getSsid_policy_map();
 		for (A2PCustomerInfo cust : cs().ssid_cust_map.values()) {
@@ -3670,6 +3702,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			if (path != null) {
 				File conf = new File(path);
 				this.vendorTemplatePrefixMap = A2PCustomerConfig.parse(conf);
+				ConfigFilePublisher.getInstance().publishBlocks("vendorTemplate", path, vendorTemplatePrefixMap, "ok", null, null);
 				for (A2PCustomerConfig block : vendorTemplatePrefixMap.values()) {
 					try {
 						int ssid = -1;
@@ -7164,9 +7197,11 @@ public class A2PCustomerManager implements LifecycleListener {
 				String ROP_FailedModeOp = properties
 						.getProperty("ROP-FailedMode");
 				trackModeOp(ROP_FailedModeOp, ssidsInRopFailedMode);
+				ConfigFilePublisher.getInstance().publishProperties("operatorMode", configFileName, properties);
 				return true;
 			} catch (Exception e) {
 				log.error("Load OperatorMode configuration file failed", e);
+				ConfigFilePublisher.getInstance().publishFailure("operatorMode");
 			}
 			return false;
 		}

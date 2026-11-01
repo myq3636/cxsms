@@ -33,6 +33,7 @@ public final class TaskConfiguration {
             in = new FileInputStream(configFileName);
             prop = new Properties();
             prop.load(in);
+            com.king.gmms.ConfigFilePublisher.getInstance().publishProperties("mqmTask", configFileName, prop);
         }
         catch (Exception e) {
             e.printStackTrace();
