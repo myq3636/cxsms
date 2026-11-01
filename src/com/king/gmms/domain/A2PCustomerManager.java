@@ -2538,6 +2538,8 @@ public class A2PCustomerManager implements LifecycleListener {
 					for (A2PCustomerConfig block : this.confBlockMap2Reload.values()) {
 						this.loadPhonePrefixInfo(block);
 					}
+					ConfigFilePublisher.getInstance().publishBlocks("phonePrefix",
+							GmmsUtility.getInstance().getPhonePrefixFile(), phonePrefixMap, "ok", null, null);
 				}
 			}else{
 				if(log.isDebugEnabled()){
@@ -2573,6 +2575,12 @@ public class A2PCustomerManager implements LifecycleListener {
 			loadRecipientAddressRule();
 
 			initCustomerInfo();
+			// routing and phone prefix tables are built by now; a cm.cfg reload re-reads these files
+			// but does not rebuild the tables, so only startup and their own reload commands write them
+			ConfigFilePublisher.getInstance().publishBlocks("routing",
+					GmmsUtility.getInstance().getRoutingFilePath(), routingInfoMap, "ok", null, null);
+			ConfigFilePublisher.getInstance().publishBlocks("phonePrefix",
+					GmmsUtility.getInstance().getPhonePrefixFile(), phonePrefixMap, "ok", null, null);
 
 			blacklist = initBlacklistInfo();
 			whitelist = initWhitelistInfo();
@@ -2611,7 +2619,6 @@ public class A2PCustomerManager implements LifecycleListener {
 				log.warn("{} not loaded, no sender replacement prefix", path);
 				phonePrefixMap = new HashMap<String, A2PCustomerConfig>();
 			}
-			ConfigFilePublisher.getInstance().publishBlocks("phonePrefix", path, phonePrefixMap, "ok", null, null);
 			for (A2PCustomerConfig block : phonePrefixMap.values()) {
 				try {
 
@@ -2633,7 +2640,6 @@ public class A2PCustomerManager implements LifecycleListener {
 
 			this.routingInfoMap = A2PCustomerConfig.parseRoutingInfo(conf);
 			initRoutingBlockMaps();
-			ConfigFilePublisher.getInstance().publishBlocks("routing", path, routingInfoMap, "ok", null, null);
 		}
 	}
 
@@ -2695,7 +2701,7 @@ public class A2PCustomerManager implements LifecycleListener {
 	 * Customers as the snapshot runs them (a customer that failed to load keeps its old block) to
 	 * Redis for the portal, with the ssid -> shortName index.
 	 */
-	private void publishCustomers(CustomerSnapshot snapshot, List<String> failed) {
+	private void publishCustomers(CustomerSnapshot snapshot, List<String> failed, List<String> kept) {
 		try {
 			Map<String, String> ssidIndex = new HashMap<String, String>();
 			for (Map.Entry<Integer, A2PCustomerInfo> e : snapshot.ssid_cust_map.entrySet()) {
@@ -2703,6 +2709,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			}
 			Map<String, String> fields = new HashMap<String, String>();
 			fields.put("cm.failed", failed == null ? "" : String.join(",", failed));
+			fields.put("cm.kept", kept == null ? "" : String.join(",", kept));
 			fields.put("cm.fileMd5", snapshot.confFileVersion == null ? "" : snapshot.confFileVersion);
 			ConfigFilePublisher.getInstance().publishBlocks("cm", confFile, snapshot.confBlockMap,
 					failed == null || failed.isEmpty() ? "ok" : "partial", ssidIndex, fields);
@@ -2737,11 +2744,8 @@ public class A2PCustomerManager implements LifecycleListener {
 		} catch (CustomerConfigurationException e1) {
 			log.error("init RoutinfInfoBlocks error in loadCustomers() function.", e1);
 		}
-		try {
-			this.initPhonePrefixBlocks();
-		} catch (CustomerConfigurationException e1) {
-			log.error("init PhonePrefixInfoBlocks error in loadCustomers() function.", e1);
-		}
+		// senderReplacement.cfg is not re-read here: RELOAD_PHONE_PREFIX finds its changes by comparing
+		// with phonePrefixMap, so replacing the map here would make that command see nothing to do
 
 		CustomerChanges changes = buildSnapshot(old, blocks, md5Sum);
 		if (!customers.compareAndSet(old, changes.snapshot.freeze())) {
@@ -2752,7 +2756,7 @@ public class A2PCustomerManager implements LifecycleListener {
 		log.info("customer snapshot {} published, changed customers: {}, failed customers: {}",
 				new Object[] { changes.snapshot.generation, changes.changed.size(), changes.failed });
 		applyCustomerChanges(changes);
-		publishCustomers(cs(), changes.failed);
+		publishCustomers(cs(), changes.failed, changes.kept);
 		return changes.failed.isEmpty() ? 0 : 1;
 	}
 
@@ -2795,6 +2799,8 @@ public class A2PCustomerManager implements LifecycleListener {
 		final List<A2PCustomerInfo[]> changed = new ArrayList<A2PCustomerInfo[]>();
 		/** shortNames whose new config could not be loaded; they keep the old config */
 		final List<String> failed = new ArrayList<String>();
+		/** customers no longer in the file, kept because a new block failed to load (maybe their new name) */
+		final List<String> kept = new ArrayList<String>();
 
 		CustomerChanges(CustomerSnapshot snapshot) {
 			this.snapshot = snapshot;
@@ -2827,6 +2833,7 @@ public class A2PCustomerManager implements LifecycleListener {
 		// shortNames), references between customers are rebuilt below by indexing every customer
 		Set<Integer> usedSsids = new HashSet<Integer>();
 		Set<String> loadedNames = new HashSet<String>();
+		boolean addedBlockFailed = false;
 		// pass 0 keeps the unchanged customers, pass 1 loads the changed and added ones, so a
 		// changed customer that collides with an unchanged one on CCBSSID is the one that fails
 		for (int pass = 0; pass < 2; pass++) {
@@ -2852,6 +2859,9 @@ public class A2PCustomerManager implements LifecycleListener {
 					} catch (Exception e) {
 						log.error("load customer failed, shortName={}, keep its current config", shortName, e);
 						changes.failed.add(shortName);
+						if (oldCust == null) {
+							addedBlockFailed = true;
+						}
 						if (oldCust == null || !usedSsids.add(oldCust.getSSID())) {
 							continue;
 						}
@@ -2875,17 +2885,32 @@ public class A2PCustomerManager implements LifecycleListener {
 				}
 			}
 		}
-		// names of customers that failed to load must not resolve
-		b.shortName_ssid_map.keySet().retainAll(loadedNames);
-
 		for (Map.Entry<String, A2PCustomerConfig> e : old.confBlockMap.entrySet()) {
 			if (!blocks.containsKey(e.getKey())) {
 				A2PCustomerInfo oldCust = old.ssid_cust_map.get(e.getValue().getSSID());
 				if (oldCust != null) {
+					// a failed new block may be this customer under a new name: do not lose the channel.
+					// The snapshot is incomplete, so the next reload decides again.
+					if (addedBlockFailed && usedSsids.add(oldCust.getSSID())) {
+						try {
+							indexCustomer(b, e.getValue(), oldCust);
+							b.confBlockMap.put(e.getKey(), e.getValue());
+							b.shortName_ssid_map.put(e.getValue().getShortNameWithoutService(), oldCust.getSSID());
+							loadedNames.add(oldCust.getShortName());
+							changes.kept.add(e.getKey());
+							log.error("customer {} is no longer in cm.cfg but a new customer failed to load ({}), keep it until the next reload",
+									e.getKey(), changes.failed);
+							continue;
+						} catch (Exception ex) {
+							log.error("keep customer failed, shortName={}", e.getKey(), ex);
+						}
+					}
 					changes.changed.add(new A2PCustomerInfo[] { oldCust, null });
 				}
 			}
 		}
+		// names of customers that failed to load must not resolve
+		b.shortName_ssid_map.keySet().retainAll(loadedNames);
 
 		// needs currentA2P, which is known once all customers are indexed
 		for (A2PCustomerConfig block : b.confBlockMap.values()) {
@@ -2910,6 +2935,9 @@ public class A2PCustomerManager implements LifecycleListener {
 		Set<Integer> ssids = new HashSet<Integer>();
 		Map<Integer, RetryPolicyInfo> retryPolicies = RetryPolicyManager.getInstance().getSsid_policy_map();
 
+		// clean up every old customer first, then build the new ones: a renamed customer (one new, one
+		// removed entry with the same ssid) or two customers swapping ssids must not have the new state
+		// cleared by the clean-up of the old customer. Only changed customers are in this list.
 		for (A2PCustomerInfo[] pair : changes.changed) {
 			A2PCustomerInfo oldCust = pair[0];
 			A2PCustomerInfo newCust = pair[1];
@@ -2947,6 +2975,9 @@ public class A2PCustomerManager implements LifecycleListener {
 					log.error("clear connection management error, ssid={}", oldSsid, e);
 				}
 			}
+		}
+		for (A2PCustomerInfo[] pair : changes.changed) {
+			A2PCustomerInfo newCust = pair[1];
 			if (newCust != null) {
 				int ssid = newCust.getSSID();
 				ssids.add(ssid);
@@ -3293,7 +3324,7 @@ public class A2PCustomerManager implements LifecycleListener {
 		if (!changes.failed.isEmpty()) {
 			log.error("customers not loaded at startup: {}", changes.failed);
 		}
-		publishCustomers(cs(), changes.failed);
+		publishCustomers(cs(), changes.failed, changes.kept);
 
 		Map<Integer, RetryPolicyInfo> retryPolicies = RetryPolicyManager.getInstance().getSsid_policy_map();
 		for (A2PCustomerInfo cust : cs().ssid_cust_map.values()) {

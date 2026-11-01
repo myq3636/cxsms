@@ -143,9 +143,25 @@ public abstract class ChannelRouter {
 	 *            GmmsMessage
 	 * @return boolean
 	 */
+	/** routing still points to a channel that is gone (renamed or new ssid, RELOAD_ROUTING not done yet) */
+	protected void logNoChannel(GmmsMessage msg, int rSsid) {
+		long n = com.king.gmms.util.LogRateLimiter.allow("mt-no-channel:" + rSsid, 600000L);
+		if (n > 0) {
+			log.warn(msg, "[MT-ROUTE] routing points to rssid={} but there is no such channel, MT fails as not routed; check cm.cfg and RELOAD_ROUTING ({} MT(s) since the last line)", rSsid, n);
+		}
+	}
+
 	protected boolean routebySsid(int ssid, GmmsMessage msg) {
 		if (ssid == 0) { // Dead channel
 			log.trace(msg, "Routing rA2P failed,for rssid is 0.");
+			msg.setStatus(GmmsStatus.RECIPIENT_ADDR_ERROR);
+			return false;
+		}
+		// a retried MT or a routing table still pointing to a channel that is gone: fail as not routed
+		if ((GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(msg.getMessageType())
+				|| GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(msg.getMessageType()))
+				&& ctm.getCustomerBySSID(ssid) == null) {
+			logNoChannel(msg, ssid);
 			msg.setStatus(GmmsStatus.RECIPIENT_ADDR_ERROR);
 			return false;
 		}

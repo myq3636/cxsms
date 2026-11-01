@@ -57,7 +57,10 @@ public class IOSMSBackupChannelRouter extends ChannelRouter {
 			}
 			if(rSsid!=0) {
 				A2PCustomerInfo rCustomer = ctm.getCustomerBySSID(rSsid);
-				if(!rCustomer.isRSupportContentLenghtAllow(msg)) {
+				if(rCustomer == null) {
+					logNoChannel(msg, rSsid);
+					rSsid=0;
+				} else if(!rCustomer.isRSupportContentLenghtAllow(msg)) {
 					log.info(msg,"msg deny by specail content len check for Rssid: {}, so set ssid {} to 0",rSsid, rSsid);
 					rSsid=0;
 				}
@@ -76,6 +79,10 @@ public class IOSMSBackupChannelRouter extends ChannelRouter {
 		}
 		
 		if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(msg.getMessageType())) {
+			if (ctm.getCustomerBySSID(ssid) == null) {
+				logNoChannel(msg, ssid);
+				return false;
+			}
 			//int nextA2P = ctm.getConnectedRelay(ssid, msg.getGmmsMsgType());
 			int nextA2P = ctm.getCurrentA2P();
 			if (nextA2P > 0) {

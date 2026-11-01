@@ -88,7 +88,10 @@ public class IOSMSChannelRouter extends ChannelRouter {
 				//check routing special msg size check.
 				if(rSsid!=0) {
 					A2PCustomerInfo rCustomer = ctm.getCustomerBySSID(rSsid);
-					if(!rCustomer.isRSupportContentLenghtAllow(msg)) {
+					if(rCustomer == null) {
+						logNoChannel(msg, rSsid);
+						rSsid=0;
+					} else if(!rCustomer.isRSupportContentLenghtAllow(msg)) {
 						log.info(msg,"msg deny by specail content len check for Rssid: {}, so set ssid {} to 0",rSsid, rSsid);
 						rSsid=0;
 					}
