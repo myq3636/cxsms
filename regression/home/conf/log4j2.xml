@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN">
+  <Appenders>
+    <File name="F" fileName="${sys:a2p_home}log/it.log" append="false">
+      <PatternLayout pattern="%-5p %d{HH:mm:ss,SSS} [%t] %c{1} %m%n"/>
+    </File>
+  </Appenders>
+  <Loggers>
+    <Root level="info"><AppenderRef ref="F"/></Root>
+  </Loggers>
+</Configuration>

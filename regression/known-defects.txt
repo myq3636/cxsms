@@ -1,0 +1,23 @@
+# Checks that fail because of a confirmed defect or an open design question in the product code.
+# They print KNOWN and do not fail the run; a listed check that passes is reported as FIXED so it can be removed here.
+# See docs/SMPP-Server功能测试报告.md. One check id per line, then the defect.
+SEC-01 DEF-01 bind password in the PDU log
+TLS-05 DEF-02 SslSmppServer does not start the DR consumer
+B-05 DEF-03 bind_resp can be lost on close (race, may pass)
+P-03 DEF-04 no answer to an unknown PDU
+P-04 DEF-04 no answer to a malformed PDU
+P-05 DEF-04 no answer to a malformed PDU
+P-06c DEF-04 no answer to replace_sm
+P-08 DEF-04 no answer to a bad command_length
+B-04b DEF-05 no bind_resp for an overlong password
+B-04c DEF-05 no bind_resp for an overlong system_id
+P-10 DEF-06 submit accepted on a bind_receiver session
+SEC-02 DEF-07 no limit on wrong passwords
+B-13 DEF-08 status code of a second bind
+P-06a DEF-08 status code of an unsupported command
+P-06b DEF-08 status code of an unsupported command
+P-06d DEF-08 status code of an unsupported command
+B-06 OPEN URL is not checked for a single connection
+B-09b OPEN BindMode=T also accepts bind_transmitter
+S-12 OPEN empty recipient accepted by the server
+S-13 OPEN non-numeric recipient accepted by the server
