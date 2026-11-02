@@ -136,7 +136,7 @@ public class MultiSmppServer
 
     private void startSessionRegistryReconcile() {
         final SmppServerSessionRegistry registry = SmppServerSessionRegistry.getInstance();
-        if (!registry.isEnabled() || sessionRegistryReconcileExecutor != null) {
+        if (sessionRegistryReconcileExecutor != null) {
             return;
         }
         sessionRegistryReconcileExecutor = Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
@@ -147,16 +147,31 @@ public class MultiSmppServer
             }
         });
         long intervalMs = registry.reconcileIntervalMs();
-        sessionRegistryReconcileExecutor.scheduleWithFixedDelay(new Runnable() {
-            public void run() {
-                try {
-                    serverFactory.reconcileServerSessionRegistry();
-                } catch (Exception e) {
-                    log.warn("SMPP server session registry reconcile failed.", e);
-                }
-            }
-        }, Math.min(5000L, intervalMs), intervalMs, TimeUnit.MILLISECONDS);
+        scheduleSessionRegistryReconcile(Math.min(5000L, intervalMs));
         log.info("SMPP server session registry reconcile started. intervalMs={}", intervalMs);
+    }
+
+    /** Each round schedules the next one, so no Throwable can end the rounds and the interval can be reloaded */
+    private void scheduleSessionRegistryReconcile(long delayMs) {
+        ScheduledExecutorService executor = sessionRegistryReconcileExecutor;
+        if (executor == null) {
+            return;
+        }
+        try {
+            executor.schedule(new Runnable() {
+                public void run() {
+                    try {
+                        serverFactory.reconcileServerSessionRegistry();
+                    } catch (Throwable t) {
+                        log.error("SMPP server session registry reconcile failed.", t);
+                    } finally {
+                        scheduleSessionRegistryReconcile(Math.max(1000L, SmppServerSessionRegistry.getInstance().reconcileIntervalMs()));
+                    }
+                }
+            }, delayMs, TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            log.info("SMPP server session registry reconcile stopped.");
+        }
     }
 
     private void stopSessionRegistryReconcile() {

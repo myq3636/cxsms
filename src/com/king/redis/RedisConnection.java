@@ -675,6 +675,22 @@ public class RedisConnection {
 		}
 	}
 
+	/** MGET that throws on a Redis error, so that a failure is not taken for missing keys */
+	public List<String> mgetStrict(List<String> keys) {
+		try (Jedis jedis = pool.getResource()) {
+			return jedis.mget(keys.toArray(new String[0]));
+		}
+	}
+
+	/** Runs the commands on one pipeline; throws on a connection failure, per-command errors stay in the responses */
+	public void runPipeline(java.util.function.Consumer<Pipeline> commands) {
+		try (Jedis jedis = pool.getResource()) {
+			Pipeline p = jedis.pipelined();
+			commands.accept(p);
+			p.sync();
+		}
+	}
+
 	public String getString(String key) {
 		try (Jedis jedis = pool.getResource()) {
 			return jedis.get(key);

@@ -115,6 +115,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             new java.util.concurrent.ConcurrentHashMap<String, String[]>();
     private String serverRegistrySessionKey = null;
     private volatile long lastServerRegistryRefreshMs = 0L;
+    private volatile long lastServerRegistryAttemptMs = 0L;
     
     //construct for server
     public MultiSmppSession(Socket socket) {
@@ -1294,10 +1295,15 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         }
         try {
             serverRegistrySessionKey = SmppServerSessionRegistry.getInstance().register(this);
-            lastServerRegistryRefreshMs = System.currentTimeMillis();
+            lastServerRegistryAttemptMs = System.currentTimeMillis();
         } catch (Exception e) {
             log.warn("Failed to register SMPP server bind session.", e);
         }
+    }
+
+    /** the session's registry entry was written at this time */
+    public void markServerRegistryRefreshed(long ms) {
+        lastServerRegistryRefreshMs = ms;
     }
 
     private void refreshServerBindRegistry(boolean force) {
@@ -1313,11 +1319,14 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             if (!force && now - lastServerRegistryRefreshMs < registry.refreshIntervalMs()) {
                 return;
             }
-            String refreshedKey = registry.refresh(this);
-            if (refreshedKey != null) {
-                serverRegistrySessionKey = refreshedKey;
-                lastServerRegistryRefreshMs = now;
+            // reconcile keeps lastServerRegistryRefreshMs fresh; this is for a session it did not reach.
+            // After a failed write, do not make every PDU wait for Redis again.
+            if (now - lastServerRegistryAttemptMs < Math.min(30000L, registry.refreshIntervalMs())) {
+                return;
             }
+            lastServerRegistryAttemptMs = now;
+            registry.selfRefreshNeeded(customerInfo.getSSID());
+            registry.refresh(this);
         } catch (Exception e) {
             log.warn("Failed to refresh SMPP server bind session registry.", e);
         }

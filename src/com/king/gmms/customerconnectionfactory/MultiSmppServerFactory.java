@@ -342,18 +342,25 @@ public class MultiSmppServerFactory extends AbstractConnectionFactory {
 		if (!registry.isEnabled()) {
 			return;
 		}
+		long start = System.currentTimeMillis();
 		Set<String> liveKeys = new HashSet<String>();
-		List<MultiSmppSession> sessions = getLiveServerSessionsSnapshot();
-		for (MultiSmppSession session : sessions) {
-			String key = registry.refresh(session);
-			if (key != null) {
-				liveKeys.add(key);
-			}
+		boolean[] snapshotComplete = { true };
+		List<MultiSmppSession> sessions = getLiveServerSessionsSnapshot(snapshotComplete);
+		int batchSize = registry.batchSize();
+		int ok = 0;
+		int failed = 0;
+		for (int i = 0; i < sessions.size(); i += batchSize) {
+			SmppServerSessionRegistry.RefreshResult r = registry.refreshBatch(sessions.subList(i, Math.min(i + batchSize, sessions.size())));
+			liveKeys.addAll(r.liveKeys);
+			ok += r.ok;
+			failed += r.failed;
 		}
-		registry.cleanupCurrentModule(liveKeys);
+		// sessions of a customer that could not be read are missing from the live set: nothing may be removed
+		int removed = snapshotComplete[0] ? registry.cleanupCurrentModule(liveKeys, start) : 0;
+		registry.reconcileFinished(sessions.size(), ok, failed, removed, !snapshotComplete[0], System.currentTimeMillis() - start);
 	}
 
-	private List<MultiSmppSession> getLiveServerSessionsSnapshot() {
+	private List<MultiSmppSession> getLiveServerSessionsSnapshot(boolean[] complete) {
 		List<MultiSmppSession> sessions = new ArrayList<MultiSmppSession>();
 		Set<ConnectionManager> seenManagers = Collections.newSetFromMap(new IdentityHashMap<ConnectionManager, Boolean>());
 		Iterator<ConnectionManager> it = ssid2connectionManagers.values().iterator();
@@ -363,17 +370,22 @@ public class MultiSmppServerFactory extends AbstractConnectionFactory {
 				continue;
 			}
 			seenManagers.add(manager);
-			List<Connection> connections = getAvailableConnections(manager);
-			for (Connection connection : connections) {
-				if (!(connection instanceof AbstractMultiConnection)) {
-					continue;
-				}
-				List<Session> connectionSessions = ((AbstractMultiConnection) connection).getConnectedSessionsSnapshot();
-				for (Session session : connectionSessions) {
-					if (session instanceof MultiSmppSession && session.isServer() && isConnected(session)) {
-						sessions.add((MultiSmppSession) session);
+			try {
+				List<Connection> connections = getAvailableConnections(manager);
+				for (Connection connection : connections) {
+					if (!(connection instanceof AbstractMultiConnection)) {
+						continue;
+					}
+					List<Session> connectionSessions = ((AbstractMultiConnection) connection).getConnectedSessionsSnapshot();
+					for (Session session : connectionSessions) {
+						if (session instanceof MultiSmppSession && session.isServer() && isConnected(session)) {
+							sessions.add((MultiSmppSession) session);
+						}
 					}
 				}
+			} catch (Exception e) {
+				complete[0] = false;
+				log.warn("Failed to read the sessions of a connection manager for the bind registry.", e);
 			}
 		}
 		return sessions;

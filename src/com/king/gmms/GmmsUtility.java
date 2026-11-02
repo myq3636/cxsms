@@ -1063,7 +1063,7 @@ public class GmmsUtility {
 			"SmppPendingDrTimeoutWorkerCount", "SmppPendingDrTimeoutStateLogIntervalMs",
 			"ServerDrWindowFullRetryMs",
 			"ServerDrWindowFullRetryBatchSize",
-			"SmppServerSessionRegistryEnable", "SmppServerSessionRegistryRefreshIntervalMs",
+			"SmppServerSessionRegistryEnable", "SmppServerSessionRegistryRefreshIntervalMs", "SmppServerSessionRegistryBatchSize",
 			"SmppServerSessionRegistryReconcileIntervalMs", "SmppServerSessionRegistryTtlSeconds",
 			"SmppServerRegistryLegacyCleanupEnable", "SmppServerRegistryLegacyCleanupIntervalMs",
 			"SmppServerRegistryLegacyCleanupScanCount", "SmppServerRegistryLegacyCleanupMaxKeysPerRun",
@@ -1184,6 +1184,7 @@ public class GmmsUtility {
 				|| "SmppPendingSubmitTimeoutWorkerCount".equals(key)
 				|| "ServerDrWindowFullRetryBatchSize".equals(key)
 				|| "SmppServerSessionRegistryRefreshIntervalMs".equals(key)
+				|| "SmppServerSessionRegistryBatchSize".equals(key)
 				|| "SmppServerSessionRegistryReconcileIntervalMs".equals(key)
 				|| "SmppServerSessionRegistryTtlSeconds".equals(key)
 				|| "SmppServerRegistryLegacyCleanupIntervalMs".equals(key)

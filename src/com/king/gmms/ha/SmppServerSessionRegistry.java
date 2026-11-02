@@ -4,6 +4,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import redis.clients.jedis.Response;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -42,6 +44,10 @@ public class SmppServerSessionRegistry {
 	/** module:status key -> {checkedAt, 1 online / 0 offline}: at most one GET per node and second */
 	private final ConcurrentHashMap<String, long[]> nodeOnline = new ConcurrentHashMap<String, long[]>();
 
+	private volatile long lastReconcileFinishedMs = 0L;
+	private volatile int consecutiveFailedRounds = 0;
+	private volatile long lastSelfRefreshLogMs = 0L;
+
 	private SmppServerSessionRegistry() {
 	}
 
@@ -53,8 +59,17 @@ public class SmppServerSessionRegistry {
 		return booleanProperty("SmppServerSessionRegistryEnable", true);
 	}
 
+	/** a session refreshes itself on a PDU after this long without a successful write; below the TTL by a wide margin */
 	public int refreshIntervalMs() {
-		return intProperty("SmppServerSessionRegistryRefreshIntervalMs", 30000);
+		int configured = intProperty("SmppServerSessionRegistryRefreshIntervalMs", 180000);
+		if (configured <= 0) {
+			configured = 180000;
+		}
+		return (int) Math.min(configured, Math.max(1000L, ttlSeconds() * 1000L / 3));
+	}
+
+	public int batchSize() {
+		return Math.max(1, intProperty("SmppServerSessionRegistryBatchSize", 200));
 	}
 
 	public int reconcileIntervalMs() {
@@ -66,11 +81,58 @@ public class SmppServerSessionRegistry {
 	}
 
 	public String register(MultiSmppSession session) {
-		return register(session, true);
+		RefreshResult result = write(Collections.singletonList(session), true);
+		return result.liveKeys.isEmpty() ? null : result.liveKeys.iterator().next();
 	}
 
-	public String refresh(MultiSmppSession session) {
-		return register(session, false);
+	/** true if the session's entry was written */
+	public boolean refresh(MultiSmppSession session) {
+		return write(Collections.singletonList(session), false).ok == 1;
+	}
+
+	public RefreshResult refreshBatch(List<MultiSmppSession> sessions) {
+		return write(sessions, false);
+	}
+
+	public static final class RefreshResult {
+		public final Set<String> liveKeys = new HashSet<String>();
+		public final List<MultiSmppSession> okSessions = new ArrayList<MultiSmppSession>();
+		public int ok = 0;
+		public int failed = 0;
+	}
+
+	/** One reconcile round is over: logs it, ERROR after failures in 3 rounds in a row */
+	public void reconcileFinished(int live, int ok, int failed, int removed, boolean cleanupSkipped, long costMs) {
+		lastReconcileFinishedMs = System.currentTimeMillis();
+		consecutiveFailedRounds = failed > 0 ? consecutiveFailedRounds + 1 : 0;
+		if (consecutiveFailedRounds >= 3) {
+			log.error("SMPP server bind registry reconcile has failures in {} rounds in a row. live={}, ok={}, failed={}, removed={}, costMs={}",
+					consecutiveFailedRounds, live, ok, failed, removed, costMs);
+		} else if (failed > 0 || cleanupSkipped) {
+			log.warn("SMPP server bind registry reconcile finished with problems. live={}, ok={}, failed={}, removed={}, cleanupSkipped={}, costMs={}",
+					live, ok, failed, removed, cleanupSkipped, costMs);
+		} else {
+			log.info("SMPP server bind registry reconcile finished. live={}, ok={}, failed={}, removed={}, costMs={}",
+					live, ok, failed, removed, costMs);
+		}
+	}
+
+	/** A session had to refresh itself: reconcile did not reach it. Logged at most once a minute. */
+	public void selfRefreshNeeded(int ossid) {
+		long lastRound = lastReconcileFinishedMs;
+		if (lastRound <= 0) {
+			return; // no reconcile in this module (TLS server) or the first round is still to come
+		}
+		long now = System.currentTimeMillis();
+		if (now - lastSelfRefreshLogMs < 60000L) {
+			return;
+		}
+		lastSelfRefreshLogMs = now;
+		if (now - lastRound > 5L * reconcileIntervalMs()) {
+			log.error("SMPP server bind registry reconcile has not finished for {} ms, sessions refresh themselves on PDUs. Sessions without PDUs will expire.", now - lastRound);
+		} else {
+			log.warn("SMPP server session refreshed itself, reconcile did not reach it. ossid={}", ossid);
+		}
 	}
 
 	public void unregister(MultiSmppSession session, String sessionKey) {
@@ -103,26 +165,30 @@ public class SmppServerSessionRegistry {
 		return snapshot == null ? null : snapshot.sessionKey;
 	}
 
-	public void cleanupCurrentModule(Set<String> liveSessionKeys) {
+	/**
+	 * Removes this module's entries that are not live. An entry written since roundStartMs is kept: the
+	 * session was bound after the live set was taken. Returns how many were removed.
+	 */
+	public int cleanupCurrentModule(Set<String> liveSessionKeys, long roundStartMs) {
 		if (!isEnabled()) {
-			return;
+			return 0;
 		}
 		RedisClient redis = redis();
 		if (redis == null || redis.getStateRedis() == null) {
-			return;
+			return 0;
 		}
 		String module = safe(System.getProperty("module", ""));
 		if (isBlank(module)) {
-			return;
+			return 0;
 		}
+		int removed = 0;
 		try {
 			String pattern = DETAIL_PREFIX + "*:" + safePart(module) + "|*";
 			int scanCount = Math.max(10, intProperty("SmppServerRegistryLegacyCleanupScanCount", 200));
-			int maxKeys = Math.max(1, intProperty("SmppServerRegistryLegacyCleanupMaxKeysPerRun", 2000));
+			int maxKeys = Math.max(1, intProperty("SmppServerRegistryLegacyCleanupMaxKeysPerRun", 5000));
 			boolean legacyCleanupEnabled = booleanProperty("SmppServerRegistryLegacyCleanupEnable", true);
 			long now = System.currentTimeMillis();
 			boolean allowLegacyCleanup = legacyCleanupEnabled && now - lastLegacyCleanupMs >= legacyCleanupIntervalMs();
-			int removed = 0;
 			int scanned = 0;
 			String cursor = isBlank(moduleCleanupCursor) ? "0" : moduleCleanupCursor;
 			while (scanned < maxKeys) {
@@ -153,7 +219,7 @@ public class SmppServerSessionRegistry {
 							continue;
 						}
 						SessionSnapshot snapshot = snapshotFromDetail(parsedKey.ossid, parsedKey.sessionKey, detailMap);
-						boolean stale = !live;
+						boolean stale = !live && !writtenSince(detailMap, roundStartMs);
 						boolean legacy = allowLegacyCleanup && snapshot != null
 								&& !parsedKey.sessionKey.equals(snapshot.slotKey);
 						if (!stale && !legacy) {
@@ -178,6 +244,15 @@ public class SmppServerSessionRegistry {
 			}
 		} catch (Exception e) {
 			log.warn("Failed to reconcile SMPP server bind registry.", e);
+		}
+		return removed;
+	}
+
+	private static boolean writtenSince(Map<String, String> detailMap, long ms) {
+		try {
+			return Long.parseLong(detailMap.get("lastSeen")) >= ms;
+		} catch (Exception e) {
+			return false;
 		}
 	}
 
@@ -295,55 +370,99 @@ public class SmppServerSessionRegistry {
 		return null;
 	}
 
-	private String register(MultiSmppSession session, boolean forceLog) {
-		if (!isEnabled() || session == null || !session.isServer()) {
-			return null;
+	/**
+	 * Registers the sessions in two round trips: MGET of the slots, then one pipeline with all writes,
+	 * the detail before the indexes. A failed session stays connected and stays live; the next round writes it again.
+	 */
+	private RefreshResult write(List<MultiSmppSession> sessions, boolean forceLog) {
+		RefreshResult result = new RefreshResult();
+		if (!isEnabled() || sessions == null) {
+			return result;
+		}
+		final List<MultiSmppSession> targets = new ArrayList<MultiSmppSession>();
+		final List<SessionSnapshot> snapshots = new ArrayList<SessionSnapshot>();
+		for (MultiSmppSession session : sessions) {
+			if (session == null || !session.isServer()) {
+				continue;
+			}
+			try {
+				SessionSnapshot snapshot = snapshot(session, null);
+				if (snapshot == null || snapshot.ossid < 0 || isBlank(snapshot.module) || isBlank(snapshot.sessionKey)) {
+					continue;
+				}
+				targets.add(session);
+				snapshots.add(snapshot);
+				result.liveKeys.add(snapshot.sessionKey);
+			} catch (Exception e) {
+				result.failed++;
+				log.warn("Failed to read SMPP server session for the bind registry.", e);
+			}
+		}
+		if (targets.isEmpty()) {
+			return result;
+		}
+		RedisClient redis = redis();
+		if (redis == null || redis.getStateRedis() == null) {
+			result.failed += targets.size();
+			return result;
 		}
 		try {
-			SessionSnapshot snapshot = snapshot(session, null);
-			if (snapshot == null || snapshot.ossid < 0 || isBlank(snapshot.module) || isBlank(snapshot.sessionKey)) {
-				return null;
+			final long now = System.currentTimeMillis();
+			final int ttlSeconds = ttlSeconds();
+			List<String> slotKeys = new ArrayList<String>(snapshots.size());
+			for (SessionSnapshot snapshot : snapshots) {
+				slotKeys.add(slotKey(snapshot));
 			}
-			RedisClient redis = redis();
-			if (redis == null) {
-				return snapshot.sessionKey;
+			List<String> previous = redis.getStateRedis().mgetStrict(slotKeys);
+			for (int i = 0; i < snapshots.size(); i++) {
+				SessionSnapshot snapshot = snapshots.get(i);
+				String previousSessionKey = previous.get(i);
+				if (!isBlank(previousSessionKey) && !previousSessionKey.equals(snapshot.sessionKey)) {
+					removeSessionKey(redis, snapshot.ossid, previousSessionKey, snapshot);
+				}
 			}
-			long now = System.currentTimeMillis();
-			int ttlSeconds = ttlSeconds();
-			String previousSessionKey = redis.getString(slotKey(snapshot));
-			if (!isBlank(previousSessionKey) && !previousSessionKey.equals(snapshot.sessionKey)) {
-				removeSessionKey(redis, snapshot.ossid, previousSessionKey, snapshot);
+			final List<List<Response<?>>> responses = new ArrayList<List<Response<?>>>(snapshots.size());
+			redis.getStateRedis().runPipeline(p -> {
+				Set<Integer> moduleWritten = new HashSet<Integer>();
+				for (SessionSnapshot snapshot : snapshots) {
+					List<Response<?>> r = new ArrayList<Response<?>>(7);
+					r.add(p.setex(detailKey(snapshot.ossid, snapshot.sessionKey), (long) ttlSeconds, detail(snapshot, now, ttlSeconds)));
+					r.add(p.setex(slotKey(snapshot), (long) ttlSeconds, snapshot.sessionKey));
+					r.add(p.zadd(activeKey(snapshot.ossid), now, snapshot.sessionKey));
+					r.add(p.zadd(activeModuleKey(snapshot.ossid, snapshot.module), now, snapshot.sessionKey));
+					r.add(p.zadd(connKey(snapshot.ossid, snapshot.module, snapshot.connectionName), now, snapshot.sessionKey));
+					r.add(p.zadd(nodeKey(snapshot.ossid, snapshot.module, snapshot.nodeName), now, snapshot.sessionKey));
+					if (moduleWritten.add(snapshot.ossid)) {
+						r.add(p.zadd(moduleKey(snapshot.ossid), now, snapshot.module));
+					}
+					responses.add(r);
+				}
+			});
+			for (int i = 0; i < targets.size(); i++) {
+				SessionSnapshot snapshot = snapshots.get(i);
+				try {
+					for (Response<?> response : responses.get(i)) {
+						response.get();
+					}
+					targets.get(i).markServerRegistryRefreshed(now);
+					result.ok++;
+					result.okSessions.add(targets.get(i));
+					if (forceLog) {
+						log.info("SMPP server bind registry registered. ossid={}, module={}, node={}, connection={}, session={}, sessionKey={}, ttlSeconds={}",
+								snapshot.ossid, snapshot.module, snapshot.nodeName, snapshot.connectionName,
+								snapshot.sessionName, snapshot.sessionKey, ttlSeconds);
+					}
+				} catch (Exception e) {
+					result.failed++;
+					log.warn("Failed to write SMPP server bind registry. Local SMPP session remains connected and reconcile will retry. ossid={}, module={}, connection={}, sessionKey={}",
+							snapshot.ossid, snapshot.module, snapshot.connectionName, snapshot.sessionKey, e);
+				}
 			}
-			String detailKey = detailKey(snapshot.ossid, snapshot.sessionKey);
-			String detail = detail(snapshot, now, ttlSeconds);
-			boolean detailOk = redis.setString(detailKey, detail, ttlSeconds);
-			boolean slotOk = redis.setString(slotKey(snapshot), snapshot.sessionKey, ttlSeconds);
-			if (!detailOk || !slotOk) {
-				throw new IllegalStateException("registry redis set failed. detailOk=" + detailOk + ", slotOk=" + slotOk
-						+ ", detailKey=" + detailKey + ", slotKey=" + slotKey(snapshot));
-			}
-			redis.zadd(activeKey(snapshot.ossid), now, snapshot.sessionKey);
-			redis.zadd(activeModuleKey(snapshot.ossid, snapshot.module), now, snapshot.sessionKey);
-			redis.zadd(connKey(snapshot.ossid, snapshot.module, snapshot.connectionName), now, snapshot.sessionKey);
-			redis.zadd(nodeKey(snapshot.ossid, snapshot.module, snapshot.nodeName), now, snapshot.sessionKey);
-			redis.zadd(moduleKey(snapshot.ossid), now, snapshot.module);
-			if (forceLog) {
-				log.info("SMPP server bind registry registered. ossid={}, module={}, node={}, connection={}, session={}, sessionKey={}, ttlSeconds={}",
-						snapshot.ossid, snapshot.module, snapshot.nodeName, snapshot.connectionName,
-						snapshot.sessionName, snapshot.sessionKey, ttlSeconds);
-			}
-			return snapshot.sessionKey;
 		} catch (Exception e) {
-			SessionSnapshot snapshot = snapshot(session, null);
-			if (snapshot != null) {
-				log.warn("Failed to register SMPP server bind registry. Local SMPP session remains connected and reconcile will retry. ossid={}, module={}, node={}, connection={}, session={}, slotKey={}, sessionKey={}",
-						snapshot.ossid, snapshot.module, snapshot.nodeName, snapshot.connectionName,
-						snapshot.sessionName, snapshot.slotKey, snapshot.sessionKey, e);
-			} else {
-				log.warn("Failed to register SMPP server bind registry. Local SMPP session remains connected and reconcile will retry.", e);
-			}
-			return snapshot == null ? null : snapshot.sessionKey;
+			result.failed += targets.size();
+			log.warn("Failed to write SMPP server bind registry for {} sessions. They remain connected and reconcile will retry.", targets.size(), e);
 		}
+		return result;
 	}
 
 	/** the entry's details, or null if it expired or belongs to another module */
