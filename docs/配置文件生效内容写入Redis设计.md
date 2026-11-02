@@ -34,6 +34,7 @@ GmmsConfig 已经在启动和热加载后写到 `config:effective:{模块}:{Node
 | `config:file:{名称}:{版本}` | Hash | 每一项：块的名字 → 这个块的 JSON（`{"key":"value",...}`，key 保持文件里的写法，如 `CCBSSID`、`SMSOptionOutgoingThrottlingNum`）；Properties 的 key → value；文本文件的行号（6 位，从 000001 开始）→ 这一行 |
 | `config:file:{名称}:{版本}:meta` | Hash | `name`、`version`、`file`、`format`（blocks/properties/lines）、`entries`（项数）、`writtenAt`、`writer`（第一个写入的模块） |
 | `config:file:cm:{版本}:ssid` | Hash | ssid → shortName，按 ssid 查客户 |
+| `config:file:routing:{版本}:channel`、`:channelRoutes` | Hash | 按通道查客户及路由明细，见《路由增量reload与通道路由索引设计》 |
 | `config:files:{模块名}:{NodeID}` | Hash | 这个模块在用的每个文件：`{名称}.version`、`{名称}.loadedAt`、`{名称}.result`（`ok`；`partial` 表示部分客户加载失败；`failed` 表示 reload 失败、仍用上一个版本）、`{名称}.file`、`{名称}.entries`；cm 另有 `cm.failed`（加载失败、仍用旧配置的客户） |
 | `config:effective:modules` | Set | 模块列表（与 GmmsConfig 共用） |
 
