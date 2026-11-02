@@ -360,6 +360,30 @@ public class A2PCustomerConfig implements Comparable{
         return list;
 	}
 
+	/** one routing file as one block; an unreadable file is an error */
+	public static A2PCustomerConfig parseRoutingFile(File file, String shortName) throws java.io.IOException {
+		A2PCustomerConfig block = new A2PCustomerConfig();
+		block.setShortName(shortName);
+		try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), "utf-8"))) {
+			String line;
+			int lineNum = 0;
+			while ((line = reader.readLine()) != null) {
+				lineNum++;
+				line = line.trim();
+				if (line.startsWith("#") || line.length() == 0) {
+					continue;
+				}
+				int sepIndex = line.indexOf(ATTR_SEP);
+				if (sepIndex <= 0) {
+					log.warn("Wrong confi guration {}. Missing Attribute Seperator. Line: {}", line, lineNum);
+					continue;
+				}
+				block.addConf(line.substring(0, sepIndex).trim(), line.substring(sepIndex + 1, line.length()).trim());
+			}
+		}
+		return block;
+	}
+
 	public static Map<String,A2PCustomerConfig>  parseRoutingInfo(File path)
 			throws CustomerConfigurationException {
 		Map<String,A2PCustomerConfig> blockMap = new HashMap<String,A2PCustomerConfig>();

@@ -64,16 +64,21 @@ public final class ConfigFilePublisher {
 		final Format format;
 		final TreeMap<String, String> entries;
 		final Map<String, String> ssidIndex;
+		final Map<String, String> channelIndex;
+		final Map<String, String> channelRoutes;
 		final Map<String, String> moduleFields;
 		final String result;
 
 		Content(String name, String file, Format format, TreeMap<String, String> entries,
-				Map<String, String> ssidIndex, Map<String, String> moduleFields, String result) {
+				Map<String, String> ssidIndex, Map<String, String> channelIndex, Map<String, String> channelRoutes,
+				Map<String, String> moduleFields, String result) {
 			this.name = name;
 			this.file = file;
 			this.format = format;
 			this.entries = entries;
 			this.ssidIndex = ssidIndex;
+			this.channelIndex = channelIndex;
+			this.channelRoutes = channelRoutes;
 			this.moduleFields = moduleFields;
 			this.result = result;
 		}
@@ -83,6 +88,7 @@ public final class ConfigFilePublisher {
 	/** name -> version this module runs, for the hourly TTL refresh */
 	private final ConcurrentHashMap<String, String> inUse = new ConcurrentHashMap<String, String>();
 	private final ScheduledExecutorService executor;
+	private final java.util.concurrent.ConcurrentHashMap<String, Runnable> latestPublish = new java.util.concurrent.ConcurrentHashMap<String, Runnable>();
 
 	private ConfigFilePublisher() {
 		executor = Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
@@ -108,6 +114,13 @@ public final class ConfigFilePublisher {
 	/** blocks of a cm.cfg-style file (block name -> its key/values) */
 	public void publishBlocks(String name, String file, Map<String, A2PCustomerConfig> blocks, String result,
 			Map<String, String> ssidIndex, Map<String, String> moduleFields) {
+		publishBlocks(name, file, blocks, result, ssidIndex, moduleFields, null, null);
+	}
+
+	/** channelIndex, channelRoutes: written to config:file:{name}:{version}:channel and :channelRoutes */
+	public void publishBlocks(String name, String file, Map<String, A2PCustomerConfig> blocks, String result,
+			Map<String, String> ssidIndex, Map<String, String> moduleFields, Map<String, String> channelIndex,
+			Map<String, String> channelRoutes) {
 		if (blocks == null) {
 			return;
 		}
@@ -117,7 +130,7 @@ public final class ConfigFilePublisher {
 			Map<String, String> lines = block == null ? null : block.getLinesWithOriginalNames();
 			entries.put(e.getKey(), JSON.toJSONString(mask(lines)));
 		}
-		submit(new Content(name, file, Format.BLOCKS, entries, ssidIndex, moduleFields, result));
+		submit(new Content(name, file, Format.BLOCKS, entries, ssidIndex, channelIndex, channelRoutes, moduleFields, result));
 	}
 
 	/** an entry per map key, its value written as JSON */
@@ -130,7 +143,7 @@ public final class ConfigFilePublisher {
 			Object v = e.getValue();
 			entries.put(String.valueOf(e.getKey()), v instanceof String ? maskValue(e.getKey(), (String) v) : JSON.toJSONString(v));
 		}
-		submit(new Content(name, file, Format.BLOCKS, entries, null, null, "ok"));
+		submit(new Content(name, file, Format.BLOCKS, entries, null, null, null, null, "ok"));
 	}
 
 	public void publishProperties(String name, String file, Properties props) {
@@ -142,7 +155,7 @@ public final class ConfigFilePublisher {
 			String v = props.getProperty(key);
 			entries.put(key, maskValue(key, v == null ? "" : v.trim()));
 		}
-		submit(new Content(name, file, Format.PROPERTIES, entries, null, null, "ok"));
+		submit(new Content(name, file, Format.PROPERTIES, entries, null, null, null, null, "ok"));
 	}
 
 	/** the text of a file just loaded, one entry per line (000001, 000002, ...) */
@@ -156,7 +169,7 @@ public final class ConfigFilePublisher {
 			for (int i = 0; i < lines.size(); i++) {
 				entries.put(String.format("%06d", i + 1), maskInline(lines.get(i)));
 			}
-			submit(new Content(name, file.getPath(), Format.LINES, entries, null, null, "ok"));
+			submit(new Content(name, file.getPath(), Format.LINES, entries, null, null, null, null, "ok"));
 		} catch (Exception e) {
 			log.warn("Config file not published, cannot read it. name={}, file={}", name, file, e);
 		}
@@ -172,6 +185,24 @@ public final class ConfigFilePublisher {
 	}
 
 	/** a reload found nothing to do: the file is what the module runs */
+	/**
+	 * Runs a costly publish on the publisher's thread, not the reload thread; when several are waiting
+	 * for the same file only the newest runs.
+	 */
+	public void publishLater(final String name, final Runnable publish) {
+		if (!enabled()) {
+			return;
+		}
+		latestPublish.put(name, publish);
+		executor.execute(new Runnable() {
+			public void run() {
+				if (latestPublish.remove(name, publish)) {
+					publish.run();
+				}
+			}
+		});
+	}
+
 	public void publishResultOk(String name) {
 		record(name, "ok", "");
 	}
@@ -251,14 +282,23 @@ public final class ConfigFilePublisher {
 		if (c.ssidIndex != null) {
 			touchKeys.add(base + ":ssid");
 		}
+		if (c.channelIndex != null) {
+			touchKeys.add(base + ":channel");
+			touchKeys.add(base + ":channelRoutes");
+		}
 		Object exists = redis.evalScript(TOUCH_LUA, touchKeys, Collections.<String>emptyList());
 		if (!(exists instanceof Long) || (Long) exists == 0L) {
 			writeHash(redis, base, c.entries);
 			if (c.ssidIndex != null) {
 				writeHash(redis, base + ":ssid", c.ssidIndex);
 			}
+			writeChannelIndex(redis, base, c);
 			writeHash(redis, meta, metaFields(c, version));
 			log.info("Config file content written to Redis. key={}, entries={}", base, c.entries.size());
+		} else if (c.channelIndex != null && !c.channelIndex.isEmpty() && Long.valueOf(0L).equals(
+				redis.evalScript("return redis.call('EXISTS', KEYS[1])", Arrays.asList(base + ":channel"), Collections.<String>emptyList()))) {
+			// this version was written before the channel index existed
+			writeChannelIndex(redis, base, c);
 		}
 		String previous = inUse.put(c.name, version);
 		List<String> fields = new ArrayList<String>(Arrays.asList(
@@ -281,6 +321,13 @@ public final class ConfigFilePublisher {
 			deleteIfUnused(redis, c.name, previous);
 		}
 		return true;
+	}
+
+	private void writeChannelIndex(RedisConnection redis, String base, Content c) {
+		if (c.channelIndex != null) {
+			writeHash(redis, base + ":channel", c.channelIndex);
+			writeHash(redis, base + ":channelRoutes", c.channelRoutes);
+		}
 	}
 
 	private void writeHash(RedisConnection redis, String key, Map<String, String> map) {
@@ -324,7 +371,7 @@ public final class ConfigFilePublisher {
 		}
 		String base = FILE_PREFIX + name + ":" + old;
 		redis.evalScript("for i = 1, #KEYS do redis.call('DEL', KEYS[i]) end return 1",
-				Arrays.asList(base + ":meta", base, base + ":ssid"), Collections.<String>emptyList());
+				Arrays.asList(base + ":meta", base, base + ":ssid", base + ":channel", base + ":channelRoutes"), Collections.<String>emptyList());
 		log.info("Config file version no longer used by any module, deleted. key={}", base);
 	}
 
@@ -339,7 +386,7 @@ public final class ConfigFilePublisher {
 			}
 			for (Map.Entry<String, String> e : inUse.entrySet()) {
 				String base = FILE_PREFIX + e.getKey() + ":" + e.getValue();
-				redis.evalScript(TOUCH_LUA, Arrays.asList(base + ":meta", base, base + ":ssid"),
+				redis.evalScript(TOUCH_LUA, Arrays.asList(base + ":meta", base, base + ":ssid", base + ":channel", base + ":channelRoutes"),
 						Collections.<String>emptyList());
 			}
 		} catch (Exception e) {
