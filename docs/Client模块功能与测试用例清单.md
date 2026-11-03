@@ -1,14 +1,14 @@
 # Client 模块功能与测试用例清单
 
-> 范围：Client（`MultiSmppClient`、`CommonHttpClient`）当前 `main` 的代码。“回归现状”依据 `regression/` 现有用例。第一批（连接生命周期和窗口）、第二批（失败码和 DR 解析）、第三批（真实 HTTP 收发）已实现，结果见第 8～10 节；**标“待补”的还没有写，也没有执行**。
+> 范围：Client（`MultiSmppClient`、`CommonHttpClient`）当前 `main` 的代码。“回归现状”依据 `regression/` 现有用例。第一批（连接生命周期和窗口）、第二批（失败码和 DR 解析）、第三批（真实 HTTP 收发）、第四批（Redis 故障和多进程）、第五批（submit_sm 字段、连接策略）已实现，结果见第 8～12 节；**标“待补”的还没有写，也没有执行**。
 
 ## 1. 总览
 
 Client 从 Redis 读取 Core 路由后的 MT，通过 SMPP 或 HTTP 发给供应商，再把 submit_resp、供应商 DR 和 MO 写回 Redis。
 
-- **已支持功能：** 22 组，其中回归已覆盖 16 组，部分覆盖 4 组，没有覆盖 2 组。
-- **测试用例：** 103 条，其中已覆盖 61 条，部分覆盖 5 条，待补 37 条。
-- **主要缺口：** 可靠性优化（发送去重、限速、慢通道隔离、pending）测得比较全，但 **submit_sm 字段**基本没有回归用例，也没有真实 `kill -9` 的多进程用例。
+- **已支持功能：** 22 组，其中回归已覆盖 19 组，部分覆盖 1 组，没有覆盖 2 组。
+- **测试用例：** 103 条，其中已覆盖 82 条，部分覆盖 3 条，待补 18 条。
+- **主要缺口：** 可靠性优化（发送去重、限速、慢通道隔离、pending）测得比较全，主要业务路径都有用例，剩下的多是少用的配置。
 
 ### 架构
 
@@ -62,7 +62,7 @@ flowchart LR
 | 功能 | 主要配置 | 回归现状 |
 |---|---|---|
 | 消费 `stream:mt:routed`，门铃调度，慢通道隔离 | `RedisStreamConsumer.ClientOutboundSubmit.*`、`ClientStreamTaskMax*` | 已覆盖 |
-| 按分片消费，跨模块校验分片 | `ClientShard.*`、`RELOAD_CLIENT_SHARDS` | 部分 |
+| 按分片消费，跨模块校验分片 | `ClientShard.*`、`RELOAD_CLIENT_SHARDS` | 已覆盖 |
 | 发送去重，重投和确认竞争不重复发送 | `ClientSendIdempotency`、`ClientSendLeaseMs` | 已覆盖 |
 | 通道限速（非阻塞） | `SMSOptionOutgoingThrottlingNum` | 已覆盖 |
 | 发送窗口满时延后 | `WindowSize`、`ClientOutboundWindowFullRetryMs` | 已覆盖 |
@@ -81,9 +81,9 @@ flowchart LR
 
 | 功能 | 主要配置 | 回归现状 |
 |---|---|---|
-| 组装 submit_sm：编码、拼接方式、有效期、自定义参数 | `SMSOptionSupportOutgoingGSM7bit`、`ChlUdhConcatenated`、`SMSOptionTransferValidityPeriod` | 部分 |
+| 组装 submit_sm：编码、拼接方式、有效期、自定义参数 | `SMSOptionSupportOutgoingGSM7bit`、`ChlUdhConcatenated`、`SMSOptionTransferValidityPeriod` | 已覆盖 |
 | submit_sm_resp 转结果，失败码映射，outMsgId 转换 | `SMSOptionSubmitNotPaidMapping`、`ChlSMPPMsgIDParse`、`SMSOptionSMPPIsPadZero4SR` | 已覆盖 |
-| 等待响应超时，结果写入失败重试 | `BufferTimeout`、`SMPPSubmitPendingMode`、`SMPPSubmitPendingResultMaxRetry` | 部分 |
+| 等待响应超时，结果写入失败重试 | `BufferTimeout`、`SMPPSubmitPendingMode`、`SMPPSubmitPendingResultMaxRetry` | 已覆盖 |
 | 接收供应商 DR：先写 Redis 再回 resp | `stream:core:inbound-dr:*` | 已覆盖 |
 | DR 解析和状态映射 | `SMSOptionDRStatusIsOptionPara`、`SMSOptionDRStatusMapping`、`SMSOptionDRNotPaidCode` | 已覆盖 |
 | 接收 MO | `stream:mt:pending:*` | 已覆盖 |
@@ -138,11 +138,11 @@ flowchart LR
 | ID | 级别 | 配置 / 前置 | 场景 | 预期 | 现状 | 现有用例 |
 |---|---|---|---|---|---|---|
 | CS-01 | P0 | 正常 MT | 从 `stream:mt:routed` 读到 MT | 发给供应商，确认消费，标记删除 | 已覆盖 | ClientBatch1IT |
-| CS-02 | P0 | `ClientShard.*` | 两个 Client 各负责一部分分片 | 只消费自己的分片。现有用例只验证了分片配置的校验，没有验证实际消费范围 | 部分 | ShardGroupIT |
-| CS-03 | P1 | `RELOAD_CLIENT_SHARDS` | 运行中改分片 | 新分片开始消费，移走的分片不再读 | 待补 |  |
+| CS-02 | P0 | `ClientShard.*`，两个真实 Client 进程 | 各负责一个分片 | 只消费自己的分片，全部到达，没有重复 | 已覆盖 | ClientFailoverIT、ShardGroupIT |
+| CS-03 | P1 | `RELOAD_CLIENT_SHARDS` | 运行中把分片交给另一个 Client | 它开始消费积压和新消息 | 已覆盖 | ClientFailoverIT |
 | CS-04 | P0 | 多个慢通道积压 | worker 只有 4 个 | 快通道不受影响 | 已覆盖 | ClientBatch1IT |
 | CS-05 | P1 | `WorkerMaxPoolSize` | worker 全忙 | 核心数等于最大数，满了拒绝任务并把 stream 交回门铃，不由 dispatcher 执行 | 已覆盖 | ClientBatch1IT |
-| CS-06 | P1 | `ClientStreamTaskMaxBatches`、`ClientStreamTaskMaxMs` | 大积压通道 | 任务到量后让出 worker，其他通道能轮到 | 待补 |  |
+| CS-06 | P1 | `ClientStreamTaskMaxBatches=1`，2 个 worker | 3000 条积压 | 小通道约 100 毫秒内得到处理；积压最终完成，没有重复 | 已覆盖 | ClientPduIT |
 | CS-07 | P0 | worker 读走后挂掉 | 记录还在待确认列表 | 重投后发送并确认 | 已覆盖 | ClientBatch1IT |
 | CS-08 | P1 | `RedisStreamMaxDeliveries` | 消息反复投递失败 | 进死信队列，不无限重试。现有用例只验证了推迟不计投递次数 | 部分 | ClientBatch1IT |
 | CS-09 | P2 | 门铃丢失 | Client 启动时 stream 有积压 | 启动时重新敲门铃，积压被消费 | 待补 |  |
@@ -158,8 +158,8 @@ flowchart LR
 | ID-05 | P0 | 会话断开，但这条之前已发出 | 重投 | 不回失败结果，只确认 | 已覆盖 | ClientBatch1IT |
 | ID-06 | P1 | `ClientSendIdempotency=false` | 发送 | 不写标记 | 已覆盖 | ClientBatch1IT |
 | ID-07 | P0 | 重投和确认竞争（两个方向） | 两份副本 | 供应商只收到一次，没有标记残留，不写多余失败结果 | 已覆盖 | ClientBatch1IT |
-| ID-08 | P1 | 长短信各段、Core 重试 | 同一 msgId，不同段号或重试次数 | 标记 key 不同，每一段、每次重试都能发送 | 待补 |  |
-| ID-09 | P0 | 标记所在 Redis 出错 | 发送前 | 不发送，消息留在待确认，恢复后由重投处理 | 待补 |  |
+| ID-08 | P1 | 长短信各段、Core 重试 | 同一 msgId，不同段号或重试次数 | 标记 key 不同，每一段、每次重试都能发送；标记随后删除 | 已覆盖 | ClientPduIT |
+| ID-09 | P0 | Redis 真实断开（TCP 代理） | 发送前抢标记 | 不发送，留在待确认；恢复后重投，只发一次 | 已覆盖 | ClientFaultIT |
 
 ### 三、限速与窗口
 
@@ -169,8 +169,8 @@ flowchart LR
 | TW-02 | P0 | 限速通道 | 取不到令牌 | 不阻塞 worker，本批延后 | 已覆盖 | ClientBatch1IT |
 | TW-03 | P1 | 消息被推迟 | 多次推迟 | 不计投递次数，不进死信队列，不被重投重复发送 | 已覆盖 | ClientBatch1IT |
 | TW-04 | P0 | `WindowSize=2`，供应商不回 resp | 窗口满 | 只发 2 条，其余不回失败、不丢；resp 到达后继续发送；每条只发一次、都有成功结果，stream 清空，没有标记残留 | 已覆盖 | ClientConnectionIT |
-| TW-05 | P1 | `ClientOutboundWindowFullRetryMs` | 窗口满 | 按配置间隔重试，取值限制在 10 到 60000 | 待补 |  |
-| TW-06 | P1 | 限速通道 | 读取批量 | 每批不超过 1 秒的 TPS | 待补 |  |
+| TW-05 | P1 | `ClientOutboundWindowFullRetryMs` | 配置取值 | 限制在 10 到 60000，非法值用 100。只验证了取值，没有测实际重试间隔 | 部分 | ClientPduIT |
+| TW-06 | P1 | 限速通道 | 读取批量 | 7 TPS 时每批读 7 条；不限速通道用正常批量 | 已覆盖 | ClientPduIT |
 | TW-07 | P1 | 修改 TPS 后 `RELOAD_CUSTOMER` | 运行中 | 新速率生效 | 待补 |  |
 | TW-08 | P2 | 两个 Client 节点 | 同一通道 | 按节点限速，总速率等于配置值乘节点数（已知限制） | 待补 |  |
 
@@ -188,7 +188,7 @@ flowchart LR
 | CN-08 | P1 | 供应商发 enquire_link | 运行中 | 回应答 | 已覆盖 | ClientConnectionIT |
 | CN-09 | P2 | `ConnectionSilentTime`、`EnquireLink=false` | 长时间无活动 | 断开并重连 | 已覆盖 | ClientConnectionIT |
 | CN-10 | P1 | `SessionNumber=2` | 多会话 | 两次 bind，20 条消息平均分到两个会话 | 已覆盖 | ClientConnectionIT |
-| CN-11 | P1 | `SubmitPolicy_Conn`（`Policy` 属性和主连接） | 多连接 | Primary、LoadBalance、Random 等策略选到正确连接 | 待补 |  |
+| CN-11 | P1 | `SubmitPolicy_Conn` | 多连接 | `primary`：全走主连接，主连接断开时切到其他连接，恢复后切回；`loadbalance`：两条都用 | 已覆盖 | ClientPduIT |
 | CN-12 | P2 | `ConnectionType=MN` | 多节点 | 按节点建立连接并选择 | 待补 |  |
 | CN-13 | P2 | `SMSOptionSMPPVersion=V33` | SMPP 3.3 供应商 | bind、发送、DR 都正常 | 待补 |  |
 | CN-14 | P2 | `Protocol=SSLSMPP` | TLS 供应商 | `SslSmppClient` 能连接和发送 | 待补 |  |
@@ -198,15 +198,15 @@ flowchart LR
 
 | ID | 级别 | 配置 / 前置 | 场景 | 预期 | 现状 | 现有用例 |
 |---|---|---|---|---|---|---|
-| PD-01 | P0 | 普通 MT | 发送 | 发送方、接收方、内容、service_type 与消息一致。现有用例只验证了发出，没有校验字段 | 部分 | LogChainClientIT |
-| PD-02 | P1 | `SMSOptionSupportOutgoingGSM7bit`、编码 | ASCII、UCS2、7bit | data_coding 和内容字节正确 | 待补 |  |
-| PD-03 | P1 | `ChlUdhConcatenated` | 长短信分段 | UDH 或 SAR 可选参数二选一，段号正确 | 待补 |  |
-| PD-04 | P1 | `SMSOptionTransferValidityPeriod`、`SMSOptionIsRelateValidityPeriod` | 有效期 | 按配置传绝对或相对时间，或不传 | 待补 |  |
-| PD-05 | P1 | 消息是否要 DR | 发送 | registered_delivery 正确 | 待补 |  |
-| PD-06 | P2 | ton、npi 配置 | 发送 | 地址类型正确 | 待补 |  |
-| PD-07 | P2 | `SMSOptionHttpCustomParameter` 等 | 发送 | 自定义可选参数写入 | 待补 |  |
+| PD-01 | P0 | 普通 MT，抓真实 PDU | 发送 | 发送方、接收方、内容一致；默认没有 service_type、protocol 0、esm 0、没有 validity；`ServiceType` 生效 | 已覆盖 | ClientPduIT |
+| PD-02 | P1 | `SMSOptionSupportOutgoingGSM7bit`、编码 | ASCII、UCS2、7bit | ASCII→dcs 0；配 1 或 2 时 UCS2→dcs 8，7bit 分别是不打包和打包。**配 0（默认）时 UCS2 的 dcs 是 0，见第 12.1 节（DEF-C6）** | 已覆盖（已知缺陷） | ClientPduIT |
+| PD-03 | P1 | `ChlUdhConcatenated` | 长短信分段 | 开启：esm 0x40，UDH 在内容前，没有 SAR 参数；默认：SAR 可选参数，段号正确 | 已覆盖 | ClientPduIT |
+| PD-04 | P1 | `SMSOptionTransferValidityPeriod`、`SMSOptionIsRelateValidityPeriod` | 有效期 | 绝对时间或相对时间（`000000hhmmss000R`）；默认不传 | 已覆盖 | ClientPduIT |
+| PD-05 | P1 | `ChlIsSupportDeliveryReport` | 发送 | 默认 registered_delivery 1；配 No 时 0 | 已覆盖 | ClientPduIT |
+| PD-06 | P2 | `SMSOptionSourceAddrTon` 等 | 发送 | 默认 1/1；按配置；字母发送方固定 TON 5、NPI 0；`SMSOptionProtocolId` 生效 | 已覆盖 | ClientPduIT |
+| PD-07 | P2 | `SMSOptionHttpCustomParameter` | 发送 | 写入可选参数（tag 5140） | 已覆盖 | ClientPduIT |
 | PD-08 | P2 | `getTransparency` 大于 0 | 发送 | 带上 MNC、MCC | 待补 |  |
-| PD-09 | P1 | 消息无法构造 PDU | 发送 | 回失败结果，确认消费，不卡住通道 | 待补 |  |
+| PD-09 | P1 | 消息无法构造 PDU（字符集不存在） | 发送 | 不发送，回失败结果 2500，确认消费，通道继续工作 | 已覆盖 | ClientPduIT |
 
 ### 六、submit_sm_resp 和超时
 
@@ -217,8 +217,8 @@ flowchart LR
 | RS-03 | P1 | `SMSOptionSubmitNotPaidMapping` | 匹配的失败码 | 转成映射后的状态；不在映射里的按普通规则 | 已覆盖 | ClientResultIT |
 | RS-04 | P1 | `ChlSMPPMsgIDParse`、`SMSOptionSMPPIsPadZero4SR` | outMsgId | 默认保留原值；开启后十六进制转十进制，并默认补零到 10 位；可单独关补零；供应商 DR 带同样的 id 时一致 | 已覆盖 | ClientResultIT |
 | RS-05 | P0 | `BufferTimeout`，供应商不回 | 超时 | WARN `[RESP-TIMEOUT]`，写失败结果（SUBMIT_RESP_ERROR） | 已覆盖 | LogChainClientIT |
-| RS-06 | P1 | 超时后 resp 才到 | 迟到 | 不重复写结果，打一条找不到原消息的日志 | 待补 |  |
-| RS-07 | P0 | 结果写入失败（背压或 Redis 错误） | 收到 resp | 标记待重试，按 `SMPPSubmitPendingResultMaxRetry` 重试，超过后放弃并释放窗口 | 待补 |  |
+| RS-06 | P1 | 超时后 resp 才到 | 迟到 | 超时回 2700；迟到的 resp 不写第二个结果，打一条找不到原消息的日志，连接不受影响 | 已覆盖 | ClientFaultIT |
+| RS-07 | P0 | 结果写不进去（Redis 真实断开） | 收到 resp | 恢复后重试写入，只有一个结果；超过 `SMPPSubmitPendingResultMaxRetry` 后放弃并释放窗口，没有结果，由 Core outbox 兜底 | 已覆盖 | ClientFaultIT |
 | RS-08 | P1 | `SMPPSubmitPendingMode` | memory、redis、hybrid | memory 不访问 Redis；redis 写入并删除；模式切换和遗留 key 都正确 | 已覆盖 | ClientPendingIT |
 | RS-09 | P1 | 响应和超时竞争 | 同时发生 | 只写一个结果（`tryClaimProduce`） | 待补 |  |
 
@@ -227,7 +227,7 @@ flowchart LR
 | ID | 级别 | 配置 / 前置 | 场景 | 预期 | 现状 | 现有用例 |
 |---|---|---|---|---|---|---|
 | VD-01 | P0 | deliver_sm 是 DR | 收到 | 写 `stream:core:inbound-dr`，再回 deliver_sm_resp ROK | 已覆盖 | LogChainClientIT |
-| VD-02 | P0 | 写 Redis 失败（用背压模拟） | 收到 DR | 回 ESME_RX_T_APPN（0x64），不写入；供应商重发时接受 | 已覆盖 | ClientResultIT |
+| VD-02 | P0 | 写 Redis 失败（背压和 Redis 真实断开） | 收到 DR | 回 ESME_RX_T_APPN（0x64），不写入；供应商重发时接受 | 已覆盖 | ClientResultIT、ClientFaultIT |
 | VD-03 | P1 | DR 没有 id 字段 | 收到 | 不抛异常，会话正常。**实际回 ROK 并写入一条没有 outMsgId 的 DR，供应商不会重发**，见第 9.2 节 | 已覆盖 | ClientResultIT |
 | VD-04 | P1 | `SMSOptionDRStatusIsOptionPara`，或文本为空 | 状态在可选参数里 | message_state 2、6→10000，3→过期，4→删除，5→10400，8→拒绝，其他→未知；只有 network_error_code→10400；只有 receipted_message_id→DELIVERED。`SMSOptionSMPPNeedReceiptedMessageId` 用于发给客户的 DR，这里没有测 | 已覆盖 | ClientResultIT |
 | VD-05 | P1 | 短信文本格式回执 | `id:... sub:... stat:DELIVRD` | 7 种状态都解析正确；没有 `sub:` 时取 `id:` 后 10 个字符 | 已覆盖 | ClientResultIT |
@@ -272,12 +272,12 @@ flowchart LR
 
 | ID | 级别 | 配置 / 前置 | 场景 | 预期 | 现状 | 现有用例 |
 |---|---|---|---|---|---|---|
-| FT-01 | P0 | 真实 `kill -9` 一个 Client 进程 | 等待 resp 的消息 | memory 模式下由 Core outbox 超时回 2700，不丢；重启后继续消费，不重复发送 | 待补 |  |
-| FT-02 | P0 | 发送中进程挂掉 | 标记是发送中 | 不重发。现有用例是模拟的标记状态，不是真实进程 | 部分 | ClientBatch1IT |
-| FT-03 | P0 | Redis 短暂不可用 | 发送和写结果中 | 消息不丢；恢复后继续 | 待补 |  |
+| FT-01 | P0 | 真实 `kill -9` 一个 Client 进程 | 空闲、等待 resp、压力下 | 不接管，它的分片积压等待，另一分片不受影响；重启后继续，等 resp 的消息不重发，没有重复；被 kill 打断的发送不重发（第 11.2 节） | 已覆盖 | ClientFailoverIT |
+| FT-02 | P0 | 发送中进程挂掉 | 真实进程 | 标记是发送中，不重发，只确认，由 Core outbox 判超时 | 已覆盖 | ClientFailoverIT、ClientBatch1IT |
+| FT-03 | P0 | Redis 断开 3 秒（TCP 代理） | 发送中 | 恢复后全部到达，每条一次，一个结果，没有遗留 | 已覆盖 | ClientFaultIT |
 | FT-04 | P1 | Socket 写失败 | 发送时 IOException | 删除 pending，停止会话，这条回失败结果，重连后恢复 | 待补 |  |
 | FT-05 | P1 | 两个 Client 分片重叠或缺失 | 校验 | 打 `[SHARD-CHECK]` 告警 | 已覆盖 | ShardGroupIT |
-| FT-06 | P1 | Client 挂掉后手动改分片 | `RELOAD_CLIENT_SHARDS` | 另一个 Client 接手积压，每条只发一次 | 待补 |  |
+| FT-06 | P1 | Client 挂掉后手动改分片 | `RELOAD_CLIENT_SHARDS` | 另一个 Client 接手积压，每条只发一次 | 已覆盖 | ClientFailoverIT |
 | FT-07 | P1 | Core 停止读取结果 | 结果 stream 积压 | Client 不受影响；触发背压时按 RS-07 处理 | 待补 |  |
 
 ### 十一、日志
@@ -300,33 +300,33 @@ flowchart LR
 
 | 分组 | 用例数 | 已覆盖 | 部分 | 待补 |
 |---|---|---|---|---|
-| 消费与调度 | 9 | 4 | 2 | 3 |
-| 发送去重 | 9 | 7 | 0 | 2 |
-| 限速与窗口 | 8 | 4 | 0 | 4 |
-| SMPP 连接 | 15 | 11 | 0 | 4 |
-| submit_sm 编码 | 9 | 0 | 1 | 8 |
-| submit_sm_resp 和超时 | 9 | 6 | 0 | 3 |
+| 消费与调度 | 9 | 7 | 1 | 1 |
+| 发送去重 | 9 | 9 | 0 | 0 |
+| 限速与窗口 | 8 | 5 | 1 | 2 |
+| SMPP 连接 | 15 | 12 | 0 | 3 |
+| submit_sm 编码 | 9 | 8 | 0 | 1 |
+| submit_sm_resp 和超时 | 9 | 8 | 0 | 1 |
 | 供应商 DR 和 MO | 12 | 11 | 1 | 0 |
 | HTTP 通道 | 15 | 12 | 0 | 3 |
 | 配置热加载 | 4 | 2 | 0 | 2 |
-| 故障与恢复 | 7 | 1 | 1 | 5 |
+| 故障与恢复 | 7 | 5 | 0 | 2 |
 | 日志 | 3 | 3 | 0 | 0 |
 | 性能基线 | 3 | 0 | 0 | 3 |
-| **合计** | **103** | **61** | **5** | **37** |
+| **合计** | **103** | **82** | **3** | **18** |
 
 | 级别 | 已覆盖 | 部分 | 待补 |
 |---|---|---|---|
-| P0 | 31 | 3 | 4 |
-| P1 | 27 | 1 | 22 |
-| P2 | 3 | 1 | 11 |
+| P0 | 38 | 0 | 0 |
+| P1 | 39 | 2 | 9 |
+| P2 | 5 | 1 | 9 |
 
 ## 6. 建议补用例的顺序
 
-第一到第三批（连接生命周期和窗口、失败码和 DR 解析、真实 HTTP 收发）已完成，接下来建议：
+前五批已完成，P0 已经全部覆盖。接下来建议：
 
-1. **结果写入失败和 Redis 故障（RS-07、ID-09、FT-03）：** 验证不丢消息。
-2. **多进程 `kill -9`（FT-01、FT-06）：** 可以参照 `CoreFailoverIT`。
-3. **submit_sm 字段（PD-*）、连接策略（CN-11）和其余 P2。**
+1. **剩余 P1：** TPS 热加载（TW-07）、响应和超时竞争（RS-09）、配置热加载（CF-03、CF-04）、Core 停止读取结果（FT-07）。
+2. **P2：** SMPP 3.3、TLS、多节点、主动查询 DR、供应商处理类抽样。
+3. **性能基线（PF-01～PF-03）：** 需要更多环境资源。
 
 ## 7. 未核实的部分
 
@@ -443,7 +443,7 @@ flowchart LR
 | 10000、10400、10200、10500、10900 | 正确 | 和首发一致 |
 | 10402、10405 | `UNDELIV` | **`UNKNOWN`** |
 
-只影响“第一次发 DR 失败、重发”的情况。SMPP 实测（`PD-03a`、`PD-03b`）；HTTP 用同一个还原方法，读代码判断有同样的问题，没有实测。已登记为已知缺陷，没有改。
+只影响“第一次发 DR 失败、重发”的情况。SMPP 实测（`SD-03a`、`SD-03b`）；HTTP 用同一个还原方法，读代码判断有同样的问题，没有实测。已登记为已知缺陷，没有改。
 
 **已确认符合预期：** 发送方黑名单拒绝（10801）的回执是 `stat:UNKNOWN`（`getStateTextFromCode` 没有列这个码）。上面的 DEF-C5 也按决定保持现状，不修改。
 
@@ -458,3 +458,57 @@ flowchart LR
 
 - **`ItHttpHandler` 是测试用的：** 线上供应商的处理类（`protocol/commonhttp`，共 95 个文件）各有各的格式，这里没有测（HT-12）。
 - **DR 响应：** 只测了空响应。客户回非空内容时走 `dealDRResp`，没有测。
+
+## 11. 第四批结果
+
+新增 `ClientFaultIT`（24 项）和 `ClientFailoverIT`（19 项），以及测试工具 `RedisGate`、`ClientNode`，已加入 `regression/suites.txt`。这批只加测试，没有改产品代码，没有跑全量回归。
+
+### 11.1 测试方式
+
+- **Redis 故障：** Client 通过可切断的 TCP 代理连 Redis。切断后得到真实的连接错误，Redis 里的数据不丢；用例自己直连 Redis 读结果。
+- **进程故障：** 两个真实 Client 进程，`kill -9`，由假供应商统计实际收到的消息。
+
+### 11.2 用例确认的行为
+
+这批**没有发现缺陷**，确认了几个结论：
+
+- **Client 不会自动接管（FT-01）：** 和 Core 一样。分片积压等待重启，或手动 `RELOAD_CLIENT_SHARDS`，消息不丢。
+- **被 `kill -9` 打断的发送不重发（FT-01i）：** 压力下 `kill -9` 时，读走未确认的有 4 条，供应商没有收到的也正好是 4 条（两轮一致）。重启后它们没有再发出去；按代码逻辑，这是发送标记已过期、只确认不重发，由 Core outbox 回 2700。“两边是同样的 4 条”是从数量推断的，没有逐条比对。这是“宁可不发不重发”的设计，这几条是否重试取决于 `SMSOptionSubmitRetryCode`。
+- **结果写不进去时会重试（RS-07）：** Redis 恢复后写入，只有一个结果。超过 `SMPPSubmitPendingResultMaxRetry`（默认 50 次）后放弃并释放窗口，这时结果由 Core outbox 兜底。
+- **Redis 断开时不回 ROK（VD-02）：** 供应商 DR 回 0x64，让供应商重发，不丢。
+
+### 11.3 这批用例的限制
+
+- **Redis 故障时序：** 这几轮都没有碰到“已发给供应商，但确认消费时 Redis 断开”这个窗口，它要在发送和确认之间正好断开，没有专门构造。
+- **Core outbox：** 用例里没有运行 Core，所以“由 outbox 回 2700”是配置说明和读代码的结论，没有端到端跑到。
+- **多进程：** 只覆盖 SMPP，HTTP Client 没有做 `kill -9`。
+- **阈值：** 用例把 `ClientSendLeaseMs`、`RedisStreamAutoClaimIdleMs` 调低了，不是默认的 60 秒。
+
+## 12. 第五批结果
+
+新增 `ClientPduIT`（抓真实 submit_sm，逐字段校验），`FakeSmsc` 增加完整的 submit_sm 解析。已加入 `regression/suites.txt`。这批只加测试，没有改产品代码，没有跑全量回归。
+
+### 12.1 待确认：默认配置下 UCS2 的 data_coding 是 0（DEF-C6）
+
+通道的 `SMSOptionSupportOutgoingGSM7bit` 是 0（默认）时，`Smpp.createSmppSubmitSM` 把字符集强制设成默认字符集，所以：
+
+| 通道配置 | 消息 | data_coding | short_message |
+|---|---|---|---|
+| 0（默认） | UCS2 中文 | **0** | `4F60597D`（UTF-16） |
+| 1 | UCS2 中文 | 8 | `4F60597D` |
+
+字节是 UTF-16，却标成默认字符集，按规范解析会是乱码。已确认链路：真实 Core 发到 Client 的消息确实是 UCS2（`CoreContentIT` 的 `OUT-05c`），Client 发给假供应商的 PDU 里就是上表的值。
+
+**没有确认的：** 这段代码来自最早的提交。线上通道如果都配了 1 或 2，就不会触发；供应商是否按其他方式处理 dcs 0 也不清楚。所以这里只登记（`PD-02a`），没有改代码。
+
+### 12.2 用例确认的其他行为
+
+- **主连接恢复后会切回（CN-11）：** `Policy=primary` 时全走主连接，主连接断开时切到其他连接，恢复后切回。
+- **字母发送方（PD-06）：** 固定 TON 5、NPI 0，不受 `SMSOptionSourceAddrTon` 影响。
+- **任务预算有效（CS-06）：** 2 个 worker、3000 条积压时，小通道约 100 毫秒就得到处理。
+
+### 12.3 这批用例的限制
+
+- **`PD-08`（MNC、MCC）没有测：** 需要运营商数据。
+- **`TW-05`：** 只验证了配置取值，没有测实际重试间隔。
+- **消息来源：** 除了 `OUT-05c`，这批的消息由测试直接写入 `stream:mt:routed`，字段是测试设置的。
