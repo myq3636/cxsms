@@ -1,13 +1,13 @@
 # Client 模块功能与测试用例清单
 
-> 范围：Client（`MultiSmppClient`、`CommonHttpClient`）当前 `main` 的代码。“回归现状”依据 `regression/` 现有用例。第一批（连接生命周期和窗口）、第二批（失败码和 DR 解析）、第三批（真实 HTTP 收发）、第四批（Redis 故障和多进程）、第五批（submit_sm 字段、连接策略）已实现，结果见第 8～12 节；**标“待补”的还没有写，也没有执行**。
+> 范围：Client（`MultiSmppClient`、`CommonHttpClient`）当前 `main` 的代码。“回归现状”依据 `regression/` 现有用例。第一批（连接生命周期和窗口）、第二批（失败码和 DR 解析）、第三批（真实 HTTP 收发）、第四批（Redis 故障和多进程）、第五批（submit_sm 字段、连接策略）、第六批（运行中变化、多节点、SMPP 3.3、TLS）已实现，结果见第 8～13 节；**标“待补”的还没有写，也没有执行**。
 
 ## 1. 总览
 
 Client 从 Redis 读取 Core 路由后的 MT，通过 SMPP 或 HTTP 发给供应商，再把 submit_resp、供应商 DR 和 MO 写回 Redis。
 
-- **已支持功能：** 22 组，其中回归已覆盖 19 组，部分覆盖 1 组，没有覆盖 2 组。
-- **测试用例：** 103 条，其中已覆盖 82 条，部分覆盖 3 条，待补 18 条。
+- **已支持功能：** 22 组，其中回归已覆盖 20 组，部分覆盖 1 组，没有覆盖 1 组。
+- **测试用例：** 103 条，其中已覆盖 95 条，部分覆盖 1 条，待补 7 条。
 - **主要缺口：** 可靠性优化（发送去重、限速、慢通道隔离、pending）测得比较全，主要业务路径都有用例，剩下的多是少用的配置。
 
 ### 架构
@@ -74,8 +74,8 @@ flowchart LR
 |---|---|---|
 | bind、断线重连 | `BindMode`、`ReconnectInterval` | 已覆盖 |
 | enquire_link 保活、静默断开 | `EnquireLink`、`EnquireLinkTime`、`EnquireLinkFailureNum`、`ConnectionSilentTime` | 已覆盖 |
-| 多连接、多会话、连接选择策略 | `ConnectionType`、`OutgoingConnection`、`SessionNumber`、`SubmitPolicy_Conn` | 部分 |
-| SMPP 3.3、TLS | `SMSOptionSMPPVersion`、`Protocol=SSLSMPP` | 待补 |
+| 多连接、多会话、连接选择策略 | `ConnectionType`、`OutgoingConnection`、`SessionNumber`、`SubmitPolicy_Conn` | 已覆盖 |
+| SMPP 3.3、TLS | `SMSOptionSMPPVersion`、`Protocol=SSLSMPP` | 部分（TLS 通道发不出去，见 13.1） |
 
 ### 收发内容
 
@@ -144,8 +144,8 @@ flowchart LR
 | CS-05 | P1 | `WorkerMaxPoolSize` | worker 全忙 | 核心数等于最大数，满了拒绝任务并把 stream 交回门铃，不由 dispatcher 执行 | 已覆盖 | ClientBatch1IT |
 | CS-06 | P1 | `ClientStreamTaskMaxBatches=1`，2 个 worker | 3000 条积压 | 小通道约 100 毫秒内得到处理；积压最终完成，没有重复 | 已覆盖 | ClientPduIT |
 | CS-07 | P0 | worker 读走后挂掉 | 记录还在待确认列表 | 重投后发送并确认 | 已覆盖 | ClientBatch1IT |
-| CS-08 | P1 | `RedisStreamMaxDeliveries` | 消息反复投递失败 | 进死信队列，不无限重试。现有用例只验证了推迟不计投递次数 | 部分 | ClientBatch1IT |
-| CS-09 | P2 | 门铃丢失 | Client 启动时 stream 有积压 | 启动时重新敲门铃，积压被消费 | 待补 |  |
+| CS-08 | P1 | `RedisStreamMaxDeliveries` | 消息反复投递失败 | 进死信队列（`stream:dlq:submit`），不再发送。推迟不计投递次数 | 已覆盖 | ClientBatch1IT、ClientLifecycleIT |
+| CS-09 | P2 | 门铃丢失 | Client 启动时 stream 有积压 | 启动时重新敲门铃，积压被消费 | 已覆盖 | ClientLifecycleIT |
 
 ### 二、发送去重
 
@@ -169,10 +169,10 @@ flowchart LR
 | TW-02 | P0 | 限速通道 | 取不到令牌 | 不阻塞 worker，本批延后 | 已覆盖 | ClientBatch1IT |
 | TW-03 | P1 | 消息被推迟 | 多次推迟 | 不计投递次数，不进死信队列，不被重投重复发送 | 已覆盖 | ClientBatch1IT |
 | TW-04 | P0 | `WindowSize=2`，供应商不回 resp | 窗口满 | 只发 2 条，其余不回失败、不丢；resp 到达后继续发送；每条只发一次、都有成功结果，stream 清空，没有标记残留 | 已覆盖 | ClientConnectionIT |
-| TW-05 | P1 | `ClientOutboundWindowFullRetryMs` | 配置取值 | 限制在 10 到 60000，非法值用 100。只验证了取值，没有测实际重试间隔 | 部分 | ClientPduIT |
+| TW-05 | P1 | `ClientOutboundWindowFullRetryMs` | 配置取值、窗口满 | 限制在 10 到 60000，非法值用 100。窗口满时按配置的间隔重试（配 4 秒，实测窗口空出后约 3.5 秒才发） | 已覆盖 | ClientPduIT、ClientLifecycleIT |
 | TW-06 | P1 | 限速通道 | 读取批量 | 7 TPS 时每批读 7 条；不限速通道用正常批量 | 已覆盖 | ClientPduIT |
-| TW-07 | P1 | 修改 TPS 后 `RELOAD_CUSTOMER` | 运行中 | 新速率生效 | 待补 |  |
-| TW-08 | P2 | 两个 Client 节点 | 同一通道 | 按节点限速，总速率等于配置值乘节点数（已知限制） | 待补 |  |
+| TW-07 | P1 | 修改 TPS 后 `RELOAD_CUSTOMER` | 运行中 | 新速率生效，该通道重连，其他通道不受影响 | 已覆盖 | ClientLifecycleIT |
+| TW-08 | P2 | 两个 Client 节点 | 同一通道 | 按节点限速，总速率等于配置值乘节点数（已知限制） | 已覆盖 | ClientFailoverIT |
 
 ### 四、SMPP 连接
 
@@ -189,9 +189,9 @@ flowchart LR
 | CN-09 | P2 | `ConnectionSilentTime`、`EnquireLink=false` | 长时间无活动 | 断开并重连 | 已覆盖 | ClientConnectionIT |
 | CN-10 | P1 | `SessionNumber=2` | 多会话 | 两次 bind，20 条消息平均分到两个会话 | 已覆盖 | ClientConnectionIT |
 | CN-11 | P1 | `SubmitPolicy_Conn` | 多连接 | `primary`：全走主连接，主连接断开时切到其他连接，恢复后切回；`loadbalance`：两条都用 | 已覆盖 | ClientPduIT |
-| CN-12 | P2 | `ConnectionType=MN` | 多节点 | 按节点建立连接并选择 | 待补 |  |
-| CN-13 | P2 | `SMSOptionSMPPVersion=V33` | SMPP 3.3 供应商 | bind、发送、DR 都正常 | 待补 |  |
-| CN-14 | P2 | `Protocol=SSLSMPP` | TLS 供应商 | `SslSmppClient` 能连接和发送 | 待补 |  |
+| CN-12 | P2 | `ConnectionType=MN` | 多节点 | 按节点建立连接，`primary` 策略全走主节点，断线后约 `ReconnectInterval` 重连 | 已覆盖 | ClientLifecycleIT |
+| CN-13 | P2 | `SMSOptionSMPPVersion=V33` | SMPP 3.3 供应商 | bind（interface_version 0x33）、发送、DR 都正常，DR 的十进制 id 转成十六进制 | 已覆盖 | ClientLifecycleIT |
+| CN-14 | P2 | `Protocol=SSLSMPP` | TLS 供应商 | `SslSmppClient` 能握手、bind、重连；**不能发送（DEF-C7）**，MT 回 2500 | 部分 | ClientTlsIT |
 | CN-15 | P0 | 修改通道配置后 `RELOAD_CUSTOMER` | 运行中 | 只有改动的通道重连，其他通道不受影响 | 已覆盖 | RenameReloadIT |
 
 ### 五、submit_sm 编码
@@ -220,7 +220,7 @@ flowchart LR
 | RS-06 | P1 | 超时后 resp 才到 | 迟到 | 超时回 2700；迟到的 resp 不写第二个结果，打一条找不到原消息的日志，连接不受影响 | 已覆盖 | ClientFaultIT |
 | RS-07 | P0 | 结果写不进去（Redis 真实断开） | 收到 resp | 恢复后重试写入，只有一个结果；超过 `SMPPSubmitPendingResultMaxRetry` 后放弃并释放窗口，没有结果，由 Core outbox 兜底 | 已覆盖 | ClientFaultIT |
 | RS-08 | P1 | `SMPPSubmitPendingMode` | memory、redis、hybrid | memory 不访问 Redis；redis 写入并删除；模式切换和遗留 key 都正确 | 已覆盖 | ClientPendingIT |
-| RS-09 | P1 | 响应和超时竞争 | 同时发生 | 只写一个结果（`tryClaimProduce`） | 待补 |  |
+| RS-09 | P1 | 响应和超时竞争 | 同时发生 | 只写一个结果（`tryClaimProduce`） | 已覆盖 | ClientLifecycleIT |
 
 ### 七、供应商 DR 和 MO
 
@@ -234,7 +234,7 @@ flowchart LR
 | VD-06 | P1 | `SMSOptionDRStatusMapping`（Core 清单 DR-13） | 匹配状态 | **在发给客户时生效，不影响 Client 收到的状态**：回执里显示映射后的状态，内部状态不变。代码在 `createSmppDeliverSM4dr`，只测了组 PDU | 已覆盖 | ClientResultIT |
 | VD-07 | P2 | `SMSOptionIsNotSupportUnknowDRStatus`（Core 清单 DR-14） | UNKNOWN、DELETED | 同样在发给客户时生效：显示为 UNDELIV；没开选项的客户显示原状态 | 已覆盖 | ClientResultIT |
 | VD-08 | P1 | `SMSOptionDRNotPaidCode`（Core 清单 DR-17） | 欠费码 | 文本 `err:` 或 network_error_code 匹配时转 REJECTED_BYNC；其他保持原状态 | 已覆盖 | ClientResultIT |
-| VD-09 | P2 | `DrSwapAddr`、`SMSOptionSmppMapErrCod4DR` | DR | `DrSwapAddr` 默认交换发送方和接收方，false 时不交换。`SMSOptionSmppMapErrCod4DR` 没有测 | 部分 | ClientResultIT |
+| VD-09 | P2 | `DrSwapAddr`、`SMSOptionSmppMapErrCod4DR` | DR | `DrSwapAddr` 默认交换发送方和接收方，false 时不交换。`SMSOptionSmppMapErrCod4DR` 开启后客户回执的 err 按状态映射（10400→003、10200→001），关闭时是 000 | 已覆盖 | ClientResultIT |
 | VD-10 | P1 | deliver_sm 是 MO | 收到 | 写 `stream:mt:pending`，供应商作为 ossid，回 ROK；写失败回 0x64 | 已覆盖 | ClientResultIT |
 | VD-11 | P2 | `SMSOptionRemoveUdh` | 带 UDH 的 MO | 开启时去掉 UDH；其他通道保留 | 已覆盖 | ClientResultIT |
 | VD-12 | P1 | SMPP DR 首发和重发，抓真实 PDU | 客户不回 resp 后重发 | 回执里是标准状态词（`DELIVRD`、`UNDELIV` 等），重发和首发一致。**细分失败状态（10402、10405）重发时变成 UNKNOWN（DEF-C5）** | 已覆盖（已知缺陷） | ServerDrPduIT |
@@ -255,7 +255,7 @@ flowchart LR
 | HT-10 | P1 | DR 推送失败 | HTTP 错误码、连不上、超时 | 临时故障（连不上、超时、408、5xx）→11005，Core 会重试；401、403、511→10500；其他 4xx→10900，不重试；都确认消费 | 已覆盖 | ClientHttpIT |
 | HT-11 | P2 | `SMSQueryDRHttpModule`、`QueryHttpMessageThread` | 主动查询 DR | 查询结果写回 Core | 待补 |  |
 | HT-12 | P2 | 供应商专用处理类（`protocol/commonhttp`，共 95 个文件） | 按供应商抽样 | 发送和回执解析正确。建议只测线上在用的几家 | 待补 |  |
-| HT-13 | P1 | 标记所在 Redis 出错 | 发送前 | 不发送，留在待确认 | 待补 |  |
+| HT-13 | P1 | 标记所在 Redis 出错 | 发送前 | 不发送，留在待确认；Redis 恢复后只发一次 | 已覆盖 | ClientHttpIT |
 | HT-14 | P0 | DR 重发，走真实链路 | 失败结果 11005（文本保留真实状态）→ `getResendDR` 还原状态码 → 重发 | 客户收到真实状态 | 已覆盖 | ClientHttpIT |
 | HT-15 | P1 | Core 处理 DR 推送结果 | 11005、401 | 11005 写 RDQ 等重试，重发成功后删除；401 不保留 | 已覆盖 | ClientHttpIT |
 
@@ -265,8 +265,8 @@ flowchart LR
 |---|---|---|---|---|---|---|
 | CF-01 | P0 | 改通道 shortName、ssid | `RELOAD_CUSTOMER` | 旧连接关闭，新连接只 bind 一次，MT 能到；其他通道不受影响 | 已覆盖 | RenameReloadIT |
 | CF-02 | P1 | 连续 reload | 流量中 | 不丢消息，连接稳定 | 已覆盖 | RapidReloadIT |
-| CF-03 | P1 | 新增通道 | `RELOAD_CUSTOMER` | 自动建立连接并能发送 | 待补 |  |
-| CF-04 | P1 | 删除通道 | `RELOAD_CUSTOMER`，有等待中的消息 | 连接关闭，等待中的消息回失败结果，不丢 | 待补 |  |
+| CF-03 | P1 | 新增通道 | `RELOAD_CUSTOMER` | 自动建立连接并能发送，其他通道不受影响 | 已覆盖 | ClientLifecycleIT |
+| CF-04 | P1 | 删除通道 | `RELOAD_CUSTOMER`，有等待中的消息 | 连接关闭，等待中的消息回 2700，之后发往该通道的消息回 2500，其他通道不受影响 | 已覆盖 | ClientLifecycleIT |
 
 ### 十、故障与恢复
 
@@ -278,7 +278,7 @@ flowchart LR
 | FT-04 | P1 | Socket 写失败 | 发送时 IOException | 删除 pending，停止会话，这条回失败结果，重连后恢复 | 待补 |  |
 | FT-05 | P1 | 两个 Client 分片重叠或缺失 | 校验 | 打 `[SHARD-CHECK]` 告警 | 已覆盖 | ShardGroupIT |
 | FT-06 | P1 | Client 挂掉后手动改分片 | `RELOAD_CLIENT_SHARDS` | 另一个 Client 接手积压，每条只发一次 | 已覆盖 | ClientFailoverIT |
-| FT-07 | P1 | Core 停止读取结果 | 结果 stream 积压 | Client 不受影响；触发背压时按 RS-07 处理 | 待补 |  |
+| FT-07 | P1 | Core 停止读取结果 | 结果 stream 积压 | 继续发送；触发背压时结果暂不写入，有空间后重试写入一条 | 已覆盖 | ClientLifecycleIT |
 
 ### 十一、日志
 
@@ -300,33 +300,35 @@ flowchart LR
 
 | 分组 | 用例数 | 已覆盖 | 部分 | 待补 |
 |---|---|---|---|---|
-| 消费与调度 | 9 | 7 | 1 | 1 |
+| 消费与调度 | 9 | 9 | 0 | 0 |
 | 发送去重 | 9 | 9 | 0 | 0 |
-| 限速与窗口 | 8 | 5 | 1 | 2 |
-| SMPP 连接 | 15 | 12 | 0 | 3 |
+| 限速与窗口 | 8 | 8 | 0 | 0 |
+| SMPP 连接 | 15 | 14 | 1 | 0 |
 | submit_sm 编码 | 9 | 8 | 0 | 1 |
-| submit_sm_resp 和超时 | 9 | 8 | 0 | 1 |
-| 供应商 DR 和 MO | 12 | 11 | 1 | 0 |
-| HTTP 通道 | 15 | 12 | 0 | 3 |
-| 配置热加载 | 4 | 2 | 0 | 2 |
-| 故障与恢复 | 7 | 5 | 0 | 2 |
+| submit_sm_resp 和超时 | 9 | 9 | 0 | 0 |
+| 供应商 DR 和 MO | 12 | 12 | 0 | 0 |
+| HTTP 通道 | 15 | 13 | 0 | 2 |
+| 配置热加载 | 4 | 4 | 0 | 0 |
+| 故障与恢复 | 7 | 6 | 0 | 1 |
 | 日志 | 3 | 3 | 0 | 0 |
 | 性能基线 | 3 | 0 | 0 | 3 |
-| **合计** | **103** | **82** | **3** | **18** |
+| **合计** | **103** | **95** | **1** | **7** |
 
 | 级别 | 已覆盖 | 部分 | 待补 |
 |---|---|---|---|
 | P0 | 38 | 0 | 0 |
-| P1 | 39 | 2 | 9 |
-| P2 | 5 | 1 | 9 |
+| P1 | 47 | 0 | 3 |
+| P2 | 10 | 1 | 4 |
 
 ## 6. 建议补用例的顺序
 
-前五批已完成，P0 已经全部覆盖。接下来建议：
+前六批已完成，P0 已经全部覆盖。接下来建议：
 
-1. **剩余 P1：** TPS 热加载（TW-07）、响应和超时竞争（RS-09）、配置热加载（CF-03、CF-04）、Core 停止读取结果（FT-07）。
-2. **P2：** SMPP 3.3、TLS、多节点、主动查询 DR、供应商处理类抽样。
+1. **剩余 P1：** Socket 写失败（FT-04），需要能稳定触发写失败的手段。
+2. **P2：** MNC、MCC（PD-08）、主动查询 DR（HT-11）、供应商处理类抽样（HT-12）。
 3. **性能基线（PF-01～PF-03）：** 需要更多环境资源。
+
+`SSLSMPP` 已不再使用，DEF-C7 不修（见 13.1）。
 
 ## 7. 未核实的部分
 
@@ -366,7 +368,7 @@ flowchart LR
 - 线程自己发现断线（enquire_link 不回）时，仍然等够 `ReconnectInterval`（`CN-07d`）。
 - 供应商持续拒绝 bind 时，仍按间隔重试，3 秒内 3 次，不会变成密集重试（`CN-03e`）。
 
-**没有实测：** 多节点（`MN`）和 Peering 通道没有用例，`NodeClientSessionThread` 的修改只经过编译，没有运行。
+**没有实测：** 多节点（`MN`）和 Peering 通道没有用例，`NodeClientSessionThread` 的修改只经过编译，没有运行（多节点已在第六批实测，见 13.2 的 CN-12；Peering 仍没有用例）。
 
 ### 8.3 用例确认的其他行为
 
@@ -378,7 +380,7 @@ flowchart LR
 
 - 假供应商不校验 submit_sm 的其他字段，只解析内容来检测重复。
 - 单进程运行，消息由测试写入 `stream:mt:routed`，没有经过 Core，也没有 Core 消费结果。
-- 没有覆盖多节点（`MN`）、`SubmitPolicy_Conn` 策略和 TLS。
+- 没有覆盖多节点（`MN`）、`SubmitPolicy_Conn` 策略和 TLS（已在第五、六批补上）。
 
 ## 9. 第二批结果
 
@@ -510,5 +512,47 @@ flowchart LR
 ### 12.3 这批用例的限制
 
 - **`PD-08`（MNC、MCC）没有测：** 需要运营商数据。
-- **`TW-05`：** 只验证了配置取值，没有测实际重试间隔。
+- **`TW-05`：** 只验证了配置取值，没有测实际重试间隔（已在第六批补上）。
 - **消息来源：** 除了 `OUT-05c`，这批的消息由测试直接写入 `stream:mt:routed`，字段是测试设置的。
+
+## 13. 第六批结果
+
+新增 `ClientLifecycleIT`、`ClientTlsIT`，并在 `ClientFailoverIT`、`ClientResultIT`、`ClientHttpIT` 里加了用例，都已加入 `regression/suites.txt`。涉及的 5 个套件连跑 2 轮结果一致（通过 200 项，已知缺陷 2 项，失败 0 项）。这批只加测试，没有改产品代码，没有跑全量回归。
+
+### 13.1 新发现、未修复：TLS 通道发不出去（DEF-C7）
+
+`Protocol=SSLSMPP` 的通道能完成 TLS 握手、bind 和断线重连，但 **MT 发不出去**。假供应商收到 0 条，消息回 2500（Communication Error）。
+
+原因：连接登记在 `SslSmppClientFactory`，而 `OutboundStreamConsumer.processMessage` 固定从 `MultiSmppClientFactory.getInstance().getSession(msg)` 取会话。那里没有这个通道，日志是 `No SMPP session strategy for rssid 901`。
+
+用例走的是真实链路：`SslSmppClient.startService()` 启动，消息写入 `stream:mt:routed`，假供应商用 `SSLServerSocket` 接收。已登记为 `CN-14b`、`CN-14c`。
+
+**处理：** 已确认线上不再使用 `SSLSMPP`，所以不修，只保留已知缺陷登记。以后要启用这个协议，必须先修复。Core 收到 2500 后是否重试，这批没有测。
+
+### 13.2 用例确认的其他行为
+
+| 用例 | 实测结果 |
+|---|---|
+| CS-08 | 标记一直被其他消费者占用的消息，投递 3 次后进 `stream:dlq:submit`，没有发出 |
+| TW-05 | 重试间隔配 4 秒时，窗口空出后约 3.5 秒才发出，**不会因为窗口空出而提前**。自动重投的空闲时间短于这个间隔时，消息会被自动重投提前发出 |
+| TW-07 | 2 TPS 时 4 秒发 8 条，热加载到 50 TPS 后立即生效。该通道会重连，重连瞬间正在发送的 1 条回了失败结果（30 条里 1 条），其他通道不重连 |
+| TW-08 | 20 TPS 的通道在两个 Client 上 3 秒发约 120 条，即总速率约 40 TPS，符合已知限制 |
+| RS-09 | 100 条里响应和超时各占约一半（成功 54～58，超时 42～46），每条只有一个结果 |
+| CF-04 | 删除通道时等待中的消息回 2700，之后发往该通道的消息回 2500 |
+| FT-07 | 结果 stream 超过背压阈值时继续发送，结果暂不写入；解除后重试写入，每条一个结果 |
+| CN-12 | 多节点通道断线后约 1 秒重连。这也验证了 `NodeClientSessionThread` 的重连修复，之前只编译过，没有实测 |
+| CN-13 | SMPP 3.3 的 bind、发送和 DR 都正常，DR 的 id `1234567890` 转成 `499602d2` |
+| HT-13 | 读到消息后 Redis 断开：不发请求，留在待确认；恢复后重投，只发 1 次请求、写 1 个结果 |
+
+### 13.3 这批用例的限制
+
+- **`HT-13`：** Redis 断开的时间点很难靠真实消费线程卡准，所以用反射直接调用 `processMessage`。
+- **`ClientHttpIT`：** Redis 改为经过 `RedisGate`，这个套件的其余用例也走这条路径。
+- **`RS-09`：** 能确认每条只有一个结果，但不能保证两者恰好同时发生。
+- **`CN-14`：** 只测了 `Ssl.IsClientTrustAll=true`，没有测证书校验失败。
+- **消息来源：** 由测试直接写入 `stream:mt:routed`，没有经过 Core，也没有 Core 消费结果。
+- **没有补的：**
+  - `FT-04`：很难稳定触发 Socket 写失败。
+  - `PD-08`：需要运营商数据。
+  - `HT-11`、`HT-12`：主动查询 DR 和供应商专用处理类。
+  - `PF-01～03`：性能基线。
