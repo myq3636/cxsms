@@ -1,0 +1,137 @@
+package it;
+
+import java.io.*;
+import java.net.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+/** A vendor's SMSC for the Client tests. Its behaviour is set per system_id: reject binds, ignore enquire_link, hold submit_sm_resp, close connections. */
+final class FakeSmsc implements Runnable {
+	static final class Link {
+		final Socket socket; final DataOutputStream out; final int bindCmd; volatile boolean open = true;
+		Link(Socket s, DataOutputStream o, int cmd) { socket = s; out = o; bindCmd = cmd; }
+		synchronized void pdu(int cmd, int status, int seq, byte[] body) throws IOException {
+			out.writeInt(16 + body.length); out.writeInt(cmd); out.writeInt(status); out.writeInt(seq); out.write(body); out.flush();
+		}
+	}
+	static final class Account {
+		final String sys;
+		volatile int bindStatus = 0;
+		volatile boolean answerEnquire = true, answerSubmit = true;
+		volatile int submitStatus = 0;
+		final AtomicInteger binds = new AtomicInteger(), rejected = new AtomicInteger(), closed = new AtomicInteger(),
+				enquires = new AtomicInteger(), enquireResps = new AtomicInteger();
+		/** enquire_link received before the first close */
+		volatile int enquiresAtFirstClose = -1;
+		volatile long firstBindAt = 0, firstCloseAt = 0, nextBindAt = 0;
+		final List<String> texts = Collections.synchronizedList(new ArrayList<String>());
+		final List<Integer> bindCmds = Collections.synchronizedList(new ArrayList<Integer>());
+		final List<Link> links = new CopyOnWriteArrayList<>();
+		final Map<Link, AtomicInteger> perLink = new ConcurrentHashMap<>();
+		final Queue<Object[]> held = new ConcurrentLinkedQueue<>();
+		final AtomicInteger msgNo = new AtomicInteger();
+		Account(String s) { sys = s; }
+		List<Link> open() { List<Link> l = new ArrayList<>(); for (Link k : links) if (k.open) l.add(k); return l; }
+		int count(String text) { synchronized (texts) { return Collections.frequency(texts, text); } }
+		void closeAll() { for (Link k : open()) try { k.socket.close(); } catch (IOException e) { } }
+		/** answer the submit_sm held so far */
+		int release() throws IOException {
+			int n = 0; Object[] h;
+			while ((h = held.poll()) != null) { respond((Link) h[0], (Integer) h[1]); n++; }
+			return n;
+		}
+		void respond(Link k, int seq) throws IOException {
+			k.pdu(0x80000004, submitStatus, seq, submitStatus == 0 ? ("V" + msgNo.incrementAndGet() + "\0").getBytes("US-ASCII") : new byte[] { 0 });
+		}
+	}
+	final Map<String, Account> accounts = new ConcurrentHashMap<>();
+	final ServerSocket server;
+	final int port;
+
+	FakeSmsc(int port) throws IOException {
+		this.port = port;
+		server = new ServerSocket(port);
+		Thread t = new Thread(this, "FakeSmsc-" + port);
+		t.setDaemon(true);
+		t.start();
+	}
+	Account account(String sys) { return accounts.computeIfAbsent(sys, Account::new); }
+	void close() { try { server.close(); } catch (IOException e) { } }
+
+	public void run() {
+		while (true) {
+			try {
+				final Socket s = server.accept();
+				Thread t = new Thread(() -> serve(s));
+				t.setDaemon(true);
+				t.start();
+			} catch (Exception e) { return; }
+		}
+	}
+
+	private void serve(Socket s) {
+		Account a = null; Link link = null;
+		try {
+			DataInputStream in = new DataInputStream(s.getInputStream());
+			DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
+			while (true) {
+				int len = in.readInt(), cmd = in.readInt(); in.readInt(); int seq = in.readInt();
+				byte[] body = new byte[len - 16];
+				in.readFully(body);
+				if (cmd == 1 || cmd == 2 || cmd == 9) {
+					int z = 0;
+					while (body[z] != 0) z++;
+					a = account(new String(body, 0, z, "US-ASCII"));
+					Link k = new Link(s, out, cmd);
+					if (a.bindStatus != 0) {
+						a.rejected.incrementAndGet();
+						k.pdu(cmd | 0x80000000, a.bindStatus, seq, new byte[] { 0 });
+						continue;
+					}
+					link = k;
+					if (a.firstCloseAt > 0 && a.nextBindAt == 0) a.nextBindAt = System.currentTimeMillis();
+					if (a.firstBindAt == 0) a.firstBindAt = System.currentTimeMillis();
+					a.binds.incrementAndGet();
+					a.bindCmds.add(cmd);
+					a.links.add(k);
+					a.perLink.put(k, new AtomicInteger());
+					k.pdu(cmd | 0x80000000, 0, seq, "smsc\0".getBytes("US-ASCII"));
+				} else if (cmd == 0x15) {
+					if (a != null) a.enquires.incrementAndGet();
+					if (a != null && a.answerEnquire && link != null) link.pdu(0x80000015, 0, seq, new byte[0]);
+				} else if (cmd == 0x80000015) {
+					if (a != null) a.enquireResps.incrementAndGet();
+				} else if (cmd == 4 && a != null && link != null) {
+					a.texts.add(shortMessage(body));
+					a.perLink.get(link).incrementAndGet();
+					if (a.answerSubmit) a.respond(link, seq); else a.held.add(new Object[] { link, seq });
+				}
+			}
+		} catch (Exception e) {
+			if (link != null) {
+				link.open = false;
+				if (a.firstCloseAt == 0) { a.firstCloseAt = System.currentTimeMillis(); a.enquiresAtFirstClose = a.enquires.get(); }
+				a.closed.incrementAndGet();
+			}
+		} finally {
+			try { s.close(); } catch (IOException e) { }
+		}
+	}
+
+	/** service_type, source, dest, esm, pid, priority, schedule, validity, registered, replace, dcs, default, length, message */
+	static String shortMessage(byte[] b) throws UnsupportedEncodingException {
+		int i = skip(b, 0);          // service_type
+		i = skip(b, i + 2);          // source
+		i = skip(b, i + 2);          // dest
+		i = skip(b, i + 3);          // schedule
+		i = skip(b, i);              // validity
+		i += 4;
+		int n = b[i++] & 0xff;
+		return new String(b, i, n, "ISO-8859-1");
+	}
+	private static int skip(byte[] b, int i) { while (b[i] != 0) i++; return i + 1; }
+
+	/** the SMSC asks: is the client alive */
+	void enquire(Link k, int seq) throws IOException { k.pdu(0x15, 0, seq, new byte[0]); }
+}

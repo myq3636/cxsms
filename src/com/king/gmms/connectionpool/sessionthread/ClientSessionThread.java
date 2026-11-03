@@ -32,6 +32,7 @@ public class ClientSessionThread implements SessionThread {
         private A2PMultiConnectionInfo customerInfo = null;
         private GmmsUtility gmmsUtility = null;
         private Thread thread = null;
+        private SessionWake wake = null;
         
         public ClientSessionThread(AbstractSession session, int connectionInterval, int enquireLinkFailCount) {
             this.session = session;
@@ -40,6 +41,7 @@ public class ClientSessionThread implements SessionThread {
             this.connectionInterval = connectionInterval;
             this.enquireLinkFailCount = enquireLinkFailCount;
             gmmsUtility = GmmsUtility.getInstance();
+            wake = new SessionWake(session);
         }
 
         public void start() {
@@ -105,7 +107,7 @@ public class ClientSessionThread implements SessionThread {
                             session.stop();
                         }else {
                         	try{                        		
-                        		Thread.sleep(customerInfo.getEnquireLinkTime() + gmmsUtility.getEnquireLinkResponseTiem());
+                        		wake.sleepWhileConnected(customerInfo.getEnquireLinkTime() + gmmsUtility.getEnquireLinkResponseTiem());
 	                        }catch(Exception e){
 	                        	
 	                        }
@@ -118,7 +120,7 @@ public class ClientSessionThread implements SessionThread {
                     session.stop();
                 }
                 else {
-                	Thread.sleep(customerInfo.getConnectionSilentTime() - 100);
+                	wake.sleepWhileConnected(customerInfo.getConnectionSilentTime() - 100);
                 }
             } catch (IOException e) {
                 log.error(e, e);
@@ -144,6 +146,7 @@ public class ClientSessionThread implements SessionThread {
                 default:
                     break;
             }
+            wake.wake();
         }
         
         public void interrupt(){

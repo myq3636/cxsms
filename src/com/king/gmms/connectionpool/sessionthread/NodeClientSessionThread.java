@@ -39,6 +39,7 @@ public class NodeClientSessionThread extends AbstractTimer implements SessionThr
         private ConnectionManager connectionManager = null;
         private GmmsUtility gmmsUtility = null;
         private Thread thread = null;
+        private SessionWake wake = null;
 
         public NodeClientSessionThread(AbstractSession session,long recoverTime,int connectionInterval,int enquireLinkFailCount) {
             super(recoverTime);
@@ -48,6 +49,7 @@ public class NodeClientSessionThread extends AbstractTimer implements SessionThr
             this.connectionInterval = connectionInterval;
             this.enquireLinkFailCount = enquireLinkFailCount;
             gmmsUtility = GmmsUtility.getInstance();
+            wake = new SessionWake(session);
         }
 
         public void start() {
@@ -145,12 +147,12 @@ public class NodeClientSessionThread extends AbstractTimer implements SessionThr
                                 session.stop();
                             }
                             else if(count <= 1){
-                                Thread.sleep(customerInfo.getEnquireLinkTime() + gmmsUtility.getEnquireLinkResponseTiem());
+                                wake.sleepWhileConnected(customerInfo.getEnquireLinkTime() + gmmsUtility.getEnquireLinkResponseTiem());
                             }else {
                                 if (session.getStatus().equals(ConnectionStatus.RECOVER)) {
                                     restartTimer();
                                 }
-                                Thread.sleep(customerInfo.getFailEnquireLinkTime() + gmmsUtility.getEnquireLinkResponseTiem());
+                                wake.sleepWhileConnected(customerInfo.getFailEnquireLinkTime() + gmmsUtility.getEnquireLinkResponseTiem());
                             }
                         }
                     }
@@ -159,7 +161,7 @@ public class NodeClientSessionThread extends AbstractTimer implements SessionThr
                         session.stop();
                     }
                     else {
-                    	Thread.sleep(customerInfo.getConnectionSilentTime() - 100);
+                    	wake.sleepWhileConnected(customerInfo.getConnectionSilentTime() - 100);
                     }
                 }
                 catch(IOException e){
@@ -200,6 +202,7 @@ public class NodeClientSessionThread extends AbstractTimer implements SessionThr
                 default:
                     break;
             }
+            wake.wake();
         }
 
         public void excute() {

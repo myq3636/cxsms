@@ -21,6 +21,7 @@ ShardGroupIT it.ShardGroupIT it
 LogChainCoreIT it.LogChainCoreIT it
 LogChainClientIT it.LogChainClientIT it-server
 ClientPendingIT it.ClientPendingIT it-server
+ClientConnectionIT it.ClientConnectionIT it-mod:MultiSmppClient1
 DrLivenessIT it.DrLivenessIT it
 GmmsReloadIT it.GmmsReloadIT it
 ConfigFileIT it.ConfigFileIT it
