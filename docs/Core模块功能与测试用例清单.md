@@ -429,7 +429,14 @@ P0 已经没有待补用例。接下来建议：
 
 关掉修复再跑 `FT-08`，MT 和外发结果都会重复；供应商 DR 不重复，所以 `FT-08i`、`FT-08j` 只说明这条路径没有问题，不能证明修复对它有效。
 
-**没有改的路径：** MQM（`CoreMQMStreamConsumer`）、Client 外发（`OutboundStreamConsumer`）、HTTP Client（`HttpClientStreamConsumer`）、Server DR（`DRStreamConsumer`）也用自动重投，是否有同样的窗口没有验证。
+**DEF-C3（中，已修复）：Client 外发有同样的竞争，供应商会真的收到两条。** `ClientSendMarker` 确认时同样会删除标记，另一份副本 `claim` 时查不到标记就返回 `SEND`。Core 把第二个结果当重复丢弃（`RESULT-DROPPED`），所以从 CDR 和 DR 上看不出来，只能在 Client 日志看到 `ack_returned_zero`。第二次发送还会留下一个“已发送”标记，最长 24 小时。
+
+- **修复：** `claim` 得到 `SEND` 后、发送之前再查一次 stream 记录，记录不在就删除标记，不发送（`Claim.GONE`），也不写失败结果。查询条件和 Core 相同，正常消息不增加 Redis 调用。Redis 出错时不发送，消息留给下次重投。
+- **范围：** `OutboundStreamConsumer`（SMPP）、`HttpClientStreamConsumer`（HTTP submit）。HTTP 推送 DR 不用标记，没有改。
+- **验证：** 两个方向都有确定性用例（`ClientBatch1IT` 的 `C1-06a～f`、`ClientBatch2IT` 的 `H-C`）。修复前 SMPP 供应商收到 2 次，HTTP 的 `session.submit` 调用 2 次；修复后都是 1 次。这次修复只跑了 Client 相关的 7 个套件（90 项通过），没有跑全量回归。
+- **限制：** HTTP 用例的通道没有配模板，统计的是 `session.submit` 调用次数，没有真实发出 HTTP 请求。Client 没有做多进程 `kill -9` 验证。
+
+**没有改的路径：** MQM（`CoreMQMStreamConsumer`）、Server DR（`DRStreamConsumer`）也用自动重投，但没有用这类标记，竞争时可能重复处理，没有验证。
 
 ### 10.2 用例确认的行为
 
