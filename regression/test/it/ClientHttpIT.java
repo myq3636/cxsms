@@ -82,7 +82,8 @@ public class ClientHttpIT extends CoreRetryIT {
 		Files.write(Paths.get(home + "conf/ITHTTP.xml"), IF.getBytes("UTF-8"));
 		Files.write(Paths.get(home + "conf/ITPLAIN.xml"), IF.replace("<HandlerClass>it.ItHttpHandler</HandlerClass>", "").replace("ITHTTP", "ITPLAIN").getBytes("UTF-8"));
 		Path cfg = Paths.get(home + "Gmms/GmmsConfig.properties");
-		Files.write(cfg, (new String(Files.readAllBytes(cfg), "UTF-8") + "\nAsyncSqlWriterEnable=false\n").getBytes("UTF-8"));
+		Files.write(cfg, (new String(Files.readAllBytes(cfg), "UTF-8") + "\nAsyncSqlWriterEnable=false\nRedis_master_port=17796\n").getBytes("UTF-8"));
+		RedisGate gate = new RedisGate(17796, 16379);
 		msmFactory = RecordingStore::new;
 		Path p = Paths.get(home + "conf/cm.cfg");
 		Files.write(p, (new String(Files.readAllBytes(p), "UTF-8") + channel("HTV51", 51, PORT) + channel("HTV52", 52, DEAD_PORT) + channel("HTV53", 53, PORT, "ITPLAIN")).getBytes("UTF-8"));
@@ -256,6 +257,24 @@ public class ClientHttpIT extends CoreRetryIT {
 				pm.invoke(lane, stream, workerFirst ? claimed : read, true);
 				check(bodies.size() == 1 && inStreams("stream:core:results*", tag).size() == 1, "HT-05 " + (workerFirst ? "claimed before the worker acked" : "the claim finished first") + ": one real request, one result: " + bodies.size());
 			}
+
+			// ---- Redis gone between reading an entry and sending it ----
+			bodies.clear();
+			String cutId = submit(51);
+			String cutStream = null;
+			for (String k : jedis.keys("stream:http:submit:51:*")) if (!inStreams(k, cutId).isEmpty()) cutStream = k;
+			Map<String, redis.clients.jedis.StreamEntryID> cutQuery = new HashMap<>();
+			cutQuery.put(cutStream, redis.clients.jedis.StreamEntryID.UNRECEIVED_ENTRY);
+			GmmsMessage cutRead = q.consumeBatch("HttpClientSubmitGroup", "worker", 10, cutQuery, true).get(0);
+			gate.cut();
+			try { pm.invoke(lane, cutStream, cutRead, false); } catch (java.lang.reflect.InvocationTargetException e) { System.out.println("INFO while cut: " + e.getCause()); }
+			gate.restore();
+			check(bodies.isEmpty(), "HT-13a the marker cannot be written: no request: " + bodies.size());
+			check(jedis.xpending(cutStream, "HttpClientSubmitGroup").getTotal() >= 1, "HT-13b the entry stays pending");
+			Thread.sleep(2000);
+			GmmsMessage again3 = q.recoverPending(cutStream, "HttpClientSubmitGroup", "claimer", 0L, 10, true).get(0);
+			pm.invoke(lane, cutStream, again3, true);
+			check(bodies.size() == 1 && inStreams("stream:core:results*", cutId).size() == 1, "HT-13c Redis back: one request, one result: " + bodies.size() + "/" + inStreams("stream:core:results*", cutId).size());
 		} catch (Throwable t) { t.printStackTrace(System.out); failures++; }
 		finally { vendor.stop(0); }
 		exit();

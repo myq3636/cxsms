@@ -29,6 +29,7 @@ final class FakeSmsc implements Runnable {
 		/** enquire_link received before the first close */
 		volatile int enquiresAtFirstClose = -1;
 		volatile long firstBindAt = 0, firstCloseAt = 0, nextBindAt = 0;
+		volatile int bindVersion = 0;
 		final List<String> texts = Collections.synchronizedList(new ArrayList<String>());
 		final List<Submit> submits = Collections.synchronizedList(new ArrayList<Submit>());
 		final List<Integer> bindCmds = Collections.synchronizedList(new ArrayList<Integer>());
@@ -70,9 +71,10 @@ final class FakeSmsc implements Runnable {
 	final ServerSocket server;
 	final int port;
 
-	FakeSmsc(int port) throws IOException {
-		this.port = port;
-		server = new ServerSocket(port);
+	FakeSmsc(int port) throws IOException { this(new ServerSocket(port)); }
+	FakeSmsc(ServerSocket socket) {
+		this.port = socket.getLocalPort();
+		server = socket;
 		Thread t = new Thread(this, "FakeSmsc-" + port);
 		t.setDaemon(true);
 		t.start();
@@ -104,6 +106,11 @@ final class FakeSmsc implements Runnable {
 					int z = 0;
 					while (body[z] != 0) z++;
 					a = account(new String(body, 0, z, "US-ASCII"));
+					int y = z + 1;
+					while (body[y] != 0) y++;      // password
+					y++;
+					while (body[y] != 0) y++;      // system_type
+					a.bindVersion = body[y + 1] & 0xff;
 					Link k = new Link(s, out, cmd);
 					if (a.bindStatus != 0) {
 						a.rejected.incrementAndGet();

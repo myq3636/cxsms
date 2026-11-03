@@ -82,6 +82,7 @@ public class ClientResultIT extends ItSupport {
 		cm.append("\n[RC410]\nCCBSSID: 410\nA2PPlayerType: operator\nProtocol: SMPP\nSMSOptionDRStatusMapping: DELIVRD:ACCEPTD\n");
 		cm.append("\n[RC411]\nCCBSSID: 411\nA2PPlayerType: operator\nProtocol: SMPP\nSMSOptionIsNotSupportUnknowDRStatus: true\n");
 		cm.append("\n[RC412]\nCCBSSID: 412\nA2PPlayerType: operator\nProtocol: SMPP\n");
+		cm.append("\n[RC413]\nCCBSSID: 413\nA2PPlayerType: operator\nProtocol: SMPP\nSMSOptionSmppMapErrCod4DR: true\n");
 		Path p = Paths.get(home + "conf/cm.cfg");
 		Files.write(p, (new String(Files.readAllBytes(p), "UTF-8") + cm).getBytes("UTF-8"));
 		FakeSmsc smsc = new FakeSmsc(PORT);
@@ -236,6 +237,12 @@ public class ClientResultIT extends ItSupport {
 			check(text.contains("stat:UNDELIV"), "VD-07b DELETED shown as UNDELIV");
 			text = customerDr(smpp, 412, GmmsStatus.UNKNOWN);
 			check(text.contains("stat:UNKNOWN"), "VD-07c customer without the option: UNKNOWN: " + text);
+			text = customerDr(smpp, 413, GmmsStatus.UNDELIVERABLE);
+			check(text.contains("err:003"), "VD-09d SMSOptionSmppMapErrCod4DR: 10400 shown as err:003: " + text);
+			text = customerDr(smpp, 413, GmmsStatus.EXPIRED);
+			check(text.contains("err:001"), "VD-09e 10200 shown as err:001: " + text);
+			text = customerDr(smpp, 412, GmmsStatus.UNDELIVERABLE);
+			check(text.contains("err:000"), "VD-09f customer without the option: err:000: " + text);
 		} catch (Throwable t) { t.printStackTrace(System.out); failures++; }
 		exit();
 	}

@@ -24,3 +24,5 @@ S-13 OPEN non-numeric recipient accepted by the server
 SD-03a DEF-C5 DR retried: a detailed failure status (10405) is not restored from its text, the customer gets UNKNOWN instead of UNDELIV
 SD-03b DEF-C5 DR retried: a detailed failure status (10402) is not restored from its text, the customer gets UNKNOWN instead of UNDELIV
 PD-02a DEF-C6 UCS2 on a channel with SMSOptionSupportOutgoingGSM7bit=0: submit_sm has data_coding 0 with UTF-16 bytes (Smpp.createSmppSubmitSM)
+CN-14b DEF-C7 SSLSMPP channel: bound, but OutboundStreamConsumer takes sessions only from MultiSmppClientFactory, no strategy for the rssid, MT never sent
+CN-14c DEF-C7 SSLSMPP channel: the MT gets a failure result instead of being sent

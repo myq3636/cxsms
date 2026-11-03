@@ -65,7 +65,9 @@ public class ClientFailoverIT extends ItSupport {
 		home = System.getProperty("a2p_home");
 		Path p = Paths.get(home + "conf/cm.cfg");
 		Files.write(p, (new String(Files.readAllBytes(p), "UTF-8") + "\n[FOV601]\nCCBSSID: " + RSSID + "\nA2PPlayerType: operator\nProtocol: SMPP\nConnectionType: MC\nIsInit: true\nReconnectInterval: 1\nEnquireLink: false\nBufferTimeout: 30\nWindowSize: 500\n"
-				+ "OutgoingConnection: (ConnName=FOV601_c1,userName=u601,password=p,URL=127.0.0.1,Port=" + PORT + ",SessionNumber=2,BindMode=TRX,Version=V34,IsInit=true)\n").getBytes("UTF-8"));
+				+ "OutgoingConnection: (ConnName=FOV601_c1,userName=u601,password=p,URL=127.0.0.1,Port=" + PORT + ",SessionNumber=2,BindMode=TRX,Version=V34,IsInit=true)\n"
+				+ "\n[FOV602]\nCCBSSID: 602\nA2PPlayerType: operator\nProtocol: SMPP\nConnectionType: MC\nIsInit: true\nReconnectInterval: 1\nEnquireLink: false\nWindowSize: 300\nBufferTimeout: 60\nSMSOptionOutgoingThrottlingNum: 20\n"
+				+ "OutgoingConnection: (ConnName=FOV602_c1,userName=u602,password=p,URL=127.0.0.1,Port=" + PORT + ",SessionNumber=2,BindMode=TRX,Version=V34,IsInit=true)\n").getBytes("UTF-8"));
 		Path cfg = Paths.get(home + "Gmms/GmmsConfig.properties");
 		Files.write(cfg, (new String(Files.readAllBytes(cfg), "UTF-8") + "\nRedisStreamAutoClaimEnable=true\nRedisStreamAutoClaimIdleMs=10000\nRedisStreamAutoClaimIntervalMs=1000\nClientSendLeaseMs=10000\n").getBytes("UTF-8"));
 		FakeSmsc smsc = new FakeSmsc(PORT);
@@ -86,6 +88,23 @@ public class ClientFailoverIT extends ItSupport {
 			check(tally(a, first)[1] == 0, "CS-02b none twice: " + tally(a, first)[1]);
 			check(logHas(C1, ROUTED[0]) && !logHas(C1, ROUTED[1]), "CS-02c Client 1 read only shard 0");
 			check(logHas(C2, ROUTED[1]) && !logHas(C2, ROUTED[0]), "CS-02d Client 2 read only shard 1");
+
+			// ---- the rate of a channel is per Client ----
+			FakeSmsc.Account limited = smsc.account("u602");
+			check(waitFor(() -> limited.binds.get() == 2, 8000), "TW-08a second channel: one connection from each Client");
+			for (int i = 0; i < 400; i++) {
+				String id = "8888_T" + (++no);
+				GmmsMessage m = mt(id, 8888, 602, 0);
+				m.setTextContent(id);
+				m.setMessageSize(id.length());
+				m.setRecipientAddress("86138" + String.format("%08d", no));
+				q.produceOutboundMessage(m);
+			}
+			int before = limited.texts.size();
+			Thread.sleep(3000);
+			int inThree = limited.texts.size() - before;
+			System.out.println("INFO 20 TPS on two Clients: " + inThree + " in 3 s, backlog left " + (400 - limited.texts.size()));
+			check(inThree > 85 && inThree <= 150 && limited.texts.size() < 400, "TW-08b known limit: each Client keeps its own limit, 20 TPS is about 40 on two: " + inThree + " in 3 s");
 
 			// ---- killed: no takeover ----
 			kill(n1);
