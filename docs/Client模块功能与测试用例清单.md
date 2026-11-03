@@ -490,7 +490,7 @@ flowchart LR
 
 新增 `ClientPduIT`（抓真实 submit_sm，逐字段校验），`FakeSmsc` 增加完整的 submit_sm 解析。已加入 `regression/suites.txt`。这批只加测试，没有改产品代码，没有跑全量回归。
 
-### 12.1 待确认：默认配置下 UCS2 的 data_coding 是 0（DEF-C6）
+### 12.1 已确认线上不触发：默认配置下 UCS2 的 data_coding 是 0（DEF-C6）
 
 通道的 `SMSOptionSupportOutgoingGSM7bit` 是 0（默认）时，`Smpp.createSmppSubmitSM` 把字符集强制设成默认字符集，所以：
 
@@ -501,7 +501,7 @@ flowchart LR
 
 字节是 UTF-16，却标成默认字符集，按规范解析会是乱码。已确认链路：真实 Core 发到 Client 的消息确实是 UCS2（`CoreContentIT` 的 `OUT-05c`），Client 发给假供应商的 PDU 里就是上表的值。
 
-**没有确认的：** 这段代码来自最早的提交。线上通道如果都配了 1 或 2，就不会触发；供应商是否按其他方式处理 dcs 0 也不清楚。所以这里只登记（`PD-02a`），没有改代码。
+**处理：** 已确认线上配的是 1，UCS2 的 data_coding 是 8，不会触发，所以不改代码，只保留登记（`PD-02a`）。新通道也要配 1，不能用默认值 0。
 
 ### 12.2 用例确认的其他行为
 
