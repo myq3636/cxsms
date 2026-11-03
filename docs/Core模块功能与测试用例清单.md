@@ -7,8 +7,8 @@
 Core 负责消费 MT、做检查和路由、外发到出向 stream，并处理结果和 DR。
 
 - **已支持功能：** 45 组，其中回归已覆盖 30 组，部分覆盖 10 组，没有覆盖 5 组。
-- **测试用例：** 120 条，其中已覆盖 95 条，部分覆盖 8 条，待补 17 条。
-- **主要缺口：** 可靠性机制（去重、outbox、限速、长短信、分片）测得比较全，**部分业务功能还没有回归用例**：运营商和 ENUM 路由、第二路由、DR 映射和查询、部分热加载。
+- **测试用例：** 120 条，其中已覆盖 98 条，部分覆盖 8 条，待补 14 条。
+- **主要缺口：** 可靠性机制（去重、outbox、限速、长短信、分片）测得比较全，**部分业务功能还没有回归用例**：运营商和 ENUM 路由、第二路由、DR 查询、部分热加载。
 
 ## 2. 已支持的功能
 
@@ -266,11 +266,11 @@ SMPP/HTTP 协议、bind 鉴权、入向限流和计费扣费在 Server；真正�
 | DR-10 | P1 | `SMSOptionDRDelayTimeMinMaxInSec=3,4`、`AutoInDR.DirectStreamEnable=true` | 延迟 DR | 到时间前不发，在范围内发出 | 已覆盖 | CoreDrBizIT |
 | DR-11 | P1 | `AutoInDR.*` | 调度线程停止再启动 | 到期 DR 留在 Redis，启动后发出。领取超时接手、真实进程重启、默认的 `DirectStreamEnable=false` 路径没有测 | 部分 | CoreDrBizIT |
 | DR-12 | P1 | `SMSOptionDRSuccessRatio=70` | 发 100 条 | 成功率接近配置（实测 67%） | 已覆盖 | CoreDrBizIT |
-| DR-13 | P1 | `SMSOptionDRStatusMapping` | 匹配状态 | 转成映射后的状态 | 待补 |  |
-| DR-14 | P2 | `SMSOptionIsNotSupportUnknowDRStatus` | UNKNOWN 状态 | 按映射处理 | 待补 |  |
+| DR-13 | P1 | `SMSOptionDRStatusMapping` | 匹配状态 | 发给客户时回执显示映射后的状态，内部状态不变 | 已覆盖 | ClientResultIT（VD-06，代码在协议层） |
+| DR-14 | P2 | `SMSOptionIsNotSupportUnknowDRStatus` | UNKNOWN、DELETED | 发给客户时显示为 UNDELIV | 已覆盖 | ClientResultIT（VD-07，代码在协议层） |
 | DR-15 | P2 | `SMSOptinIsSupportHttpQueryMessage` | 主动查询 DR | 查询结果正确写回 | 待补 |  |
 | DR-16 | P2 | `StoreDRModeEnable`、`DRStoreMode` | 处于存储模式 | DR 先存储，之后发送 | 待补 |  |
-| DR-17 | P1 | `SMSOptionDRNotPaidCode` | 欠费状态码 | 按欠费处理 | 待补 |  |
+| DR-17 | P1 | `SMSOptionDRNotPaidCode` | 欠费状态码 | Client 收 DR 时转 REJECTED_BYNC | 已覆盖 | ClientResultIT（VD-08，代码在协议层） |
 
 ### 八、配置热加载
 
@@ -317,24 +317,24 @@ SMPP/HTTP 协议、bind 鉴权、入向限流和计费扣费在 Server；真正�
 | 外发与内容处理 | 17 | 15 | 1 | 1 |
 | 长短信 | 7 | 6 | 1 | 0 |
 | 结果与重试 | 15 | 14 | 1 | 0 |
-| DR | 17 | 10 | 2 | 5 |
+| DR | 17 | 13 | 2 | 2 |
 | 配置热加载 | 9 | 7 | 1 | 1 |
 | 故障与恢复 | 8 | 6 | 1 | 1 |
 | 性能基线 | 3 | 0 | 0 | 3 |
-| **合计** | **120** | **95** | **8** | **17** |
+| **合计** | **120** | **98** | **8** | **14** |
 
 | 级别 | 已覆盖 | 部分 | 待补 |
 |---|---|---|---|
 | P0 | 45 | 1 | 0 |
-| P1 | 48 | 6 | 11 |
-| P2 | 2 | 1 | 6 |
+| P1 | 50 | 6 | 9 |
+| P2 | 3 | 1 | 5 |
 
 ## 6. 建议补用例的顺序
 
 P0 已经没有待补用例。接下来建议：
 
 1. **其余路由（RT-08～RT-11）**：运营商、ENUM、第二路由。
-2. **DR 映射和查询（DR-13～DR-17）**：其中状态映射、UNKNOWN 处理、欠费码的代码在 Client 协议层（`Smpp.java`），改放到 `docs/Client模块功能与测试用例清单.md` 的 VD-06～VD-08。
+2. **DR 查询和存储模式（DR-15、DR-16）**：状态映射和欠费码已在 Client 清单 VD-06～VD-08 覆盖。
 3. **剩余热加载（CF-07）和拒绝区域（OUT-11，需要 `phone.dat`）**。
 4. **Redis 分开部署（FT-07）和性能基线（PF-01～PF-03）**：需要更多环境资源。
 

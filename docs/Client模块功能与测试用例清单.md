@@ -1,14 +1,14 @@
 # Client 模块功能与测试用例清单
 
-> 范围：Client（`MultiSmppClient`、`CommonHttpClient`）当前 `main` 的代码。“回归现状”依据 `regression/` 现有用例。第一批（连接生命周期和窗口）已实现，结果见第 8 节；**标“待补”的还没有写，也没有执行**。
+> 范围：Client（`MultiSmppClient`、`CommonHttpClient`）当前 `main` 的代码。“回归现状”依据 `regression/` 现有用例。第一批（连接生命周期和窗口）、第二批（失败码和 DR 解析）、第三批（真实 HTTP 收发）已实现，结果见第 8～10 节；**标“待补”的还没有写，也没有执行**。
 
 ## 1. 总览
 
 Client 从 Redis 读取 Core 路由后的 MT，通过 SMPP 或 HTTP 发给供应商，再把 submit_resp、供应商 DR 和 MO 写回 Redis。
 
-- **已支持功能：** 22 组，其中回归已覆盖 11 组，部分覆盖 5 组，没有覆盖 6 组。
-- **测试用例：** 100 条，其中已覆盖 40 条，部分覆盖 6 条，待补 54 条。
-- **主要缺口：** 可靠性优化（发送去重、限速、慢通道隔离、pending）测得比较全，但**submit_sm 字段、失败码映射、DR 解析、真实 HTTP 收发**基本没有回归用例，也没有真实 `kill -9` 的多进程用例。
+- **已支持功能：** 22 组，其中回归已覆盖 16 组，部分覆盖 4 组，没有覆盖 2 组。
+- **测试用例：** 103 条，其中已覆盖 61 条，部分覆盖 5 条，待补 37 条。
+- **主要缺口：** 可靠性优化（发送去重、限速、慢通道隔离、pending）测得比较全，但 **submit_sm 字段**基本没有回归用例，也没有真实 `kill -9` 的多进程用例。
 
 ### 架构
 
@@ -82,19 +82,19 @@ flowchart LR
 | 功能 | 主要配置 | 回归现状 |
 |---|---|---|
 | 组装 submit_sm：编码、拼接方式、有效期、自定义参数 | `SMSOptionSupportOutgoingGSM7bit`、`ChlUdhConcatenated`、`SMSOptionTransferValidityPeriod` | 部分 |
-| submit_sm_resp 转结果，失败码映射，outMsgId 转换 | `SMSOptionSubmitNotPaidMapping`、`ChlSMPPMsgIDParse`、`SMSOptionSMPPIsPadZero4SR` | 部分 |
+| submit_sm_resp 转结果，失败码映射，outMsgId 转换 | `SMSOptionSubmitNotPaidMapping`、`ChlSMPPMsgIDParse`、`SMSOptionSMPPIsPadZero4SR` | 已覆盖 |
 | 等待响应超时，结果写入失败重试 | `BufferTimeout`、`SMPPSubmitPendingMode`、`SMPPSubmitPendingResultMaxRetry` | 部分 |
 | 接收供应商 DR：先写 Redis 再回 resp | `stream:core:inbound-dr:*` | 已覆盖 |
-| DR 解析和状态映射 | `SMSOptionDRStatusIsOptionPara`、`SMSOptionDRStatusMapping`、`SMSOptionDRNotPaidCode` | 待补 |
-| 接收 MO | `stream:mt:pending:*` | 待补 |
+| DR 解析和状态映射 | `SMSOptionDRStatusIsOptionPara`、`SMSOptionDRStatusMapping`、`SMSOptionDRNotPaidCode` | 已覆盖 |
+| 接收 MO | `stream:mt:pending:*` | 已覆盖 |
 
 ### HTTP 通道
 
 | 功能 | 主要配置 | 回归现状 |
 |---|---|---|
 | HTTP 外发，按通道超时和限速 | `SMSOptionHttpConnectTimeout`、`SMSOptionHttpReadTimeout`、`SMSOptionOutgoingThrottlingNum` | 已覆盖 |
-| 按模板拼接请求、解析响应 | `ChlURL`、`protocol/commonhttp/*` | 待补 |
-| 推送 DR 给 HTTP 客户 | `stream:http:dr:*` | 待补 |
+| 按模板拼接请求、解析响应 | `ChlURL`、`protocol/commonhttp/*` | 已覆盖 |
+| 推送 DR 给 HTTP 客户 | `stream:http:dr:*` | 已覆盖 |
 | 主动查询 DR 和 MO | `SMSQueryDRHttpModule`、`QueryHttpMessageThread` | 待补 |
 
 ### 运维
@@ -213,9 +213,9 @@ flowchart LR
 | ID | 级别 | 配置 / 前置 | 场景 | 预期 | 现状 | 现有用例 |
 |---|---|---|---|---|---|---|
 | RS-01 | P0 | resp 为 ROK | 收到 | 写结果到 `stream:core:results`，带 outMsgId，删除 pending | 已覆盖 | LogChainClientIT |
-| RS-02 | P0 | resp 为失败码 | 收到 | 按 `SMPPRespStatus` 转成内部状态，写失败结果 | 待补 |  |
-| RS-03 | P1 | `SMSOptionSubmitNotPaidMapping` | 匹配的失败码 | 转成映射后的状态 | 待补 |  |
-| RS-04 | P1 | `ChlSMPPMsgIDParse`、`SMSOptionSMPPIsPadZero4SR` | outMsgId | 十六进制转十进制、补零正确，供应商 DR 能匹配上 | 待补 |  |
+| RS-02 | P0 | resp 为失败码 | 14 个代表性的 command_status | 按 `SMPPRespStatus` 转成内部状态（如 0x03→2010、0x0A→2110、0x0B→2120、0x14→2600、0xFE→2500、0x08→3000、0x0E→5000），没列出的码→9000，写失败结果 | 已覆盖 | ClientResultIT |
+| RS-03 | P1 | `SMSOptionSubmitNotPaidMapping` | 匹配的失败码 | 转成映射后的状态；不在映射里的按普通规则 | 已覆盖 | ClientResultIT |
+| RS-04 | P1 | `ChlSMPPMsgIDParse`、`SMSOptionSMPPIsPadZero4SR` | outMsgId | 默认保留原值；开启后十六进制转十进制，并默认补零到 10 位；可单独关补零；供应商 DR 带同样的 id 时一致 | 已覆盖 | ClientResultIT |
 | RS-05 | P0 | `BufferTimeout`，供应商不回 | 超时 | WARN `[RESP-TIMEOUT]`，写失败结果（SUBMIT_RESP_ERROR） | 已覆盖 | LogChainClientIT |
 | RS-06 | P1 | 超时后 resp 才到 | 迟到 | 不重复写结果，打一条找不到原消息的日志 | 待补 |  |
 | RS-07 | P0 | 结果写入失败（背压或 Redis 错误） | 收到 resp | 标记待重试，按 `SMPPSubmitPendingResultMaxRetry` 重试，超过后放弃并释放窗口 | 待补 |  |
@@ -227,16 +227,17 @@ flowchart LR
 | ID | 级别 | 配置 / 前置 | 场景 | 预期 | 现状 | 现有用例 |
 |---|---|---|---|---|---|---|
 | VD-01 | P0 | deliver_sm 是 DR | 收到 | 写 `stream:core:inbound-dr`，再回 deliver_sm_resp ROK | 已覆盖 | LogChainClientIT |
-| VD-02 | P0 | 写 Redis 失败 | 收到 DR | 回 ESME_RX_T_APPN，让供应商重发，不丢 | 待补 |  |
-| VD-03 | P1 | DR 内容解析失败 | 收到 | 回 ESME_RX_T_APPN，不抛异常 | 待补 |  |
-| VD-04 | P1 | `SMSOptionDRStatusIsOptionPara`、`SMSOptionSMPPNeedReceiptedMessageId` | 状态在可选参数里 | msgId 和状态解析正确 | 待补 |  |
-| VD-05 | P1 | 短信文本格式回执 | `id:... stat:DELIVRD` | msgId 和状态解析正确 | 待补 |  |
-| VD-06 | P1 | `SMSOptionDRStatusMapping`（Core 清单 DR-13） | 匹配状态 | 转成映射后的状态 | 待补 |  |
-| VD-07 | P2 | `SMSOptionIsNotSupportUnknowDRStatus`（Core 清单 DR-14） | UNKNOWN | 按配置转换 | 待补 |  |
-| VD-08 | P1 | `SMSOptionDRNotPaidCode`（Core 清单 DR-17） | 欠费码 | 按欠费处理 | 待补 |  |
-| VD-09 | P2 | `SMSOptionSmppMapErrCod4DR`、`DrSwapAddr` | DR | 错误码映射、地址交换正确 | 待补 |  |
-| VD-10 | P1 | deliver_sm 是 MO | 收到 | 写 `stream:mt:pending`，再回 ROK；写失败回 ESME_RX_T_APPN | 待补 |  |
-| VD-11 | P2 | `SMSOptionRemoveUdh` | 带 UDH 的 deliver_sm | UDH 被去掉 | 待补 |  |
+| VD-02 | P0 | 写 Redis 失败（用背压模拟） | 收到 DR | 回 ESME_RX_T_APPN（0x64），不写入；供应商重发时接受 | 已覆盖 | ClientResultIT |
+| VD-03 | P1 | DR 没有 id 字段 | 收到 | 不抛异常，会话正常。**实际回 ROK 并写入一条没有 outMsgId 的 DR，供应商不会重发**，见第 9.2 节 | 已覆盖 | ClientResultIT |
+| VD-04 | P1 | `SMSOptionDRStatusIsOptionPara`，或文本为空 | 状态在可选参数里 | message_state 2、6→10000，3→过期，4→删除，5→10400，8→拒绝，其他→未知；只有 network_error_code→10400；只有 receipted_message_id→DELIVERED。`SMSOptionSMPPNeedReceiptedMessageId` 用于发给客户的 DR，这里没有测 | 已覆盖 | ClientResultIT |
+| VD-05 | P1 | 短信文本格式回执 | `id:... sub:... stat:DELIVRD` | 7 种状态都解析正确；没有 `sub:` 时取 `id:` 后 10 个字符 | 已覆盖 | ClientResultIT |
+| VD-06 | P1 | `SMSOptionDRStatusMapping`（Core 清单 DR-13） | 匹配状态 | **在发给客户时生效，不影响 Client 收到的状态**：回执里显示映射后的状态，内部状态不变。代码在 `createSmppDeliverSM4dr`，只测了组 PDU | 已覆盖 | ClientResultIT |
+| VD-07 | P2 | `SMSOptionIsNotSupportUnknowDRStatus`（Core 清单 DR-14） | UNKNOWN、DELETED | 同样在发给客户时生效：显示为 UNDELIV；没开选项的客户显示原状态 | 已覆盖 | ClientResultIT |
+| VD-08 | P1 | `SMSOptionDRNotPaidCode`（Core 清单 DR-17） | 欠费码 | 文本 `err:` 或 network_error_code 匹配时转 REJECTED_BYNC；其他保持原状态 | 已覆盖 | ClientResultIT |
+| VD-09 | P2 | `DrSwapAddr`、`SMSOptionSmppMapErrCod4DR` | DR | `DrSwapAddr` 默认交换发送方和接收方，false 时不交换。`SMSOptionSmppMapErrCod4DR` 没有测 | 部分 | ClientResultIT |
+| VD-10 | P1 | deliver_sm 是 MO | 收到 | 写 `stream:mt:pending`，供应商作为 ossid，回 ROK；写失败回 0x64 | 已覆盖 | ClientResultIT |
+| VD-11 | P2 | `SMSOptionRemoveUdh` | 带 UDH 的 MO | 开启时去掉 UDH；其他通道保留 | 已覆盖 | ClientResultIT |
+| VD-12 | P1 | SMPP DR 首发和重发，抓真实 PDU | 客户不回 resp 后重发 | 回执里是标准状态词（`DELIVRD`、`UNDELIV` 等），重发和首发一致。**细分失败状态（10402、10405）重发时变成 UNKNOWN（DEF-C5）** | 已覆盖（已知缺陷） | ServerDrPduIT |
 
 ### 八、HTTP 通道
 
@@ -246,15 +247,17 @@ flowchart LR
 | HT-02 | P1 | 修改超时后 `RELOAD_CUSTOMER` | 运行中 | 下一个请求用新超时 | 已覆盖 | ClientBatch2IT |
 | HT-03 | P0 | `SMSOptionOutgoingThrottlingNum` | HTTP 积压 | 速率符合配置，每条只处理一次，不阻塞 worker | 已覆盖 | ClientBatch2IT |
 | HT-04 | P0 | 慢 HTTP 通道积压 | 多通道 | 不限速的通道不受影响 | 已覆盖 | ClientBatch2IT |
-| HT-05 | P0 | 重投和确认竞争 | 两份副本 | `session.submit` 只调用一次。测试通道没配模板，没有真实发出请求 | 部分 | ClientBatch2IT |
-| HT-06 | P0 | 没有 HTTP 会话 | 消息到达 | 回失败结果，确认消费。现有用例走到了这条路径，但没有专门断言 | 部分 | ClientBatch2IT |
-| HT-07 | P0 | 配置了模板的 HTTP 通道 | 发送成功 | 真实 POST，参数正确；解析响应得到 outMsgId，写成功结果 | 待补 |  |
-| HT-08 | P0 | 供应商回错误内容或 HTTP 错误码 | 发送 | 转成对应失败状态，写失败结果 | 待补 |  |
-| HT-09 | P0 | `stream:http:dr` | DR 推送给 HTTP 客户 | 发出请求，写 DR_resp 结果 | 待补 |  |
-| HT-10 | P1 | DR 推送失败 | 连接失败或错误码 | 写失败结果，走 DR 重试策略 | 待补 |  |
+| HT-05 | P0 | 重投和确认竞争（两个方向） | 两份副本 | 供应商只收到 1 个真实请求，只有 1 个结果 | 已覆盖 | ClientHttpIT、ClientBatch2IT |
+| HT-06 | P0 | 没有 HTTP 会话 | 消息到达 | 回失败结果 2500，确认消费 | 已覆盖 | ClientHttpIT |
+| HT-07 | P0 | 配置了 `HandlerClass` 的 HTTP 通道 | 发送成功 | 真实 POST，参数正确；解析响应得到 outMsgId，写成功结果，stream 清空，没有标记残留。没配 `HandlerClass` 时发不出请求（见第 10.2 节） | 已覆盖 | ClientHttpIT |
+| HT-08 | P0 | 供应商回错误内容、HTTP 错误码、连不上、超时 | 发送 | 映射码→对应状态；映射外→9000；格式错或空响应→2130；HTTP 400、500、504→2300，401、403→5000，408→2500，503→2600；连不上和读超时→9000 | 已覆盖 | ClientHttpIT |
+| HT-09 | P0 | `stream:http:dr` | DR 推送给 HTTP 客户 | 发出真实请求，带客户的消息 id 和映射后的状态；客户回空响应时结果为 10000，确认消费 | 已覆盖 | ClientHttpIT |
+| HT-10 | P1 | DR 推送失败 | HTTP 错误码、连不上、超时 | 临时故障（连不上、超时、408、5xx）→11005，Core 会重试；401、403、511→10500；其他 4xx→10900，不重试；都确认消费 | 已覆盖 | ClientHttpIT |
 | HT-11 | P2 | `SMSQueryDRHttpModule`、`QueryHttpMessageThread` | 主动查询 DR | 查询结果写回 Core | 待补 |  |
 | HT-12 | P2 | 供应商专用处理类（`protocol/commonhttp`，共 95 个文件） | 按供应商抽样 | 发送和回执解析正确。建议只测线上在用的几家 | 待补 |  |
 | HT-13 | P1 | 标记所在 Redis 出错 | 发送前 | 不发送，留在待确认 | 待补 |  |
+| HT-14 | P0 | DR 重发，走真实链路 | 失败结果 11005（文本保留真实状态）→ `getResendDR` 还原状态码 → 重发 | 客户收到真实状态 | 已覆盖 | ClientHttpIT |
+| HT-15 | P1 | Core 处理 DR 推送结果 | 11005、401 | 11005 写 RDQ 等重试，重发成功后删除；401 不保留 | 已覆盖 | ClientHttpIT |
 
 ### 九、配置热加载
 
@@ -302,30 +305,28 @@ flowchart LR
 | 限速与窗口 | 8 | 4 | 0 | 4 |
 | SMPP 连接 | 15 | 11 | 0 | 4 |
 | submit_sm 编码 | 9 | 0 | 1 | 8 |
-| submit_sm_resp 和超时 | 9 | 3 | 0 | 6 |
-| 供应商 DR 和 MO | 11 | 1 | 0 | 10 |
-| HTTP 通道 | 13 | 4 | 2 | 7 |
+| submit_sm_resp 和超时 | 9 | 6 | 0 | 3 |
+| 供应商 DR 和 MO | 12 | 11 | 1 | 0 |
+| HTTP 通道 | 15 | 12 | 0 | 3 |
 | 配置热加载 | 4 | 2 | 0 | 2 |
 | 故障与恢复 | 7 | 1 | 1 | 5 |
 | 日志 | 3 | 3 | 0 | 0 |
 | 性能基线 | 3 | 0 | 0 | 3 |
-| **合计** | **100** | **40** | **6** | **54** |
+| **合计** | **103** | **61** | **5** | **37** |
 
 | 级别 | 已覆盖 | 部分 | 待补 |
 |---|---|---|---|
-| P0 | 23 | 5 | 9 |
-| P1 | 16 | 1 | 31 |
-| P2 | 1 | 0 | 14 |
+| P0 | 31 | 3 | 4 |
+| P1 | 27 | 1 | 22 |
+| P2 | 3 | 1 | 11 |
 
 ## 6. 建议补用例的顺序
 
-第一批（连接生命周期和窗口）已完成，接下来建议：
+第一到第三批（连接生命周期和窗口、失败码和 DR 解析、真实 HTTP 收发）已完成，接下来建议：
 
-1. **失败码和 DR 解析（RS-02、RS-04、VD-02～VD-08）：** 影响客户看到的状态。其中 `DR-13`、`DR-14`、`DR-17` 是 Core 清单里待补的，实际代码在 Client。`FakeSmsc` 可以复用。
-2. **真实 HTTP 收发（HT-07～HT-10）：** 现在的 HTTP 用例都没有走到真实请求，需要给测试通道配模板。
-3. **结果写入失败和 Redis 故障（RS-07、ID-09、FT-03）：** 验证不丢消息。
-4. **多进程 `kill -9`（FT-01、FT-06）：** 可以参照 `CoreFailoverIT`。
-5. **submit_sm 字段（PD-*）、连接策略（CN-11）和其余 P2。**
+1. **结果写入失败和 Redis 故障（RS-07、ID-09、FT-03）：** 验证不丢消息。
+2. **多进程 `kill -9`（FT-01、FT-06）：** 可以参照 `CoreFailoverIT`。
+3. **submit_sm 字段（PD-*）、连接策略（CN-11）和其余 P2。**
 
 ## 7. 未核实的部分
 
@@ -378,3 +379,82 @@ flowchart LR
 - 假供应商不校验 submit_sm 的其他字段，只解析内容来检测重复。
 - 单进程运行，消息由测试写入 `stream:mt:routed`，没有经过 Core，也没有 Core 消费结果。
 - 没有覆盖多节点（`MN`）、`SubmitPolicy_Conn` 策略和 TLS。
+
+## 9. 第二批结果
+
+新增 `ClientResultIT`（86 项），`FakeSmsc` 增加了发 deliver_sm 和指定 message_id 的能力，已加入 `regression/suites.txt`，连跑 2 轮结果一致。这批只加测试，没有改产品代码，没有跑全量回归。
+
+### 9.1 更正
+
+清单原来把 `SMSOptionDRStatusMapping`、`SMSOptionIsNotSupportUnknowDRStatus` 归到 Client 收 DR。实际它们**只在发给客户时生效**（`Smpp.createSmppDeliverSM4dr`），改变的是客户看到的回执文本，不改变 Client 收到和 Core 记录的状态。`SMSOptionDRNotPaidCode` 才是在 Client 收 DR 时生效。
+
+### 9.2 待确认：DR 没有 id 时会丢失
+
+供应商的回执里没有 `id:` 字段时：Client 记一条错误日志，**仍回 deliver_sm_resp ROK，并写入一条没有 outMsgId、状态为 -1 的 DR**。供应商认为已送达，不会重发，这条 DR 也匹配不到原消息。Core 收到后如何处理没有实测。产品代码没有改，用例按当前行为断言。
+
+### 9.3 用例确认的其他行为
+
+- **`ChlSMPPMsgIDParse` 默认也会补零（RS-04）：** `SMSOptionSMPPIsPadZero4SR` 的默认值跟随它。开启后 `1A2B` 变成 `0000006699`。供应商 DR 里的 id 也要是这个格式，否则匹配不上。
+- **没有列出的 command_status（RS-02）：** 一律转成 9000（UNKNOWN_ERROR）。
+- **没有 `sub:` 字段的回执（VD-05）：** 固定取 `id:` 后 10 个字符，id 长度不是 10 时会截错或带上其他内容。
+- **只有 receipted_message_id、没有状态的 TLV 回执（VD-04）：** 判为 DELIVERED。
+
+### 9.4 这批用例的限制
+
+- **VD-02、VD-10 的写入失败用背压模拟：** Redis 真实断开时的行为没有测。
+- **发给客户的回执（VD-06、VD-07）：** 直接调用组 PDU 的方法，没有走真实的 Server 会话。
+- **RS-02：** 只测了 14 个代表性的码，没有穷举。
+- **SMPP 3.3 的回执（`CN-13`）：** 没有测，它的 id 转换逻辑不同。
+
+## 10. 第三批结果
+
+新增 `ClientHttpIT`、`ServerDrPduIT`（抓真实 PDU）和测试用的 `ItHttpHandler`，已加入 `regression/suites.txt`。这批修了一处产品代码（第 10.1 节），跑了 HTTP 相关套件，没有跑全量回归。请求是真实的：真实的 `CommonHttpSession` 和消费者，对接本地 HTTP 服务。
+
+### 10.1 发现并修复的缺陷
+
+**DEF-C4（中，已修复）：DR 推送给 HTTP 客户时，临时故障不重试，DR 丢失。** Core 只重试状态 11005（`handleInDeliveryReportRes`），而原来只有 504、598、599 才回它。客户的服务器宕机、超时、返回 500 时回 10900，DR 直接丢失。
+
+**修复：** `HttpUtils.drStatusOfHttpFailure` 统一失败状态，`CommonHttpSession`、`CommonRESTHttpSession` 都用它。REST 会话原来失败时用 `setStatus` 覆盖了状态文本，重发时真实状态就丢了，改成只改状态码。
+
+| 客户服务器的情况 | 修复前 | 修复后 | Core |
+|---|---|---|---|
+| 连不上、读超时 | 10900 | 11005 | 重试 |
+| HTTP 408 | 10400 | 11005 | 重试 |
+| HTTP 500、503 等 5xx | 10900 | 11005 | 重试 |
+| HTTP 504 | 11005 | 11005 | 重试 |
+| HTTP 401、403、511 | 10500 | 10500 | 不重试 |
+| 其他 4xx（400、404） | 10900 | 10900 | 不重试 |
+
+**影响：** 客户服务器长时间不可用时，DR 会按 DR 重试策略堆在 RDQ 里。默认策略是 `10M*144`（约 24 小时），之后放弃。可能出现少量重复 DR，这是已接受的取舍。
+
+**验证：** `HT-10c`～`g` 转正；`HT-14` 走真实重发链路，状态正确；`HT-15` 验证 Core 写 RDQ、重发成功后删除。RDQ 的写入和删除通过记录 SQL 验证，从 RDQ 取数这一步用同一个还原方法（`getCodeFromState`）模拟，没有真实数据库。`CommonRESTHttpSession` 的修改只经过编译，没有用例。
+
+### 10.1.1 更正：之前的两个错误结论
+
+- **“重发时状态发错”不成立。** 我曾说 HTTP DR 重发时客户会收到错误状态，并为此加过还原代码；**“SMPP 重发回执是 `stat:Delivered`（旧 DEF-C5）”也不成立**。两者都是用例的输入不真实：手工构造了“状态 11005 + 文本”直接调用组包方法。真实链路里，`MessageStoreManager.getResendDR` 取出 RDQ 记录时会先用 `getCodeFromState` 把状态码还原，到不了那个分支。还原代码已撤掉。
+- 现在用 `ServerDrPduIT` 抓真实 Server 发出的 deliver_sm：DELIVERED 首发和重发都是 `stat:DELIVRD`。
+
+### 10.1.2 新发现、未修复：细分失败状态重发时变成 UNKNOWN（DEF-C5）
+
+`getCodeFromState` 只认 8 种状态文本（Delivered、Expired、Deleted、Undeliverable、Rejected、Unknown、Enroute、Accept）。细分失败状态（如 10405 网络错误、10402 接收号错误）的文本不在其中，重发时被还原成 10900。
+
+| 状态 | 首发回执 | 重发回执 |
+|---|---|---|
+| 10000、10400、10200、10500、10900 | 正确 | 和首发一致 |
+| 10402、10405 | `UNDELIV` | **`UNKNOWN`** |
+
+只影响“第一次发 DR 失败、重发”的情况。SMPP 实测（`PD-03a`、`PD-03b`）；HTTP 用同一个还原方法，读代码判断有同样的问题，没有实测。已登记为已知缺陷，没有改。
+
+**已确认符合预期：** 发送方黑名单拒绝（10801）的回执是 `stat:UNKNOWN`（`getStateTextFromCode` 没有列这个码）。上面的 DEF-C5 也按决定保持现状，不修改。
+
+### 10.2 用例确认的其他行为
+
+- **没配 `HandlerClass` 的通道发不出请求（HT-07g）：** 默认的 `CommonMessageHttpHandler.createXml` 里，生成 XML 的代码被注释掉了，总是返回空串。每条消息都报 `Can't send empty message!` 并回 2500。
+- **接口定义文件（HT-07）：** `Protocol` 决定读取 `conf/{Protocol}.xml`，文件不存在时同样发不出请求。这个文件不在仓库里，部署时要带上。
+- **HTTP 通道连不上回 9000（HT-08c）：** SMPP 通道连不上回 2500。所以只把 2500 配进 `SMSOptionSubmitRetryCode` 时，HTTP 通道连不上不会重试，要把 9000 也配上。读超时同样回 9000，这时供应商可能已收到，重试可能重复。
+- **HTTP 500 回 2300（HT-08b）：** 不是 2500，同样要按需要配重试码。
+
+### 10.3 这批用例的限制
+
+- **`ItHttpHandler` 是测试用的：** 线上供应商的处理类（`protocol/commonhttp`，共 95 个文件）各有各的格式，这里没有测（HT-12）。
+- **DR 响应：** 只测了空响应。客户回非空内容时走 `dealDRResp`，没有测。
