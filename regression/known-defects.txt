@@ -21,5 +21,6 @@ B-06 OPEN URL is not checked for a single connection
 B-09b OPEN BindMode=T also accepts bind_transmitter
 S-12 OPEN empty recipient accepted by the server
 S-13 OPEN non-numeric recipient accepted by the server
-PD-03a DEF-C5 DR retried: a detailed failure status (10405) is not restored from its text, the customer gets UNKNOWN instead of UNDELIV
-PD-03b DEF-C5 DR retried: a detailed failure status (10402) is not restored from its text, the customer gets UNKNOWN instead of UNDELIV
+SD-03a DEF-C5 DR retried: a detailed failure status (10405) is not restored from its text, the customer gets UNKNOWN instead of UNDELIV
+SD-03b DEF-C5 DR retried: a detailed failure status (10402) is not restored from its text, the customer gets UNKNOWN instead of UNDELIV
+PD-02a DEF-C6 UCS2 on a channel with SMSOptionSupportOutgoingGSM7bit=0: submit_sm has data_coding 0 with UTF-16 bytes (Smpp.createSmppSubmitSM)

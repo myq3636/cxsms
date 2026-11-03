@@ -58,20 +58,20 @@ public class ServerDrPduIT extends ItSupport {
 			Thread.sleep(1500);
 			q = StreamQueueManager.getInstance();
 			SmppTestClient c = new SmppTestClient("127.0.0.1", PORT, 5, null);
-			check(c.bind("c31", "p31"), "PD-00 customer bound, BufferTimeout 3 s");
+			check(c.bind("c31", "p31"), "SD-00 customer bound, BufferTimeout 3 s");
 
 			// status, receipt word on the first try, check id of the retry
 			Object[][] all = {
-				{ GmmsStatus.DELIVERED, "DELIVRD", "PD-02b" }, { GmmsStatus.UNDELIVERABLE, "UNDELIV", "PD-02c" }, { GmmsStatus.EXPIRED, "EXPIRED", "PD-02d" },
-				{ GmmsStatus.REJECTED, "REJECTD", "PD-02e" }, { GmmsStatus.UNKNOWN, "UNKNOWN", "PD-02f" },
-				{ GmmsStatus.UNDELIVERY_NETWORK_ERROR, "UNDELIV", "PD-03a" }, { GmmsStatus.UNDELIVERY_RECIPIENT_ERROR, "UNDELIV", "PD-03b" }, { GmmsStatus.REJECTED_SDBL, "UNKNOWN", "PD-02g" } };
+				{ GmmsStatus.DELIVERED, "DELIVRD", "SD-02b" }, { GmmsStatus.UNDELIVERABLE, "UNDELIV", "SD-02c" }, { GmmsStatus.EXPIRED, "EXPIRED", "SD-02d" },
+				{ GmmsStatus.REJECTED, "REJECTD", "SD-02e" }, { GmmsStatus.UNKNOWN, "UNKNOWN", "SD-02f" },
+				{ GmmsStatus.UNDELIVERY_NETWORK_ERROR, "UNDELIV", "SD-03a" }, { GmmsStatus.UNDELIVERY_RECIPIENT_ERROR, "UNDELIV", "SD-03b" }, { GmmsStatus.REJECTED_SDBL, "UNKNOWN", "SD-02g" } };
 
 			// ---- first try ----
 			for (Object[] x : all) {
 				GmmsStatus st = (GmmsStatus) x[0];
 				String r = pdu(c, dr(31, st.getCode(), st.getText()));
 				System.out.println("INFO first " + st.getCode() + " " + r);
-				check(x[1].equals(stat(r)), "PD-01 first try, status " + st.getCode() + ": stat:" + x[1] + " in the PDU: " + stat(r));
+				check(x[1].equals(stat(r)), "SD-01 first try, status " + st.getCode() + ": stat:" + x[1] + " in the PDU: " + stat(r));
 			}
 
 			// ---- real retry ----
@@ -85,7 +85,7 @@ public class ServerDrPduIT extends ItSupport {
 				List<GmmsMessage> l = inStreams("stream:core:results*", id);
 				GmmsMessage failed = l.isEmpty() ? null : l.get(0);
 				c.ackDeliver = true;
-				check(failed != null && failed.getStatusCode() == 11005, "PD-02a customer does not answer: result 11005: " + (failed == null ? "none" : failed.getStatusCode() + " " + failed.getStatusText()));
+				check(failed != null && failed.getStatusCode() == 11005, "SD-02a customer does not answer: result 11005: " + (failed == null ? "none" : failed.getStatusCode() + " " + failed.getStatusText()));
 				if (failed == null) continue;
 				GmmsMessage back = fromRdq(failed);
 				back.setMsgID(id + "R");

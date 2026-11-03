@@ -30,6 +30,7 @@ final class FakeSmsc implements Runnable {
 		volatile int enquiresAtFirstClose = -1;
 		volatile long firstBindAt = 0, firstCloseAt = 0, nextBindAt = 0;
 		final List<String> texts = Collections.synchronizedList(new ArrayList<String>());
+		final List<Submit> submits = Collections.synchronizedList(new ArrayList<Submit>());
 		final List<Integer> bindCmds = Collections.synchronizedList(new ArrayList<Integer>());
 		final List<Link> links = new CopyOnWriteArrayList<>();
 		final Map<Link, AtomicInteger> perLink = new ConcurrentHashMap<>();
@@ -125,6 +126,9 @@ final class FakeSmsc implements Runnable {
 				} else if (cmd == 0x80000015) {
 					if (a != null) a.enquireResps.incrementAndGet();
 				} else if (cmd == 4 && a != null && link != null) {
+					Submit parsed = parse(body);
+					parsed.link = link;
+					a.submits.add(parsed);
 					a.texts.add(shortMessage(body));
 					a.perLink.get(link).incrementAndGet();
 					if (a.answerSubmit) a.respond(link, seq); else a.held.add(new Object[] { link, seq });
@@ -160,6 +164,40 @@ final class FakeSmsc implements Runnable {
 		DataOutputStream d = new DataOutputStream(b);
 		d.writeShort(tag); d.writeShort(value.length); d.write(value);
 		return b.toByteArray();
+	}
+
+	/** every field of a submit_sm */
+	static final class Submit {
+		Link link; String service, source, dest, schedule, validity; int srcTon, srcNpi, dstTon, dstNpi, esm, protocol, priority, registered, replace, dcs;
+		byte[] sm; final Map<Integer, byte[]> tlvs = new HashMap<>();
+		String text() throws UnsupportedEncodingException { return new String(sm, "ISO-8859-1"); }
+	}
+	static Submit parse(byte[] b) throws UnsupportedEncodingException {
+		Submit s = new Submit();
+		int[] i = { 0 };
+		s.service = cstr(b, i);
+		s.srcTon = b[i[0]++] & 0xff; s.srcNpi = b[i[0]++] & 0xff; s.source = cstr(b, i);
+		s.dstTon = b[i[0]++] & 0xff; s.dstNpi = b[i[0]++] & 0xff; s.dest = cstr(b, i);
+		s.esm = b[i[0]++] & 0xff; s.protocol = b[i[0]++] & 0xff; s.priority = b[i[0]++] & 0xff;
+		s.schedule = cstr(b, i); s.validity = cstr(b, i);
+		s.registered = b[i[0]++] & 0xff; s.replace = b[i[0]++] & 0xff; s.dcs = b[i[0]++] & 0xff; i[0]++;
+		int n = b[i[0]++] & 0xff;
+		s.sm = Arrays.copyOfRange(b, i[0], i[0] + n);
+		i[0] += n;
+		while (i[0] + 4 <= b.length) {
+			int tag = ((b[i[0]] & 0xff) << 8) | (b[i[0] + 1] & 0xff);
+			int len = ((b[i[0] + 2] & 0xff) << 8) | (b[i[0] + 3] & 0xff);
+			s.tlvs.put(tag, Arrays.copyOfRange(b, i[0] + 4, i[0] + 4 + len));
+			i[0] += 4 + len;
+		}
+		return s;
+	}
+	private static String cstr(byte[] b, int[] i) throws UnsupportedEncodingException {
+		int s = i[0];
+		while (b[i[0]] != 0) i[0]++;
+		String r = new String(b, s, i[0] - s, "ISO-8859-1");
+		i[0]++;
+		return r;
 	}
 
 	/** the SMSC asks: is the client alive */

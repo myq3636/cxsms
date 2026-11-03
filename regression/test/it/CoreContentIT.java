@@ -107,6 +107,13 @@ public class CoreContentIT extends CoreRetryIT {
 			m = msg(203, "18667991226", DST, "hello"); m.setGsm7bit(true); g = sent(m, 704); System.out.println("INFO force " + show(g));
 			check(g != null && !g.isGsm7bit() && GmmsMessage.AIC_CS_ASCII.equalsIgnoreCase(g.getContentType()), "OUT-05b SMSOptionForceTrans2ASCII, channel without 7bit: goes out as ASCII");
 
+			// ---- UCS2 on a channel with the default settings: what Core hands to the Client ----
+			m = msg(205, "18667991226", DST, "\u4F60\u597D");
+			m.setContentType(GmmsMessage.AIC_CS_UCS2); m.setMessageSize(4);
+			g = sent(m, 701);
+			System.out.println("INFO ucs2 " + show(g));
+			check(g != null && GmmsMessage.AIC_CS_UCS2.equalsIgnoreCase(g.getContentType()), "OUT-05c UCS2 stays UCS2 on its way to the Client: " + show(g));
+
 			// ---- UDH ----
 			m = msg(204, "18667991226", DST, "hello"); m.setUdh(PORT_UDH); g = sent(m, 705); System.out.println("INFO udh " + show(g));
 			check(g != null && g.getUdh() == null, "OUT-06a SmsOptionIsSupportUDH=No: UDH removed");

@@ -24,7 +24,10 @@ LogChainClientIT it.LogChainClientIT it-server
 ClientPendingIT it.ClientPendingIT it-server
 ClientConnectionIT it.ClientConnectionIT it-mod:MultiSmppClient1
 ClientResultIT it.ClientResultIT it-mod:MultiSmppClient1
+ClientPduIT it.ClientPduIT it-mod:MultiSmppClient1
 ClientHttpIT it.ClientHttpIT it
+ClientFaultIT it.ClientFaultIT it-mod:MultiSmppClient1
+ClientFailoverIT it.ClientFailoverIT it-multiclient
 DrLivenessIT it.DrLivenessIT it
 GmmsReloadIT it.GmmsReloadIT it
 ConfigFileIT it.ConfigFileIT it
