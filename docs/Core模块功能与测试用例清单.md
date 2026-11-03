@@ -1,14 +1,14 @@
 # Core 模块功能与测试用例清单
 
-> 范围：Core（`CoreEngine`，`DeliveryRouter`）当前 `main` 的代码。“回归现状”依据 `regression/` 现有用例。第一批（黑白名单、号码检查、路由优先级）、第二批（重试、MQM 回写）和第三批（多进程故障、假 DR 和延迟 DR、DR 改道）已实现，结果见第 8、9、10 节；标“待补”的用例还没有实测。
+> 范围：Core（`CoreEngine`，`DeliveryRouter`）当前 `main` 的代码。“回归现状”依据 `regression/` 现有用例。第一批（黑白名单、号码检查、路由优先级）、第二批（重试、MQM 回写）、第三批（多进程故障、假 DR 和延迟 DR、DR 改道）和第四批（内容处理、反垃圾、有效期和定时、部分热加载）已实现，结果见第 8～11 节；标“待补”的用例还没有实测。
 
 ## 1. 总览
 
 Core 负责消费 MT、做检查和路由、外发到出向 stream，并处理结果和 DR。
 
-- **已支持功能：** 45 组，其中回归已覆盖 28 组，部分覆盖 9 组，没有覆盖 8 组。
-- **测试用例：** 120 条，其中已覆盖 81 条，部分覆盖 10 条，待补 29 条。
-- **主要缺口：** 可靠性机制（去重、outbox、限速、长短信、分片）测得比较全，**部分业务功能还没有回归用例**：反垃圾、运营商和 ENUM 路由、第二路由、内容处理、有效期和定时发送。
+- **已支持功能：** 45 组，其中回归已覆盖 30 组，部分覆盖 10 组，没有覆盖 5 组。
+- **测试用例：** 120 条，其中已覆盖 95 条，部分覆盖 8 条，待补 17 条。
+- **主要缺口：** 可靠性机制（去重、outbox、限速、长短信、分片）测得比较全，**部分业务功能还没有回归用例**：运营商和 ENUM 路由、第二路由、DR 映射和查询、部分热加载。
 
 ## 2. 已支持的功能
 
@@ -24,8 +24,8 @@ Core 负责消费 MT、做检查和路由、外发到出向 stream，并处理�
 | 号码前缀增删、号码和长度校验 | `SMSOptionAddOriPrefix*`、`SMSOptionAllowOriPrefixList`、`SMSOption*LenList`、`SMSOptionIsRecipitLenCheck` | 部分 |
 | `recipientRuleFile.cfg` 接收号规则，非 ASCII 超长拒绝，同号 24 小时上限 | `recipientRuleFile.cfg`、`SMSOptionRecipientMaxSendCountIn24H`、`BlackholeSsid` | 已覆盖 |
 | 重复消息检查 | `DuplicateMessagePeriod`、`DuplicateMessageServiceTypeIDList`、`CheckDuplicateMessageContent` | 已覆盖 |
-| 反垃圾过滤 | `needAntiSpam`、`SMSOptionSupport*AntiSpam`、`conf/antiSpam.cfg` | 待补 |
-| service type id 校验 | `MaxServiceTypeID`、`Smpp.ServiceTypeIDTag` | 待补 |
+| 反垃圾过滤 | `needAntiSpam`、`SMSOptionSupport*AntiSpam`、`conf/antiSpam.cfg` | 已覆盖 |
+| service type id 校验 | `MaxServiceTypeID`、`Smpp.ServiceTypeIDTag` | 已覆盖 |
 | 有效期计算、定时发送 | `ExpireTime`、`FinalExpireTime`、`MessageExpireTime`、`Min/MaxMessageExpireTimeFromCust`、`SMSOptionParseValidityPeriod` | 部分 |
 | MT 处理去重（重投不重复写 CDR、DR、外发） | `CoreMtIdempotency`、`CoreMtLeaseMs`、`CoreMtMarkerTtlSeconds` | 已覆盖 |
 | 超过投递次数进死信队列 | `stream:dlq:*` | 已覆盖 |
@@ -48,7 +48,7 @@ Core 负责消费 MT、做检查和路由、外发到出向 stream，并处理�
 | 功能 | 主要配置 | 回归现状 |
 |---|---|---|
 | 写入 `stream:mt:routed`、`stream:http:submit` | — | 已覆盖 |
-| 内容处理：拆分、编码转换、UDH、后缀、内容替换、模板 | `SupportMsgSplit`、`MsgSplitLen`、`SMSOption*GSM7bit`、`SmsOptionIsSupportUDH`、`SMSOptionContentReplacementPolicy`、`conf/contentTemplate.cfg` | 待补 |
+| 内容处理：拆分、编码转换、UDH、后缀、内容替换、模板 | `SupportMsgSplit`、`MsgSplitLen`、`SMSOption*GSM7bit`、`SmsOptionIsSupportUDH`、`SMSOptionContentReplacementPolicy`、`conf/contentTemplate.cfg` | 部分 |
 | 发送方替换（`senderReplacement.cfg`、高级替换） | `SMSOptionAdvancedSenderReplacement`、`SenderMapping` | 部分 |
 | 拒绝区域 | `SMSOptionRejectRegions` | 待补 |
 | 通道限速暂存放行，积压和超时处理 | `SMSOptionCoreProcessorThrottlingNum`、`CoreHoldMaxSeconds`、`CoreHold*` | 已覆盖 |
@@ -168,11 +168,11 @@ SMPP/HTTP 协议、bind 鉴权、入向限流和计费扣费在 Server；真正�
 | CK-13 | P1 | `SMSOptionRecipientMaxSendCountIn24H=2` | 同号第 3 条 | `RECIPIENT_ERROR_BY_MAX_COUNT`；重投不重复计数 | 已覆盖 | CoreCheckIT |
 | CK-14 | P1 | `DuplicateMessagePeriod` | 时间内重复 | 按重复处理；超过时间正常 | 已覆盖 | CoreCheckIT |
 | CK-15 | P2 | `CheckDuplicateMessageContent` | 同号不同内容 | 不算重复 | 已覆盖 | CoreCheckIT |
-| CK-16 | P1 | `needAntiSpam`、`antiSpam.cfg` | 命中规则 | 按反垃圾处理 | 待补 |  |
-| CK-17 | P2 | `MaxServiceTypeID=3` | service type id 为 5 | 校验失败 | 待补 |  |
-| CK-18 | P1 | 未配置有效期 | 提交 MT | 用全局默认有效期 | 部分 | ConfigReloadIT |
-| CK-19 | P1 | `SMSOptionParseValidityPeriod` | 有效期在允许范围内、超范围 | 范围内采用；超范围用默认值 | 待补 |  |
-| CK-20 | P1 | `SMSOptionParseScheduleDeliveryTime` | 定时发送 | 到时间才外发 | 待补 |  |
+| CK-16 | P1 | `SMSOptionSupportIncomingAntiSpam`、`SMSOptionSupportOutgoingAntiSpam`、`antiSpam.cfg` | 命中入向、出向关键字 | 不外发，回失败 DR（10700）；干净内容正常 | 已覆盖 | CoreContentIT |
+| CK-17 | P2 | `MaxServiceTypeID=3` | service type id 为 5、3 | 5 校验失败，回失败 DR（10500）；3 正常 | 已覆盖 | CoreContentIT |
+| CK-18 | P1 | 消息没带有效期 | 提交 MT | 用客户 `ExpireTime`（**单位是小时**）；没配用全局默认 | 已覆盖 | CoreContentIT |
+| CK-19 | P1 | `SMSOptionParseValidityPeriod` | 有效期在允许范围内、超范围 | 范围内采用；超范围用默认值。解析在 Server 的协议层（`Smpp.java`），不在 Core，要放到 Server 用例里测 | 待补 |  |
+| CK-20 | P1 | 消息带定时时间（`ScheduleDeliveryTime`） | 未到、已过定时时间 | 未到：写 SMQ，不外发；已过：直接外发。SMQ 到时间后由 MQM 取出这一步要查 DB，没有测 | 部分 | CoreContentIT |
 
 ### 三、路由
 
@@ -201,16 +201,16 @@ SMPP/HTTP 协议、bind 鉴权、入向限流和计费扣费在 Server；真正�
 | ID | 级别 | 配置 / 前置 | 场景 | 预期 | 现状 | 现有用例 |
 |---|---|---|---|---|---|---|
 | OUT-01 | P0 | SMPP 通道 | 外发 | 写 routed 流 | 已覆盖 | CoreE2EIT |
-| OUT-02 | P0 | HTTP 通道 | 外发 | 写 `stream:http:submit` | 部分 | ClientBatch2IT（Client 侧） |
-| OUT-03 | P0 | 超长消息 | 按 `MsgSplitLen` 拆分 | 段数正确；每段都有 outbox | 部分 | Batch3IT |
-| OUT-04 | P1 | `SupportMsgSplit=no` | 超长消息 | 按配置失败或不拆分 | 待补 |  |
-| OUT-05 | P1 | `SMSOptionConvert2GSM7bit`、`ForceTrans2ASCII` | 转码 | 外发编码正确 | 待补 |  |
-| OUT-06 | P1 | `SmsOptionIsSupportUDH=No`、`SMSOptionRemoveUdh` | 带 UDH 的消息 | UDH 被去掉 | 待补 |  |
-| OUT-07 | P1 | `SMSOptionContentReplacementPolicy` | 匹配内容 | 内容被替换 | 待补 |  |
-| OUT-08 | P1 | `contentTemplate.cfg` | 匹配和未匹配模板 | 匹配时替换；失败时按 `DrSuccForTemplateReplaceFailed` | 待补 |  |
+| OUT-02 | P0 | HTTP 通道 | 外发 | 写 `stream:http:submit`，不写 SMPP stream | 已覆盖 | CoreContentIT、ClientBatch2IT |
+| OUT-03 | P0 | 超长消息，`ChlMsgSplit=yes`、`MsgSplitLen` | 按长度拆分 | 段数正确，段序号正确，拼起来等于原文；每段都有 outbox | 已覆盖 | CoreContentIT、Batch3IT |
+| OUT-04 | P1 | 客户 `SupportMsgSplit=no` | 超长消息 | 不拆分，整条外发 | 已覆盖 | CoreContentIT |
+| OUT-05 | P1 | `SMSOptionConvert2GSM7bit`（需 `SMSOptionSupportOutgoingGSM7bit` 不为 0）、`SMSOptionForceTrans2ASCII` | 转码 | ASCII 转 GSM 7bit；7bit 消息在不支持 7bit 的通道转 ASCII | 已覆盖 | CoreContentIT |
+| OUT-06 | P1 | `SmsOptionIsSupportUDH=No` | 带 UDH 的消息 | UDH 被去掉；其他通道保留；只有一段的拼接头被去掉。`SMSOptionRemoveUdh` 在 Client 编码时生效，这里没有测 | 已覆盖 | CoreContentIT |
+| OUT-07 | P1 | `SMSOptionContentReplacementPolicy` | 匹配内容 | `prefix=all` 和号码前缀的规则都生效；其他国家只用 `all` | 已覆盖 | CoreContentIT |
+| OUT-08 | P1 | 路由 `ReplaceContentByTemplate`、`contentTemplate.cfg` | 内容里有、没有验证码 | 有：用模板，代入验证码。没有：不外发，回失败 DR（10503）；`DrSuccForTemplateReplaceFailed` 时回 DELIVERED | 已覆盖 | CoreContentIT |
 | OUT-09 | P1 | `senderReplacement.cfg` | 匹配规则 | 发送方被替换；reload 后生效 | 部分 | RenameReloadIT |
-| OUT-10 | P1 | `SMSOptionAdvancedSenderReplacement`、`SenderMapping` | 高级替换 | 发送方正确 | 待补 |  |
-| OUT-11 | P1 | `SMSOptionRejectRegions` | 目标区域被拒绝 | 不外发，失败处理 | 待补 |  |
+| OUT-10 | P1 | `SMSOptionAdvancedSenderReplacement`、`senderReplacement.cfg` | 高级替换 | 匹配的发送方被替换；其他发送方、没开选项的客户不变 | 已覆盖 | CoreContentIT |
+| OUT-11 | P1 | `SMSOptionRejectRegions` | 目标区域被拒绝 | 不外发，失败处理。要用 `conf/phone.dat`，回归环境没有这个文件，所以没有测 | 待补 |  |
 | OUT-12 | P0 | `SMSOptionCoreProcessorThrottlingNum=2` | 发 10 条 | 按速率放行，超限不丢 | 已覆盖 | ChannelRateIT |
 | OUT-13 | P0 | 积压超过上限 | 继续提交 | 2600 失败 | 已覆盖 | ChannelRateIT |
 | OUT-14 | P1 | 超过 `CoreHoldMaxSeconds` | 暂存超时 | 10200，写 CDR，回失败 DR | 已覆盖 | ChannelRateIT |
@@ -278,12 +278,12 @@ SMPP/HTTP 协议、bind 鉴权、入向限流和计费扣费在 Server；真正�
 |---|---|---|---|---|---|---|
 | CF-01 | P0 | `RELOAD_CUSTOMER` | 改客户配置 | 只影响改动的客户；处理中的消息不受影响 | 已覆盖 | RenameReloadIT、RapidReloadIT |
 | CF-02 | P0 | `RELOAD_GMMS_CONFIG` | 改 GmmsConfig | 白名单内的配置生效，写入 Redis | 已覆盖 | GmmsReloadIT、ConfigReloadIT |
-| CF-03 | P1 | `RELOAD_CONTENT_TEMPLATE` | 改模板 | 新消息用新模板 | 待补 |  |
+| CF-03 | P1 | `RELOAD_CONTENT_TEMPLATE` | 改模板 | 新消息用新模板 | 已覆盖 | CoreContentIT |
 | CF-04 | P1 | `RELOAD_PHONE_PREFIX` | 改发送方替换 | 新消息生效 | 已覆盖 | RenameReloadIT |
-| CF-05 | P1 | `RELOAD_RECIPIENT_RULE` | 改接收号规则 | 新消息生效 | 部分 | ConfigFileIT（只验证写 Redis） |
-| CF-06 | P1 | `RELOAD_ANTISPAM` | 改反垃圾规则 | 新消息生效 | 待补 |  |
+| CF-05 | P1 | `RELOAD_RECIPIENT_RULE` | 改接收号规则 | 新消息按新规则拒绝 | 已覆盖 | CoreContentIT、ConfigFileIT |
+| CF-06 | P1 | `RELOAD_ANTISPAM` | 改反垃圾规则 | 新关键字生效 | 已覆盖 | CoreContentIT |
 | CF-07 | P1 | `RELOAD_SYSTEM_REPLACE`、`RELOAD_VENDOR_REPLACE` | 改替换规则 | 新消息生效 | 待补 |  |
-| CF-08 | P1 | 黑白名单 | 修改名单文件 | 按说明的方式生效 | 待补 |  |
+| CF-08 | P1 | 黑白名单 | 修改名单文件 | `RELOAD_SENDER_BLACKLIST` 后新名单生效。白名单、内容名单的 reload 生效没有测 | 部分 | CoreContentIT |
 | CF-09 | P1 | 连续 reload | 处理流量时连续 reload | 不丢消息 | 已覆盖 | RapidReloadIT |
 
 ### 九、故障与恢复
@@ -312,30 +312,30 @@ SMPP/HTTP 协议、bind 鉴权、入向限流和计费扣费在 Server；真正�
 | 分组 | 用例数 | 已覆盖 | 部分 | 待补 |
 |---|---|---|---|---|
 | MT 主链路 | 7 | 7 | 0 | 0 |
-| 前置检查 | 20 | 15 | 1 | 4 |
+| 前置检查 | 20 | 18 | 1 | 1 |
 | 路由 | 17 | 12 | 0 | 5 |
-| 外发与内容处理 | 17 | 7 | 3 | 7 |
+| 外发与内容处理 | 17 | 15 | 1 | 1 |
 | 长短信 | 7 | 6 | 1 | 0 |
 | 结果与重试 | 15 | 14 | 1 | 0 |
 | DR | 17 | 10 | 2 | 5 |
-| 配置热加载 | 9 | 4 | 1 | 4 |
+| 配置热加载 | 9 | 7 | 1 | 1 |
 | 故障与恢复 | 8 | 6 | 1 | 1 |
 | 性能基线 | 3 | 0 | 0 | 3 |
-| **合计** | **120** | **81** | **10** | **29** |
+| **合计** | **120** | **95** | **8** | **17** |
 
 | 级别 | 已覆盖 | 部分 | 待补 |
 |---|---|---|---|
-| P0 | 43 | 3 | 0 |
-| P1 | 37 | 6 | 22 |
-| P2 | 1 | 1 | 7 |
+| P0 | 45 | 1 | 0 |
+| P1 | 48 | 6 | 11 |
+| P2 | 2 | 1 | 6 |
 
 ## 6. 建议补用例的顺序
 
 P0 已经没有待补用例。接下来建议：
 
-1. **内容处理（OUT-04～OUT-11）**：拆分、编码、模板、替换。
-2. **其余路由和检查**：运营商和 ENUM（RT-08～RT-11）、反垃圾（CK-16）、有效期和定时发送（CK-19、CK-20）。
-3. **热加载生效（CF-03～CF-08）**：改配置后新消息确实按新配置处理。
+1. **其余路由（RT-08～RT-11）**：运营商、ENUM、第二路由。
+2. **DR 映射和查询（DR-13～DR-17）**：其中状态映射、欠费码可能在 Client 协议层，要先确认归属。
+3. **剩余热加载（CF-07）和拒绝区域（OUT-11，需要 `phone.dat`）**。
 4. **Redis 分开部署（FT-07）和性能基线（PF-01～PF-03）**：需要更多环境资源。
 
 ## 7. 未核实的部分
@@ -455,3 +455,23 @@ P0 已经没有待补用例。接下来建议：
 - 故障用例的 `CoreMtLeaseMs`、`RedisStreamAutoClaimIdleMs` 是 10 秒，不是默认的 60 秒。
 - 假 DR 和延迟 DR 在 `AutoInDR.DirectStreamEnable=true` 下测试，默认值 `false` 的路径（写延迟队列或 RDQ）没有验证。
 - `DR-06` 的“恢复后重发”由测试把消息写回 MQM stream，没有经过真实的 RDQ 查询。
+
+## 11. 第四批结果
+
+新增 `CoreContentIT`（35 项），已加入 `regression/suites.txt`，连跑 2 轮结果一致。这批只加测试，没有改产品代码，单独跑了这个套件，没有跑全量回归。
+
+### 11.1 用例确认的行为
+
+- **`ExpireTime` 的单位是小时（CK-18）：** 代码是 `getInt * 60` 转成分钟。`docs/配置项说明.md` 原来写“分钟”，已更正。
+- **拆分要同时满足两个条件（OUT-03、OUT-04）：** 通道 `ChlMsgSplit=yes`，且客户 `SupportMsgSplit` 不是 `no`。否则超长消息整条外发。
+- **拼接头会被去掉（OUT-06c）：** `05 00 03 …` 这种长短信拼接头由 Core 解析后清除，不作为 UDH 发出。其他 UDH（如端口寻址）原样保留。
+- **模板失败（OUT-08）：** 内容里找不到验证码（默认正则 `(?:[0-9-]){4,}`）时不外发，回 10503；配了 `DrSuccForTemplateReplaceFailed` 时回 DELIVERED，同样不外发。
+- **定时消息（CK-20）：** 定时时间未到时写 SMQ；时间按 GMT 比较。
+
+### 11.2 这批用例的限制
+
+- **单一进程、不经过 Server：** 消息由测试直接写入 stream，字段由测试设置。
+- **`SMSOptionRemoveUdh`：** 在 Client 编码时生效，这里没有测。
+- **`OUT-11`：** 回归环境没有 `conf/phone.dat`，查不到归属地，没有测。
+- **`CK-19`：** 有效期解析在 Server 协议层，要放到 Server 用例里。
+- **`OUT-09`：** `senderReplacement.cfg` 改完 reload 后对新消息生效，没有实测。
