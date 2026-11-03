@@ -740,43 +740,9 @@ public class CommonRESTHttpSession extends HttpSession {
 		} catch (IOException e) {
 			log.warn(e, e);
 		}
-		String strStatus = String.valueOf(httpstatus);
-		if (strStatus.startsWith("4")) {
-			switch (httpstatus) {
-			case 401:
-				msg.setStatus(GmmsStatus.REJECTED);
-				break;
-			case 403:
-				msg.setStatus(GmmsStatus.REJECTED);
-				break;
-			case 408:
-				msg.setStatus(GmmsStatus.UNDELIVERABLE);
-				break;
-			default:
-				msg.setStatus(GmmsStatus.UNKNOWN);
-				break;
-			}
-		} else if (strStatus.startsWith("5")) {
-			switch (httpstatus) {
-			case 504:
-				msg.setStatus(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT);
-				break;
-			case 511:
-				msg.setStatus(GmmsStatus.REJECTED);
-				break;
-			case 598:
-				msg.setStatus(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT);
-				break;
-			case 599:
-				msg.setStatus(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT);
-				break;
-			default:
-				msg.setStatus(GmmsStatus.UNKNOWN);
-				break;
-			}
-		} else {
-			msg.setStatus(GmmsStatus.UNKNOWN);
-		}
+		// the code only: the text keeps the real status for the retry
+		msg.setStatusCode(HttpUtils.drStatusOfHttpFailure(httpstatus));
+		log.warn(msg, "DR push to the customer failed. httpStatus={}, resultStatus={}", httpstatus, msg.getStatusCode());
 	}
 
 	// public boolean submit(GmmsMessage msg) throws IOException {

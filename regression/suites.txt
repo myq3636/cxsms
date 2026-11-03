@@ -17,11 +17,14 @@ ClientBatch2IT it.ClientBatch2IT it
 ServerBatch1IT it.ServerBatch1IT it-server
 ServerBatch2IT it.ServerBatch2IT it-server
 ServerBatch3IT it.ServerBatch3IT it-server
+ServerDrPduIT it.ServerDrPduIT it-server
 ShardGroupIT it.ShardGroupIT it
 LogChainCoreIT it.LogChainCoreIT it
 LogChainClientIT it.LogChainClientIT it-server
 ClientPendingIT it.ClientPendingIT it-server
 ClientConnectionIT it.ClientConnectionIT it-mod:MultiSmppClient1
+ClientResultIT it.ClientResultIT it-mod:MultiSmppClient1
+ClientHttpIT it.ClientHttpIT it
 DrLivenessIT it.DrLivenessIT it
 GmmsReloadIT it.GmmsReloadIT it
 ConfigFileIT it.ConfigFileIT it

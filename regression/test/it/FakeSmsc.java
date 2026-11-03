@@ -20,6 +20,10 @@ final class FakeSmsc implements Runnable {
 		volatile int bindStatus = 0;
 		volatile boolean answerEnquire = true, answerSubmit = true;
 		volatile int submitStatus = 0;
+		/** message_id of the next submit_sm_resp; null: a generated one */
+		volatile String submitMessageId = null;
+		final Map<Integer, Integer> deliverResp = new ConcurrentHashMap<>();
+		final AtomicInteger deliverSeq = new AtomicInteger(1000);
 		final AtomicInteger binds = new AtomicInteger(), rejected = new AtomicInteger(), closed = new AtomicInteger(),
 				enquires = new AtomicInteger(), enquireResps = new AtomicInteger();
 		/** enquire_link received before the first close */
@@ -35,6 +39,21 @@ final class FakeSmsc implements Runnable {
 		List<Link> open() { List<Link> l = new ArrayList<>(); for (Link k : links) if (k.open) l.add(k); return l; }
 		int count(String text) { synchronized (texts) { return Collections.frequency(texts, text); } }
 		void closeAll() { for (Link k : open()) try { k.socket.close(); } catch (IOException e) { } }
+		/** send a deliver_sm on the first open link; the status of its deliver_sm_resp lands in deliverResp under the returned sequence */
+		int deliver(String source, String dest, int esm, byte[] sm, byte[] tlvs) throws IOException {
+			int seq = deliverSeq.incrementAndGet();
+			ByteArrayOutputStream b = new ByteArrayOutputStream();
+			b.write(0);                                     // service_type
+			b.write(1); b.write(1); b.write(source.getBytes("US-ASCII")); b.write(0);
+			b.write(1); b.write(1); b.write(dest.getBytes("US-ASCII")); b.write(0);
+			b.write(esm); b.write(0); b.write(0);           // esm, protocol, priority
+			b.write(0); b.write(0);                         // schedule, validity
+			b.write(0); b.write(0); b.write(0); b.write(0); // registered, replace, dcs, default
+			b.write(sm.length); b.write(sm);
+			if (tlvs != null) b.write(tlvs);
+			open().get(0).pdu(5, 0, seq, b.toByteArray());
+			return seq;
+		}
 		/** answer the submit_sm held so far */
 		int release() throws IOException {
 			int n = 0; Object[] h;
@@ -42,7 +61,8 @@ final class FakeSmsc implements Runnable {
 			return n;
 		}
 		void respond(Link k, int seq) throws IOException {
-			k.pdu(0x80000004, submitStatus, seq, submitStatus == 0 ? ("V" + msgNo.incrementAndGet() + "\0").getBytes("US-ASCII") : new byte[] { 0 });
+			String id = submitMessageId != null ? submitMessageId : "V" + msgNo.incrementAndGet();
+			k.pdu(0x80000004, submitStatus, seq, submitStatus == 0 ? (id + "\0").getBytes("US-ASCII") : new byte[] { 0 });
 		}
 	}
 	final Map<String, Account> accounts = new ConcurrentHashMap<>();
@@ -76,7 +96,7 @@ final class FakeSmsc implements Runnable {
 			DataInputStream in = new DataInputStream(s.getInputStream());
 			DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
 			while (true) {
-				int len = in.readInt(), cmd = in.readInt(); in.readInt(); int seq = in.readInt();
+				int len = in.readInt(), cmd = in.readInt(), st = in.readInt(), seq = in.readInt();
 				byte[] body = new byte[len - 16];
 				in.readFully(body);
 				if (cmd == 1 || cmd == 2 || cmd == 9) {
@@ -100,6 +120,8 @@ final class FakeSmsc implements Runnable {
 				} else if (cmd == 0x15) {
 					if (a != null) a.enquires.incrementAndGet();
 					if (a != null && a.answerEnquire && link != null) link.pdu(0x80000015, 0, seq, new byte[0]);
+				} else if (cmd == 0x80000005) {
+					if (a != null) a.deliverResp.put(seq, st);
 				} else if (cmd == 0x80000015) {
 					if (a != null) a.enquireResps.incrementAndGet();
 				} else if (cmd == 4 && a != null && link != null) {
@@ -131,6 +153,14 @@ final class FakeSmsc implements Runnable {
 		return new String(b, i, n, "ISO-8859-1");
 	}
 	private static int skip(byte[] b, int i) { while (b[i] != 0) i++; return i + 1; }
+
+	/** one TLV: tag, length, value */
+	static byte[] tlv(int tag, byte[] value) throws IOException {
+		ByteArrayOutputStream b = new ByteArrayOutputStream();
+		DataOutputStream d = new DataOutputStream(b);
+		d.writeShort(tag); d.writeShort(value.length); d.write(value);
+		return b.toByteArray();
+	}
 
 	/** the SMSC asks: is the client alive */
 	void enquire(Link k, int seq) throws IOException { k.pdu(0x15, 0, seq, new byte[0]); }

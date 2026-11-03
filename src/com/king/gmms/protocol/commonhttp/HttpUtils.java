@@ -17,6 +17,7 @@ import com.king.gmms.domain.A2PSingleConnectionInfo;
 import com.king.gmms.domain.http.HttpConstants;
 import com.king.gmms.domain.http.HttpParam;
 import com.king.message.gmms.GmmsMessage;
+import com.king.message.gmms.GmmsStatus;
 
 public class HttpUtils {
 	private static SystemLogger log = SystemLogger.getSystemLogger(HttpUtils.class);
@@ -123,6 +124,27 @@ public class HttpUtils {
 	 * @param state
 	 * @return
 	 */
+     /**
+      * Status of a DR that could not be pushed to the customer. Core retries 11005 only: anything
+      * temporary (no answer, connection refused, timeout, 408, 5xx) gets it; the rest is final.
+      *
+      * @param httpStatus the HTTP status, 0 when there was no response
+      */
+     public static int drStatusOfHttpFailure(int httpStatus) {
+         switch (httpStatus) {
+             case 401:
+             case 403:
+             case 511:
+                 return GmmsStatus.REJECTED.getCode();
+             case 0:
+             case 408:
+                 return GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT.getCode();
+             default:
+                 return httpStatus >= 500 && httpStatus < 600
+                         ? GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT.getCode() : GmmsStatus.UNKNOWN.getCode();
+         }
+     }
+
      public static int getCodeFromDRStatus(String state) {
         if (state == null) {
             return 10900;

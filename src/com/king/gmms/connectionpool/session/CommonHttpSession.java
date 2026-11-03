@@ -842,43 +842,8 @@ public class CommonHttpSession extends HttpSession {
 		} catch (IOException e) {
 			log.warn(e, e);
 		}
-		String strStatus = String.valueOf(httpstatus);
-		if (strStatus.startsWith("4")) {
-			switch (httpstatus) {
-			case 401:
-				msg.setStatusCode(GmmsStatus.REJECTED.getCode());
-				break;
-			case 403:
-				msg.setStatusCode(GmmsStatus.REJECTED.getCode());
-				break;
-			case 408:
-				msg.setStatusCode(GmmsStatus.UNDELIVERABLE.getCode());
-				break;
-			default:
-				msg.setStatusCode(GmmsStatus.UNKNOWN.getCode());
-				break;
-			}
-		} else if (strStatus.startsWith("5")) {
-			switch (httpstatus) {
-			case 504:
-				msg.setStatusCode(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT.getCode());
-				break;
-			case 511:
-				msg.setStatusCode(GmmsStatus.REJECTED.getCode());
-				break;
-			case 598:
-				msg.setStatusCode(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT.getCode());
-				break;
-			case 599:
-				msg.setStatusCode(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT.getCode());
-				break;
-			default:
-				msg.setStatusCode(GmmsStatus.UNKNOWN.getCode());
-				break;
-			}
-		} else {
-			msg.setStatusCode(GmmsStatus.UNKNOWN.getCode());
-		}
+		msg.setStatusCode(HttpUtils.drStatusOfHttpFailure(httpstatus));
+		log.warn(msg, "DR push to the customer failed. httpStatus={}, resultStatus={}", httpstatus, msg.getStatusCode());
 	}
 	
 	public static void main(String[] args) {
