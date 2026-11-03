@@ -20,6 +20,7 @@ ServerBatch3IT it.ServerBatch3IT it-server
 ShardGroupIT it.ShardGroupIT it
 LogChainCoreIT it.LogChainCoreIT it
 LogChainClientIT it.LogChainClientIT it-server
+ClientPendingIT it.ClientPendingIT it-server
 DrLivenessIT it.DrLivenessIT it
 GmmsReloadIT it.GmmsReloadIT it
 ConfigFileIT it.ConfigFileIT it
@@ -34,3 +35,8 @@ RapidReloadClient it.RapidReloadIT it-mod:MultiSmppClient1
 ServerFuncIT it.ServerFuncIT it-server
 ServerTlsIT it.ServerTlsIT it-tls
 MultiServerIT it.MultiServerIT it-multi
+CoreCheckIT it.CoreCheckIT it
+CoreRouteIT it.CoreRouteIT it
+CoreRetryIT it.CoreRetryIT it-multi
+CoreDrBizIT it.CoreDrBizIT it-multi
+CoreFailoverIT it.CoreFailoverIT it-multicore

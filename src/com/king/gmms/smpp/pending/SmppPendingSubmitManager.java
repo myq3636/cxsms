@@ -528,6 +528,11 @@ public class SmppPendingSubmitManager {
 	private void deleteRedisPending(String sequence) {
 		String key = redisKeyBySequence.remove(sequence);
 		if (key == null) {
+			// memory mode wrote nothing for this sequence: no Redis call per submit. A key left by an
+			// earlier redis-mode process belongs to the timeout scanner, which reports its result.
+			if (!usesRedis(pendingMode(null))) {
+				return;
+			}
 			key = buildRedisPendingKey(sequence);
 		}
 		RedisClient.getInstance().consumePendingMessage(key, buildRedisTimeoutZset());

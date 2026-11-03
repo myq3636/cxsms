@@ -357,6 +357,30 @@ public final class StreamAttempt {
 		return r instanceof Long && (Long) r > 0;
 	}
 
+	/**
+	 * After begin, for a copy that another consumer may also hold (taken by auto-claim, or read by a worker
+	 * longer ago than the auto-claim idle time): false when the entry is still in the stream. true when the
+	 * other consumer acked it after this copy was read: the ack also removed the marker, so begin saw a new
+	 * message. The attempt is dropped with the marker it just created; the copy must not be processed.
+	 */
+	public static boolean entryGoneAfterBegin(String streamKey, String redisId, RedisConnection streamRedis) {
+		StreamAttempt a = current.get();
+		boolean gone;
+		try {
+			// through evalScript: a Redis error must not look like a missing entry
+			gone = ((List<?>) streamRedis.evalScript("return redis.call('XRANGE', KEYS[1], ARGV[1], ARGV[1], 'COUNT', 1)",
+					Arrays.asList(streamKey), Arrays.asList(redisId))).isEmpty();
+		} catch (RuntimeException e) {
+			abandon();
+			throw e;
+		}
+		if (gone && a != null) {
+			current.remove();
+			a.redis.evalScript("return redis.call('DEL', KEYS[1])", Arrays.asList(a.markerKey), java.util.Collections.<String>emptyList());
+		}
+		return gone;
+	}
+
 	/** Ack an entry whose earlier attempt finished (Start.DONE), removing its marker. */
 	public static boolean ackDone(String streamKey, String group, GmmsMessage msg, RedisConnection streamRedis) {
 		Object r = streamRedis.evalScript(ACK_LUA,

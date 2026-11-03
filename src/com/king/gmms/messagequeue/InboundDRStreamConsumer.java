@@ -76,7 +76,7 @@ public class InboundDRStreamConsumer {
                 StreamQueueManager.STR_INBOUND_DR_PREFIX + "*", groupName, consumerName, false, queueManager,
                 new RedisStreamAutoClaimRunner.MessageProcessor() {
                     public void process(String streamKey, GmmsMessage msg) {
-                        processMessage(streamKey, msg);
+                        processMessage(streamKey, msg, true);
                     }
                 }));
 
@@ -144,13 +144,16 @@ public class InboundDRStreamConsumer {
                     Map<String, StreamEntryID> query = new HashMap<String, StreamEntryID>();
                     query.put(streamKey, StreamEntryID.UNRECEIVED_ENTRY);
 
+                    long readAt = System.currentTimeMillis();
                     List<GmmsMessage> messages = queueManager.consumeBatch(groupName, consumerName, consumerConfig.batchSize(), query, false);
                     if (messages == null || messages.isEmpty()) {
                         break;
                     }
 
+                    long claimIdleMs = queueManager.getAutoClaimIdleMs();
                     for (GmmsMessage msg : messages) {
-                        processMessage(streamKey, msg);
+                        // older than the idle time: auto-claim may have taken this entry too
+                        processMessage(streamKey, msg, System.currentTimeMillis() - readAt >= claimIdleMs);
                     }
                     if (budget.spent()) {
                         break; // give the stream back, the finally re-rings it
@@ -179,6 +182,10 @@ public class InboundDRStreamConsumer {
     }
 
     private void processMessage(String streamKey, final GmmsMessage msg) {
+        processMessage(streamKey, msg, false);
+    }
+
+    private void processMessage(String streamKey, final GmmsMessage msg, boolean mayBeClaimed) {
         long start = System.nanoTime();
         String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
         try {
@@ -197,6 +204,11 @@ public class InboundDRStreamConsumer {
                             StreamAttempt.ackDone(streamKey, groupName, msg, streamRedis));
                     return;
                 }
+            }
+            if (mayBeClaimed && StreamAttempt.entryGoneAfterBegin(streamKey, sourceRedisId, streamRedis)) {
+                logger.info(msg, "Inbound DR already acked by another consumer, this copy dropped. streamKey={}, redisId={}",
+                        streamKey, sourceRedisId);
+                return;
             }
             boolean processed = false;
             try {

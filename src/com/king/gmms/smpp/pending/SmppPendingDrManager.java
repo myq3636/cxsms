@@ -489,6 +489,11 @@ public class SmppPendingDrManager {
     private void deleteRedisPending(String sequence) {
         String key = redisKeyBySequence.remove(sequence);
         if (key == null) {
+            // memory mode wrote nothing for this sequence: no Redis call per DR. A key left by an
+            // earlier redis-mode process belongs to the timeout scanner, which reports its result.
+            if (!usesRedis(pendingMode(null))) {
+                return;
+            }
             key = buildRedisPendingKey(sequence);
         }
         RedisClient.getInstance().consumePendingMessage(key, buildRedisTimeoutZset());

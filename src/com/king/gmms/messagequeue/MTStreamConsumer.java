@@ -72,7 +72,7 @@ public class MTStreamConsumer {
                 StreamQueueManager.STR_MT_PENDING_PREFIX + "*", groupName, consumerName, true, queueManager,
                 new RedisStreamAutoClaimRunner.MessageProcessor() {
                     public void process(String streamKey, GmmsMessage msg) {
-                        processMessage(streamKey, msg);
+                        processMessage(streamKey, msg, true);
                     }
                 }));
 
@@ -136,14 +136,17 @@ public class MTStreamConsumer {
                     query.put(streamKey, StreamEntryID.UNRECEIVED_ENTRY);
                     
                     // 使用 Manager 封装的批量消费方法
+                    long readAt = System.currentTimeMillis();
                     List<GmmsMessage> messages = queueManager.consumeBatch(groupName, consumerName, consumerConfig.batchSize(), query, true);
 
                     if (messages == null || messages.isEmpty()) {
                         break; 
                     }
 
+                    long claimIdleMs = queueManager.getAutoClaimIdleMs();
                     for (GmmsMessage msg : messages) {
-                        processMessage(streamKey, msg);
+                        // older than the idle time: auto-claim may have taken this entry too
+                        processMessage(streamKey, msg, System.currentTimeMillis() - readAt >= claimIdleMs);
                     }
                     if (budget.spent()) {
                         break; // give the stream back, the finally re-rings it
@@ -173,6 +176,10 @@ public class MTStreamConsumer {
     }
 
     private void processMessage(String streamKey, GmmsMessage msg) {
+        processMessage(streamKey, msg, false);
+    }
+
+    private void processMessage(String streamKey, GmmsMessage msg, boolean mayBeClaimed) {
         long start = System.nanoTime();
         String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
         try {
@@ -184,6 +191,12 @@ public class MTStreamConsumer {
             if (attempt && StreamAttempt.begin(msg, consumerName + ":" + Thread.currentThread().getId())
                     == StreamAttempt.Start.BUSY) {
                 logger.info(msg, "MT is being processed by another consumer, left pending. streamKey={}, redisId={}",
+                        streamKey, sourceRedisId);
+                return;
+            }
+            if (mayBeClaimed && StreamAttempt.entryGoneAfterBegin(streamKey, sourceRedisId,
+                    com.king.redis.RedisClient.getInstance().getSubmitMqRedis())) {
+                logger.info(msg, "MT already acked by another consumer, this copy dropped. streamKey={}, redisId={}",
                         streamKey, sourceRedisId);
                 return;
             }

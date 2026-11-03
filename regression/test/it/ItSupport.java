@@ -66,6 +66,9 @@ public class ItSupport {
 		System.exit(failures == 0 ? 0 : 1);
 	}
 
+	/** creates the message store used by boot(); a suite can swap it to see the SQL without a database */
+	static java.util.function.Supplier<MessageStoreManager> msmFactory = MessageStoreManager::new;
+
 	/** Real Core initialisation on the local Redis; the DB layer is registered without a data source. */
 	static void boot() throws Exception {
 		home = System.getProperty("a2p_home");
@@ -79,7 +82,7 @@ public class ItSupport {
 		gu.initRedisClient("M");
 		gu.initCoreShardAssignment();
 		gu.initCDRManager();
-		msm = new MessageStoreManager();
+		msm = msmFactory.get();
 		Field dmf = com.king.db.DataControl.class.getDeclaredField("dataManagers");
 		dmf.setAccessible(true);
 		@SuppressWarnings("unchecked")

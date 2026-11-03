@@ -36,6 +36,7 @@ run() {  # name class mode
         it-tls) MOD=SslSmppServer1; modules '1|CoreEngine1|CoreEngine|x\n1|SslSmppServer1|SslSmppServer|x\n1|MultiSmppClient1|MultiSmppClient|x\n'
           rm -f "$W/keystore"; "$J/keytool" -genkeypair -alias a2p -keyalg RSA -keysize 2048 -validity 30 -dname CN=localhost -keystore "$W/keystore" -storepass tomcata2p -keypass tomcata2p -storetype JKS 2>/dev/null
           EXTRA=-Dks=$W/keystore ;;
+        it-multicore) modules '1|CoreEngine1|CoreEngine|x\n1|CoreEngine2|CoreEngine|x\n1|MultiSmppServer1|MultiSmppServer|x\n1|MultiSmppClient1|MultiSmppClient|x\n' ;;
         it-multi) modules '1|CoreEngine1|CoreEngine|x\n1|MultiSmppServer1|MultiSmppServer|x\n1|MultiSmppServer2|MultiSmppServer|x\n1|MultiSmppClient1|MultiSmppClient|x\n' ;;
       esac
       (cd "$W" && timeout 400 "$J/java" $EXTRA -Dknown.defects="$REG/known-defects.txt" -Da2p_home="$HD" -Dmodule=$MOD -DNodeID=1 -Dlog4j.configurationFile="$HD/conf/log4j2.xml" -cp "$CP" "$2" > "$OUT/$1.txt" 2>&1)
