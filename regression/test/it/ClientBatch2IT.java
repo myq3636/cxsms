@@ -1,6 +1,7 @@
 package it;
 
 import java.io.File;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
@@ -151,5 +152,33 @@ public class ClientBatch2IT extends ItSupport {
 		check(slowMs >= (n - 3) * 1000L / 2, "H-R1c rate kept: " + n + " at 2 TPS took " + slowMs + " ms");
 		check(!jedis.exists("stream:dlq:submit"), "H-R2 put-off entries do not count deliveries: nothing dead-lettered");
 		HttpClientStreamConsumer.getInstance().stop();
+		Thread.sleep(500);
+
+		// ---- H-C two copies of one entry: session.submit runs once (no HTTP template here: each try ends in a logged failure) ----
+		Field sf = HttpClientStreamConsumer.class.getDeclaredField("submitConsumer");
+		sf.setAccessible(true);
+		Object lane = sf.get(HttpClientStreamConsumer.getInstance());
+		Method pm = lane.getClass().getDeclaredMethod("processMessage", String.class, GmmsMessage.class, boolean.class);
+		pm.setAccessible(true);
+		String group = "HttpClientSubmitGroup";
+		for (String tag : new String[] { "CB2C1", "CB2C2" }) {
+			q.produceHttpSubmitMessage(mt(tag, 8888, 14, 0));
+			String stream = null;
+			for (String k : jedis.keys("stream:http:submit:14:*")) if (jedis.xlen(k) > 0) stream = k;
+			q.createGroup(stream, group, true);
+			Map<String, redis.clients.jedis.StreamEntryID> query = new java.util.HashMap<String, redis.clients.jedis.StreamEntryID>();
+			query.put(stream, redis.clients.jedis.StreamEntryID.UNRECEIVED_ENTRY);
+			GmmsMessage read = q.consumeBatch(group, "worker", 10, query, true).get(0);
+			GmmsMessage claimed = q.recoverPending(stream, group, "claimer", 0L, 10, true).get(0);
+			boolean workerFirst = tag.equals("CB2C1");
+			pm.invoke(lane, stream, workerFirst ? read : claimed, !workerFirst);
+			pm.invoke(lane, stream, workerFirst ? claimed : read, true);
+			long tries = 0;
+			for (String l : Files.readAllLines(new File(home + "log/it.log").toPath())) if (l.contains(tag) && l.contains("failed before HTTP response")) tries++;
+			check(tries == 1 && !jedis.exists(com.king.gmms.messagequeue.ClientSendMarker.key(read)),
+					"H-C " + (workerFirst ? "claimed before the worker acked" : "the claim finished first") + ": session.submit runs once: " + tries);
+			check(logLine(tag, "Outbound MT already acked by another consumer") != null, "H-C the other copy dropped");
+			check(resultsByMsg(tag).getOrDefault(tag, 0) == 1, "H-C one result to Core");
+		}
 	}
 }

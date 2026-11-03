@@ -113,7 +113,7 @@ public class HttpClientStreamConsumer {
 					streamPrefix + "*", groupName, consumerName, submitMq, queueManager,
 					new RedisStreamAutoClaimRunner.MessageProcessor() {
 						public void process(String streamKey, GmmsMessage msg) {
-							if (!processMessage(streamKey, msg)) {
+							if (!processMessage(streamKey, msg, true)) {
 								deferrals.defer(streamKey, java.util.Collections.singletonList(msg),
 										DistributedThrottlingManager.getInstance().retryAfterMs(msg.getRSsID()));
 							}
@@ -199,12 +199,13 @@ public class HttpClientStreamConsumer {
 					while (running) {
 						Map<String, StreamEntryID> query = new HashMap<String, StreamEntryID>();
 						query.put(streamKey, StreamEntryID.UNRECEIVED_ENTRY);
+						long readAt = System.currentTimeMillis();
 						List<GmmsMessage> messages = queueManager.consumeBatch(groupName, consumerName,
 								batchSize(streamKey), query, submitMq);
 						if (messages == null || messages.isEmpty()) {
 							break;
 						}
-						if (!processAll(messages)) {
+						if (!processAll(messages, readAt)) {
 							return;
 						}
 						if (budget.spent()) {
@@ -226,6 +227,8 @@ public class HttpClientStreamConsumer {
 
 			/** Put-off entries: keep the ones still pending (idle reset) and process them. */
 			private boolean processCarried() {
+				// keepPending below resets their idle time
+				long readAt = System.currentTimeMillis();
 				List<String> ids = new ArrayList<String>();
 				for (GmmsMessage m : carried) {
 					ids.add(m.getRedisStreamID());
@@ -244,14 +247,16 @@ public class HttpClientStreamConsumer {
 						live.add(m);
 					}
 				}
-				return processAll(live);
+				return processAll(live, readAt);
 			}
 
 			/** false when the rest was put off (no rate permit): the task ends. */
-			private boolean processAll(List<GmmsMessage> messages) {
+			private boolean processAll(List<GmmsMessage> messages, long readAt) {
+				long claimIdleMs = queueManager.getAutoClaimIdleMs();
 				for (int i = 0; i < messages.size(); i++) {
 					GmmsMessage msg = messages.get(i);
-					if (!processMessage(streamKey, msg)) {
+					// older than the idle time: auto-claim may have taken this entry too
+					if (!processMessage(streamKey, msg, System.currentTimeMillis() - readAt >= claimIdleMs)) {
 						deferrals.defer(streamKey, new ArrayList<GmmsMessage>(messages.subList(i, messages.size())),
 								DistributedThrottlingManager.getInstance().retryAfterMs(msg.getRSsID()));
 						return false;
@@ -314,6 +319,10 @@ public class HttpClientStreamConsumer {
 		 *         node): nothing done, the caller puts it off
 		 */
 		private boolean processMessage(String streamKey, GmmsMessage msg) {
+			return processMessage(streamKey, msg, false);
+		}
+
+		private boolean processMessage(String streamKey, GmmsMessage msg, boolean mayBeClaimed) {
 			long start = System.nanoTime();
 			String processMessageType = submitMq ? "submit" : "dr";
 			int targetSsid = -1;
@@ -330,7 +339,7 @@ public class HttpClientStreamConsumer {
 				if (useMarker) {
 					ClientSendMarker.Claim c;
 					try {
-						c = ClientSendMarker.claim(msg, ClientSendMarker.owner(consumerName));
+						c = ClientSendMarker.claim(msg, ClientSendMarker.owner(consumerName), streamKey, sourceRedisId, mayBeClaimed);
 					} catch (Exception e) {
 						logger.error(msg, "HTTP send marker not available, left pending", e);
 						queueManager.logNack(streamKey, groupName, consumerName, msg, submitMq, "send_marker_error");

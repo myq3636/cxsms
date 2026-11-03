@@ -114,6 +114,12 @@ public class ClientBatch1IT extends ItSupport {
 		return pm.invoke(OutboundStreamConsumer.getInstance(), routed(m), m);
 	}
 
+	static Object process(GmmsMessage m, boolean mayBeClaimed) throws Exception {
+		Method pm = OutboundStreamConsumer.class.getDeclaredMethod("processMessage", String.class, GmmsMessage.class, boolean.class);
+		pm.setAccessible(true);
+		return pm.invoke(OutboundStreamConsumer.getInstance(), STREAM.get(m.getMsgID()), m, mayBeClaimed);
+	}
+
 	static long pending(GmmsMessage m) {
 		return jedis.xpending(routed(m), GROUP).getTotal();
 	}
@@ -194,6 +200,34 @@ public class ClientBatch1IT extends ItSupport {
 		check(sent("CB1G") == 1 && pending(f) == 0 && !jedis.exists(ClientSendMarker.key(f)),
 				"C1-01i ClientSendIdempotency=false: sent without a marker");
 		props.remove("ClientSendIdempotency");
+
+		// ---- C1-06 two copies of one entry (auto-claim, a worker's old batch): the second must not go out ----
+		props.setProperty("ClientSendLeaseMs", "60000");
+		GmmsMessage w1 = readOne(mt("8888_CB6A", 8888, 12, 0));
+		GmmsMessage c1 = StreamQueueManager.getInstance().recoverPending(routed(w1), GROUP, "claimer", 0L, 10, true).get(0);
+		process(w1, false);
+		process(c1, true);
+		check(sent("8888_CB6A") == 1, "C1-06a claimed just before the worker acked it: vendor gets it once: " + sent("8888_CB6A"));
+		check(!jedis.exists(ClientSendMarker.key(w1)), "C1-06b no marker left behind");
+		check(logLine("8888_CB6A", "Outbound MT already acked by another consumer") != null, "C1-06c logged");
+		GmmsMessage w2 = readOne(mt("8888_CB6B", 8888, 12, 0));
+		GmmsMessage c2 = StreamQueueManager.getInstance().recoverPending(routed(w2), GROUP, "claimer", 0L, 10, true).get(0);
+		process(c2, true);
+		process(w2, true);
+		check(sent("8888_CB6B") == 1 && !jedis.exists(ClientSendMarker.key(w2)), "C1-06d the claim finished first, the worker's old copy comes later: vendor gets it once: " + sent("8888_CB6B"));
+
+		GmmsMessage w3 = readOne(mt("8888_CB6C", 8888, 12, 0));
+		process(StreamQueueManager.getInstance().recoverPending(routed(w3), GROUP, "claimer", 0L, 10, true).get(0), true);
+		check(sent("8888_CB6C") == 1 && pending(w3) == 0, "C1-06e worker died, entry still there: the claim sends it and acks");
+
+		GmmsMessage w4 = readOne(mt("8888_CB6D", 8888, 12, 0));
+		GmmsMessage c4 = StreamQueueManager.getInstance().recoverPending(routed(w4), GROUP, "claimer", 0L, 10, true).get(0);
+		process(w4, false);
+		vendors.get(12).connected = false;
+		process(c4, true);
+		vendors.get(12).connected = true;
+		check(results("8888_CB6D") == 0, "C1-06f session down when the copy comes: no failure result for an MT that was sent: " + results("8888_CB6D"));
+		props.setProperty("ClientSendLeaseMs", "800");
 
 		// ---- C1-02 slow channel: no duplicate although auto-claim runs fast ----
 		props.setProperty("RedisStreamAutoClaimEnable", "true");

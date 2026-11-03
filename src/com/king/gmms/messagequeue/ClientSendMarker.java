@@ -39,7 +39,9 @@ public final class ClientSendMarker {
 		/** sent before (or unknown after a stopped sender): do not send, ack */
 		ACK_ONLY,
 		/** another consumer is sending it: do not send, leave pending */
-		BUSY
+		BUSY,
+		/** another consumer sent and acked it after this copy was read: do not send, nothing to ack */
+		GONE
 	}
 
 	// KEYS[1]=marker ARGV: 1 owner, 2 nowMs, 3 leaseMs, 4 ttl
@@ -120,6 +122,34 @@ public final class ClientSendMarker {
 					+ "(the Core outbox reports it). marker={}", key);
 		}
 		return Claim.ACK_ONLY;
+	}
+
+	/**
+	 * Claim for a copy that another consumer may also hold (taken by auto-claim, or read longer ago than
+	 * the auto-claim idle time). The other consumer's ack also removes the marker, so a plain claim would
+	 * see a new message and send it to the vendor again: after SEND, check that the entry is still in the
+	 * stream. Redis errors are thrown with the marker released: the caller must not send.
+	 */
+	public static Claim claim(GmmsMessage msg, String owner, String streamKey, String redisId, boolean mayBeClaimed) {
+		Claim c = claim(msg, owner);
+		if (c != Claim.SEND || !mayBeClaimed) {
+			return c;
+		}
+		boolean gone;
+		try {
+			// through evalScript: a Redis error must not look like a missing entry
+			gone = ((java.util.List<?>) redis().evalScript("return redis.call('XRANGE', KEYS[1], ARGV[1], ARGV[1], 'COUNT', 1)",
+					Arrays.asList(streamKey), Arrays.asList(redisId))).isEmpty();
+		} catch (RuntimeException e) {
+			release(msg);
+			throw e;
+		}
+		if (!gone) {
+			return c;
+		}
+		release(msg);
+		log.info(msg, "Outbound MT already acked by another consumer, this copy dropped. streamKey={}, redisId={}", streamKey, redisId);
+		return Claim.GONE;
 	}
 
 	/** Sent: mark sent, ack and delete the marker (kept as sent if the ack does not go through). */

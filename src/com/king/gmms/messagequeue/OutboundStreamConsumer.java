@@ -97,7 +97,7 @@ public class OutboundStreamConsumer {
                 StreamQueueManager.STR_MT_ROUTED_PREFIX + "*", groupName, consumerName, true, queueManager,
                 new RedisStreamAutoClaimRunner.MessageProcessor() {
                     public void process(String streamKey, GmmsMessage msg) {
-                        ProcessResult r = processMessage(streamKey, msg);
+                        ProcessResult r = processMessage(streamKey, msg, true);
                         if (r != ProcessResult.DONE) {
                             defer(streamKey, java.util.Collections.singletonList(msg), retryDelayMs(r, msg));
                         }
@@ -173,12 +173,13 @@ public class OutboundStreamConsumer {
                 while (running) {
                     Map<String, StreamEntryID> query = new HashMap<>();
                     query.put(streamKey, StreamEntryID.UNRECEIVED_ENTRY);
+                    long readAt = System.currentTimeMillis();
                     List<GmmsMessage> messages = queueManager.consumeBatch(groupName, consumerName,
                             batchSize(streamKey), query, true);
                     if (messages == null || messages.isEmpty()) {
                         break; 
                     }
-                    if (!processAll(messages)) {
+                    if (!processAll(messages, readAt)) {
                         return;
                     }
                     if (budget.spent()) {
@@ -199,6 +200,8 @@ public class OutboundStreamConsumer {
 
         /** Put-off entries: keep the ones still pending (idle reset) and process them. */
         private boolean processCarried() {
+            // keepPending below resets their idle time
+            long readAt = System.currentTimeMillis();
             List<String> ids = new ArrayList<String>();
             for (GmmsMessage m : carried) {
                 ids.add(m.getRedisStreamID());
@@ -217,14 +220,16 @@ public class OutboundStreamConsumer {
                     live.add(m);
                 }
             }
-            return processAll(live);
+            return processAll(live, readAt);
         }
 
         /** false when the rest was put off (window full / no permit): the task ends. */
-        private boolean processAll(List<GmmsMessage> messages) {
+        private boolean processAll(List<GmmsMessage> messages, long readAt) {
+            long claimIdleMs = queueManager.getAutoClaimIdleMs();
             for (int i = 0; i < messages.size(); i++) {
                 GmmsMessage msg = messages.get(i);
-                ProcessResult r = processMessage(streamKey, msg);
+                // older than the idle time: auto-claim may have taken this entry too
+                ProcessResult r = processMessage(streamKey, msg, System.currentTimeMillis() - readAt >= claimIdleMs);
                 if (r != ProcessResult.DONE) {
                     defer(streamKey, new ArrayList<GmmsMessage>(messages.subList(i, messages.size())),
                             retryDelayMs(r, msg));
@@ -298,13 +303,17 @@ public class OutboundStreamConsumer {
     }
 
     private ProcessResult processMessage(String streamKey, GmmsMessage msg) {
+        return processMessage(streamKey, msg, false);
+    }
+
+    private ProcessResult processMessage(String streamKey, GmmsMessage msg, boolean mayBeClaimed) {
         long start = System.nanoTime();
         try {
             MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
                     MetricsNames.FLOW_CLIENT, msg, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
             MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
                     MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
-            return handleMessageSending(msg, streamKey);
+            return handleMessageSending(msg, streamKey, mayBeClaimed);
         } finally {
             MetricsCollector.getInstance().recordTime(MetricsNames.timer(MetricsNames.COMPONENT_CONSUMER,
                     MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_LATENCY),
@@ -312,7 +321,7 @@ public class OutboundStreamConsumer {
         }
     }
 
-    private ProcessResult handleMessageSending(GmmsMessage msg, String streamKey) {
+    private ProcessResult handleMessageSending(GmmsMessage msg, String streamKey, boolean mayBeClaimed) {
         String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
         boolean useMarker = ClientSendMarker.enabled();
         boolean markerHeld = false;
@@ -321,7 +330,7 @@ public class OutboundStreamConsumer {
             Session session = MultiSmppClientFactory.getInstance().getSession(msg);
             if (session == null || !isConnected(session)) {
                 if (useMarker) {
-                    ClientSendMarker.Claim c = ClientSendMarker.claim(msg, ClientSendMarker.owner(consumerName));
+                    ClientSendMarker.Claim c = ClientSendMarker.claim(msg, ClientSendMarker.owner(consumerName), streamKey, sourceRedisId, mayBeClaimed);
                     if (c != ClientSendMarker.Claim.SEND) {
                         return settle(c, msg, streamKey, sourceRedisId);
                     }
@@ -341,7 +350,7 @@ public class OutboundStreamConsumer {
                 return ProcessResult.THROTTLED;
             }
             if (useMarker) {
-                ClientSendMarker.Claim c = ClientSendMarker.claim(msg, ClientSendMarker.owner(consumerName));
+                ClientSendMarker.Claim c = ClientSendMarker.claim(msg, ClientSendMarker.owner(consumerName), streamKey, sourceRedisId, mayBeClaimed);
                 if (c != ClientSendMarker.Claim.SEND) {
                     return settle(c, msg, streamKey, sourceRedisId);
                 }
