@@ -707,6 +707,22 @@ public class ModuleManager {
 		return 0;
 	}
 
+	/** Position in the list of its module type, from 1; 0 when the module is not listed. */
+	public int getModuleNo(String module) {
+		ModuleConnectionInfo moduleConnection = module == null ? null : getConnectionInfo(module);
+		if (moduleConnection == null) {
+			return 0;
+		}
+		ArrayList<String> moduleList = moduleTypeMap.get(moduleConnection.getFullModuleType());
+		return moduleList == null ? 0 : moduleList.indexOf(module) + 1;
+	}
+
+	public boolean isClientType(String module) {
+		ModuleConnectionInfo moduleConnection = module == null ? null : getConnectionInfo(module);
+		return moduleConnection != null
+				&& SystemConstants.CLIENT_MODULE_TYPE.equalsIgnoreCase(moduleConnection.getModuleType());
+	}
+
 	/**
 	 * get attribute of xml tag
 	 * 

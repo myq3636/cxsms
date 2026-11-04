@@ -303,6 +303,7 @@ public class GmmsUtility {
     			log.info("initRedisClient setting Redis HA flag to slave.");
     			redisClient.setRedisHaFlag(false);
     		}
+    		com.king.gmms.ha.MessageIdSetup.configure(this);
     		startControlSubscriber();
     		publishEffectiveConfig("startup", "ok");
     		log.info("initRedisClient finished. flag={}", flag);
@@ -1084,7 +1085,7 @@ public class GmmsUtility {
 			"SmppPduLogEnable", "SmppServerSessionKeeperShared", "SmppServerSendQueueMax",
 			"SmppServerSendQueueHighWater", "ServerDrAckOnResp", "SmppServerDrLivenessCheck",
 			"ConfigFileStableCheckMs", "ReloadCustomerMaxRemovePercent",
-			"ClientOutboundWindowFullRetryMs",
+			"ClientOutboundWindowFullRetryMs", "MessageIdAheadWarnSeconds",
 			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress",
 			"DescendingTime", "Skytel_Prefix", "Indigo_prefix", "APBW_CPID", "APBW_SID",
 			"ReadBuffersize", "enquirelinktime",
@@ -1180,6 +1181,7 @@ public class GmmsUtility {
 			return true;
 		}
 		if ("ClientOutboundWindowFullRetryMs".equals(key)
+				|| "MessageIdAheadWarnSeconds".equals(key)
 				|| "SmppPendingDrTimeoutWorkerCount".equals(key)
 				|| "SmppPendingSubmitTimeoutWorkerCount".equals(key)
 				|| "ServerDrWindowFullRetryBatchSize".equals(key)

@@ -97,6 +97,10 @@ public class HALauncher {
                                System.getProperty("module") + "...");
             beforeStart();
             moduleManager = ModuleManager.getInstance();
+            if (!MessageIdSetup.validate()) {
+                System.out.println("Start service fail!");
+                return false;
+            }
             ModuleConnectionInfo moduleInfo = moduleManager.getConnectionInfo(moduleName);
             port = resolveCmdPort(moduleInfo);
             service = (A2PService) Class.forName(className).newInstance();

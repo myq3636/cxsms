@@ -30,6 +30,21 @@ public class MessageIdGenerator {
     private static int nodeId = 0; // V4.0 Node ID for multi-node uniqueness
     private static boolean includeNodeId = false;
 
+    /** v2 format (MessageIdFormat=v2, set up by MessageIdSetup): ids of different modules cannot be equal. */
+    public static final long V2_COUNTER_SPACE = 1000000000L;
+    /** hex ids: the module number in the top 4 bits, so always 8 hex digits, and a counter in the other 28 */
+    private static final int V2_HEX_COUNTER_BITS = 28;
+    private static final long V2_HEX_COUNTER_SPACE = 1L << V2_HEX_COUNTER_BITS;
+    private static final long V2_HEX_COUNTER_PER_SECOND = 2000L;
+    private static long v2HexOffset = 0L;
+    private static long v2HexCounter = 0L;
+    private static volatile int v2ModuleNo = 0; // 0: not enabled, the v1 format is used
+    private static long v2CounterPerSecond = 5000L;
+    private static long v2Offset = 0L;
+    private static long v2Counter = 0L;
+    private static final Object v2Mutex = new Object();
+    private static java.util.function.LongSupplier clock = System::currentTimeMillis;
+
     private static Object mutex1 = new Object();
     private static Object mutex2 = new Object();
     private static Object mutex3 = new Object();
@@ -65,6 +80,72 @@ public class MessageIdGenerator {
         return includeNodeId;
     }
 
+    /** @param otherHalf Client modules: half a cycle from the Servers, which have the same module numbers */
+    public static void enableV2(int moduleNo, long counterPerSecond, boolean otherHalf, long savedCounter, long savedHexCounter) {
+        synchronized (v2Mutex) {
+            v2CounterPerSecond = counterPerSecond;
+            v2Offset = otherHalf ? V2_COUNTER_SPACE / 2 : 0L;
+            v2HexOffset = otherHalf ? V2_HEX_COUNTER_SPACE / 2 : 0L;
+            v2Counter = Math.max(v2Counter, savedCounter);
+            v2HexCounter = Math.max(v2HexCounter, savedHexCounter);
+            v2ModuleNo = moduleNo;
+        }
+    }
+
+    public static long v2Counter() {
+        synchronized (v2Mutex) {
+            return v2Counter;
+        }
+    }
+
+    public static long v2HexCounter() {
+        synchronized (v2Mutex) {
+            return v2HexCounter;
+        }
+    }
+
+    /** How far the further of the two counters is ahead of the clock, in seconds. */
+    public static long v2AheadSeconds() {
+        synchronized (v2Mutex) {
+            long dec = (v2Counter - v2Floor()) / v2CounterPerSecond;
+            long hex = (v2HexCounter - v2HexFloor()) / V2_HEX_COUNTER_PER_SECOND;
+            return Math.max(0L, Math.max(dec, hex));
+        }
+    }
+
+    /** The counter never goes back and follows the clock when traffic is below counterPerSecond. */
+    private static long v2Floor() {
+        return clock.getAsLong() / 1000L * v2CounterPerSecond + v2Offset;
+    }
+
+    private static long v2HexFloor() {
+        return clock.getAsLong() / 1000L * V2_HEX_COUNTER_PER_SECOND + v2HexOffset;
+    }
+
+    private static int nextV2HexID() {
+        long counter;
+        synchronized (v2Mutex) {
+            v2HexCounter = Math.max(v2HexCounter + 1L, v2HexFloor());
+            counter = v2HexCounter;
+        }
+        return (v2ModuleNo << V2_HEX_COUNTER_BITS) | (int) (counter & (V2_HEX_COUNTER_SPACE - 1L));
+    }
+
+    private static String nextV2DecID() {
+        long counter;
+        synchronized (v2Mutex) {
+            v2Counter = Math.max(v2Counter + 1L, v2Floor());
+            counter = v2Counter;
+        }
+        return v2ModuleNo + String.format("%09d", counter % V2_COUNTER_SPACE);
+    }
+
+    /** Different modules never share a sequence value under v2: with the module number in front of it. */
+    private static int withModuleNo(int sn) {
+        int moduleNo = v2ModuleNo;
+        return moduleNo > 0 ? moduleNo * 10000 + sn : sn;
+    }
+
     /**
      *
      * @param ssid int, inMsgId:ossid; outMsgId:rssid; msgid:ossid
@@ -85,7 +166,7 @@ public class MessageIdGenerator {
             if(++inmsgidSn >= 9999) {
                 inmsgidSn = 0;
             }
-            return generateStringID(ssid, inmsgidSn);
+            return generateStringID(ssid, withModuleNo(inmsgidSn));
         }
     }
 
@@ -94,7 +175,7 @@ public class MessageIdGenerator {
             if(++outmsgidSn >= 9999) {
                 outmsgidSn = 0;
             }
-            return generateStringID(ssid, outmsgidSn);
+            return generateStringID(ssid, withModuleNo(outmsgidSn));
         }
     }
     
@@ -102,6 +183,11 @@ public class MessageIdGenerator {
         synchronized (mutex7){
             if(++msgStrSn >= 9999) {
             	msgStrSn = 0;
+            }
+            int moduleNo = v2ModuleNo;
+            if (moduleNo > 0) {
+                return new SimpleDateFormat("MMddHHmmss").format(new Date(clock.getAsLong())) + moduleNo
+                        + String.format("%04d", msgStrSn);
             }
             SimpleDateFormat df = new SimpleDateFormat("yyMMddHHmmss");
             return ("" + df.format(new Date()).substring(1) + msgStrSn);
@@ -113,7 +199,7 @@ public class MessageIdGenerator {
             if(++msgidSn >= 9999) {
                 msgidSn = 0;
             }
-            return generateStringID(ssid, msgidSn);
+            return generateStringID(ssid, withModuleNo(msgidSn));
         }
     }
     
@@ -125,7 +211,8 @@ public class MessageIdGenerator {
             if(++msgidSn >= 9999) {
                 msgidSn = 0;
             }
-            return generateStringID(ssid, (moduleIndex+1)*10000+msgidSn);
+            // v2: the fixed module number; the position % 6 repeats from the seventh module
+            return generateStringID(ssid, v2ModuleNo > 0 ? withModuleNo(msgidSn) : (moduleIndex+1)*10000+msgidSn);
         }
     }
 
@@ -136,6 +223,9 @@ public class MessageIdGenerator {
      * @return int
      */
     public int generateHexID(int moduleNum) {
+        if (v2ModuleNo > 0) {
+            return nextV2HexID();
+        }
         if (moduleNum > 0) {
             moduleNum = moduleNum % 6;
         }
@@ -168,6 +258,9 @@ public class MessageIdGenerator {
      * @return int
      */
     public String generateDecID(int moduleNum) {
+        if (v2ModuleNo > 0) {
+            return nextV2DecID();
+        }
         if (moduleNum > 0) {
             moduleNum = moduleNum % 6;
         }
