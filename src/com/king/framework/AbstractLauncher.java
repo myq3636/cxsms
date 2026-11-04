@@ -45,6 +45,10 @@ public abstract class AbstractLauncher implements Runnable {
             System.out.println("Starting service:" + moduleName + "...");
             beforeStart();
             moduleManager = ModuleManager.getInstance();
+            if (!com.king.gmms.ha.MessageIdSetup.validate()) {
+                System.out.println("Start service fail!");
+                return false;
+            }
             ModuleConnectionInfo moduleInfo = moduleManager.getConnectionInfo(moduleName);
             port = resolveCmdPort(moduleInfo);
             service = (A2PService) Class.forName(className).newInstance();

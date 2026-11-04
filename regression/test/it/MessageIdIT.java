@@ -32,12 +32,15 @@ public class MessageIdIT extends MultiServerIT {
 	}
 	/** real launcher, real module list */
 	static String launcher(String module) throws Exception {
+		StringBuilder list = new StringBuilder();
+		for (int i = 1; i <= 10; i++) list.append("1|MultiSmppServer" + i + "|smpp-server|x|0|server|40||\n");
+		return launcher(module, list.toString());
+	}
+	static String launcher(String module, String servers) throws Exception {
 		String h = home.replaceAll("/$", "") + "_L" + module + "/";
 		new ProcessBuilder("rm", "-rf", h).start().waitFor();
 		new ProcessBuilder("cp", "-r", home, h).start().waitFor();
-		StringBuilder list = new StringBuilder("1|CoreEngine1|CoreEngine|x\n");
-		for (int i = 1; i <= 10; i++) list.append("1|MultiSmppServer" + i + "|MultiSmppServer|x\n");
-		Files.write(Paths.get(h + "conf/a2p_modules.conf"), list.toString().getBytes("UTF-8"));
+		Files.write(Paths.get(h + "conf/a2p_modules.conf"), ("1|CoreEngine1|core|x|0|core|10||\n" + servers).getBytes("UTF-8"));
 		addConfig(h, module + ".Port=17790");
 		File out = new File(h + "launch.out");
 		ProcessBuilder b = new ProcessBuilder(System.getProperty("java.home") + "/bin/java", "-Xmx256m", "-Da2p_home=" + h, "-Dmodule=" + module, "-DNodeID=9",
@@ -157,6 +160,18 @@ public class MessageIdIT extends MultiServerIT {
 			// ---- module number ----
 			String tenth = launcher("MultiSmppServer10");
 			check(tenth.startsWith("exit=255") && tenth.contains("[MSGID] MessageIdFormat=v2 needs a module number 1 to 9"), "ID-09a tenth module of its type: refuses to start: " + tenth.split("\n")[0]);
+			check(com.king.gmms.domain.ModuleManager.trailingNumber("MultiSmppServer12") == 12 && com.king.gmms.domain.ModuleManager.trailingNumber("MultiSmppServer") == -1
+					&& com.king.gmms.domain.ModuleManager.trailingNumber("X99999999999") == Integer.MAX_VALUE, "ID-16a the number at the end of the name");
+			// the trap of the list position: Server1 commented out, Server2 still running as 2, Server3 added
+			String after = "#1|MultiSmppServer1|smpp-server|x|0|server|40||\n1|MultiSmppServer2|smpp-server|x|0|server|40||\n1|MultiSmppServer3|smpp-server|x|0|server|40||\n";
+			launcher("MultiSmppServer3", after);
+			check(lHas("MultiSmppServer3", "[MSGID] v2 format on. module=MultiSmppServer3, moduleNo=3"), "ID-16b Server1 commented out: Server3 is number 3, not the position 2 of running Server2");
+			// another machine: its list holds only its own module
+			launcher("MultiSmppServer2", "1|MultiSmppServer2|smpp-server|x|0|server|40||\n");
+			check(lHas("MultiSmppServer2", "[MSGID] v2 format on. module=MultiSmppServer2, moduleNo=2"), "ID-16c a list with only this module, as on its own machine: still number 2");
+			// a name without a number: the position, as before
+			launcher("MultiSmppServerB", "1|MultiSmppServerA|smpp-server|x|0|server|40||\n1|MultiSmppServerB|smpp-server|x|0|server|40||\n");
+			check(lHas("MultiSmppServerB", "[MSGID] v2 format on. module=MultiSmppServerB, moduleNo=2"), "ID-16d no number in the name: position in the list");
 			String ninth = launcher("MultiSmppServer9");
 			check(ninth.contains("Starting service") && !ninth.contains("[MSGID] MessageIdFormat=v2 needs") && !ninth.startsWith("exit=255"), "ID-09b ninth: passes this check: " + ninth.split("\n")[0]);
 		} catch (Throwable t) { t.printStackTrace(System.out); failures++; }
@@ -165,6 +180,10 @@ public class MessageIdIT extends MultiServerIT {
 			if (s2 != null) s2.destroyForcibly();
 		}
 		exit();
+	}
+	static boolean lHas(String module, String text) throws Exception {
+		Path p = Paths.get(home.replaceAll("/$", "") + "_L" + module + "/log/it.log");
+		return Files.exists(p) && new String(Files.readAllBytes(p), "UTF-8").contains(text);
 	}
 	static boolean logHas(String module, String text) throws Exception {
 		Path p = Paths.get(h(module) + "log/it.log");

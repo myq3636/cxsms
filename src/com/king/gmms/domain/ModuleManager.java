@@ -707,14 +707,37 @@ public class ModuleManager {
 		return 0;
 	}
 
-	/** Position in the list of its module type, from 1; 0 when the module is not listed. */
+	/**
+	 * The number at the end of the module name, so it stays the same when the list changes and on every
+	 * machine; without one, the position in the list of its module type, from 1. 0 when the module is not listed.
+	 */
 	public int getModuleNo(String module) {
 		ModuleConnectionInfo moduleConnection = module == null ? null : getConnectionInfo(module);
 		if (moduleConnection == null) {
 			return 0;
 		}
+		int fromName = trailingNumber(module);
+		if (fromName >= 0) {
+			return fromName;
+		}
 		ArrayList<String> moduleList = moduleTypeMap.get(moduleConnection.getFullModuleType());
 		return moduleList == null ? 0 : moduleList.indexOf(module) + 1;
+	}
+
+	/** The digits at the end of the name, -1 without any, Integer.MAX_VALUE when too long to be a module number. */
+	public static int trailingNumber(String name) {
+		int start = name.length();
+		while (start > 0 && Character.isDigit(name.charAt(start - 1))) {
+			start--;
+		}
+		if (start == name.length()) {
+			return -1;
+		}
+		try {
+			return Integer.parseInt(name.substring(start));
+		} catch (NumberFormatException e) {
+			return Integer.MAX_VALUE;
+		}
 	}
 
 	public boolean isClientType(String module) {
