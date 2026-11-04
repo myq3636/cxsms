@@ -159,6 +159,17 @@ public class ClientFailoverIT extends ItSupport {
 			check(tally(a, moved)[1] == 0, "FT-06c each once");
 			List<String> after = send("F", 40);
 			check(waitFor(() -> tally(a, after)[0] == 0, 15000), "CS-03b Client 2 now serves both shards");
+
+			// ---- a Client without shards ----
+			jedis.set("system:client:shards:" + C2, "none");
+			jedis.publish("channel:gmms:control", "RELOAD_CLIENT_SHARDS@" + C2);
+			Thread.sleep(1000);
+			List<String> held = send("N", 40);
+			Thread.sleep(3000);
+			check(tally(a, held)[0] == 40, "MS-02a shards none: the Client sends nothing, not shard 0 either: left " + tally(a, held)[0] + " of 40");
+			jedis.set("system:client:shards:" + C2, "0-1");
+			jedis.publish("channel:gmms:control", "RELOAD_CLIENT_SHARDS@" + C2);
+			check(waitFor(() -> tally(a, held)[0] == 0, 15000) && tally(a, held)[1] == 0, "MS-02b shards back: the backlog goes out, each once");
 		} catch (Throwable t) { t.printStackTrace(System.out); failures++; }
 		finally {
 			if (n1 != null) n1.destroyForcibly();

@@ -235,6 +235,18 @@ public class ModuleStatusReporter {
 		return true;
 	}
 
+	/** After a shard change: whoever moves shards sees it at once, not with the next heartbeat. */
+	public static void publishShardsNow() {
+		for (ModuleStatusReporter reporter : reporters.values()) {
+			try {
+				ShardAssignmentChecker.publish(reporter.gmmsUtility, reporter.role, reporter.module, reporter.nodeId,
+						reporter.heartbeatSeconds * 3);
+			} catch (Exception e) {
+				log.warn("Shard assignment publish failed for " + reporter.identity, e);
+			}
+		}
+	}
+
 	public static Long publishStatusCommand(String command, String args) {
 		String message = command;
 		if (args != null && args.length() > 0) {

@@ -52,3 +52,4 @@ CoreRetryIT it.CoreRetryIT it-multi
 CoreDrBizIT it.CoreDrBizIT it-multi
 CoreContentIT it.CoreContentIT it-multi
 CoreFailoverIT it.CoreFailoverIT it-multicore
+ShardZeroIT it.ShardZeroIT it-multicore

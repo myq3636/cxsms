@@ -440,7 +440,9 @@ public class GmmsUtility {
 			this.cmTempFile = a2phome+"/temp/"+moduleName+"_tempCm.cfg."+new SimpleDateFormat("yyyy-MM-dd").format(new Date());
 			
 			// V4.0 Node ID initialization for distributed uniqueness
-			nodeId = props.getProperty("NodeID", "0").trim();
+			// -DNodeID (one per module in a2p_modules.conf) first: modules of one a2p_home share this file
+			String startNodeId = System.getProperty("NodeID");
+			nodeId = isBlank(startNodeId) ? props.getProperty("NodeID", "0").trim() : startNodeId.trim();
 			System.setProperty("NodeID", nodeId);
 			com.king.message.gmms.MessageIdGenerator.setNodeId(toNumericNodeId(nodeId));
 			com.king.message.gmms.MessageIdGenerator.setIncludeNodeId(
@@ -845,6 +847,9 @@ public class GmmsUtility {
 		Set<Integer> shards = new HashSet<Integer>();
 		if (shardConfig == null || shardConfig.trim().length() == 0) {
 			throw new IllegalArgumentException("Empty shard assignment for " + key);
+		}
+		if (isNoShards(shardConfig)) {
+			return shards;
 		}
 		for (String segment : shardConfig.split(",")) {
 			String value = segment.trim();
@@ -1517,8 +1522,16 @@ public class GmmsUtility {
 		}
 	}
 
+	/** "none": this node owns no shard, on purpose. An empty value still falls back. */
+	private static boolean isNoShards(String shardConfig) {
+		return shardConfig != null && "none".equalsIgnoreCase(shardConfig.trim());
+	}
+
 	private Set<Integer> parseShardSet(String shardConfig, String source) {
 		Set<Integer> shards = new HashSet<Integer>();
+		if (isNoShards(shardConfig)) {
+			return shards;
+		}
 		try {
 			if (shardConfig != null) {
 				String[] segments = shardConfig.split(",");
@@ -1563,7 +1576,7 @@ public class GmmsUtility {
 
 	public String formatShardSet(Set<Integer> shards) {
 		if (shards == null || shards.isEmpty()) {
-			return "";
+			return "none";
 		}
 		TreeSet<Integer> sorted = new TreeSet<Integer>(shards);
 		StringBuilder builder = new StringBuilder();

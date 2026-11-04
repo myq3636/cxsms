@@ -54,11 +54,13 @@ public class RedisControlSubscriber extends JedisPubSub implements Runnable {
 			}
 			if ("RELOAD_CORE_SHARDS".equalsIgnoreCase(cmd)) {
 				GmmsUtility.getInstance().initCoreShardAssignment();
+				ModuleStatusReporter.publishShardsNow();
 				log.info("Reloaded core shard assignment by redis control command. args={}", args);
 				return;
 			}
 			if ("RELOAD_CLIENT_SHARDS".equalsIgnoreCase(cmd)) {
 				GmmsUtility.getInstance().initClientShardAssignment();
+				ModuleStatusReporter.publishShardsNow();
 				log.info("Reloaded client shard assignment by redis control command. args={}", args);
 				return;
 			}
