@@ -201,6 +201,11 @@ public class MultiSmppServer
      * @return boolean
      * @todo Implement.framework.A2PService method
      */
+    @Override
+    public void stopReading() {
+        DRStreamConsumer.getInstance().stop();
+    }
+
     public boolean stopService() {
     	super.stopService();
         try {

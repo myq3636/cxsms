@@ -104,6 +104,7 @@ public class HALauncher {
             ModuleConnectionInfo moduleInfo = moduleManager.getConnectionInfo(moduleName);
             port = resolveCmdPort(moduleInfo);
             service = (A2PService) Class.forName(className).newInstance();
+            com.king.framework.GracefulStop.setService(service);
             if (service.startService()) {
                 Runtime.getRuntime().addShutdownHook(new Thread(
                     "AicShutdownHook") {

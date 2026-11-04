@@ -23,6 +23,14 @@ public class ExceptionMessageManager {
 		exMsgQueue = new LinkedBlockingQueue<GmmsMessage>(1000);
 		exFileWriter = new ExMsgFileWriter();
 		exFileWriter.start();
+		com.king.framework.GracefulStop.register("exception message queue", new Runnable() {
+			public void run() {
+				GmmsMessage message;
+				while ((message = exMsgQueue.poll()) != null) {
+					asynExMsgWriter.insertExceptionMessage(message, dcNameMap.get(message.getMsgID()));
+				}
+			}
+		});
 	}
 	
 	public static ExceptionMessageManager getInstance(){

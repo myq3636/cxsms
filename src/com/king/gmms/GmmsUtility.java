@@ -304,6 +304,7 @@ public class GmmsUtility {
     			redisClient.setRedisHaFlag(false);
     		}
     		com.king.gmms.ha.MessageIdSetup.configure(this);
+    		com.king.framework.GracefulStop.install(this);
     		startControlSubscriber();
     		publishEffectiveConfig("startup", "ok");
     		log.info("initRedisClient finished. flag={}", flag);
@@ -1090,7 +1091,7 @@ public class GmmsUtility {
 			"SmppPduLogEnable", "SmppServerSessionKeeperShared", "SmppServerSendQueueMax",
 			"SmppServerSendQueueHighWater", "ServerDrAckOnResp", "SmppServerDrLivenessCheck",
 			"ConfigFileStableCheckMs", "ReloadCustomerMaxRemovePercent",
-			"ClientOutboundWindowFullRetryMs", "MessageIdAheadWarnSeconds",
+			"ClientOutboundWindowFullRetryMs", "MessageIdAheadWarnSeconds", "ModuleStopMaxWaitSeconds",
 			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress",
 			"DescendingTime", "Skytel_Prefix", "Indigo_prefix", "APBW_CPID", "APBW_SID",
 			"ReadBuffersize", "enquirelinktime",
@@ -1187,6 +1188,7 @@ public class GmmsUtility {
 		}
 		if ("ClientOutboundWindowFullRetryMs".equals(key)
 				|| "MessageIdAheadWarnSeconds".equals(key)
+				|| "ModuleStopMaxWaitSeconds".equals(key)
 				|| "SmppPendingDrTimeoutWorkerCount".equals(key)
 				|| "SmppPendingSubmitTimeoutWorkerCount".equals(key)
 				|| "ServerDrWindowFullRetryBatchSize".equals(key)

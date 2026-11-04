@@ -69,6 +69,12 @@ public class CDRAsynWriter implements LifecycleListener, SignalHandler {
 		cdrQueue = new LinkedBlockingQueue<String>(cdrQueueSize);
 		lifecycle = GmmsUtility.getInstance().getLifecycleSupport();
 		lifecycle.addListener(Event.TYPE_SHUTDOWN, this, 1);
+		com.king.framework.GracefulStop.register("CDR queue", new Runnable() {
+			public void run() {
+				isAlow.set(false);
+				drain();
+			}
+		});
 	}
 
 	public int OnEvent(Event event) {

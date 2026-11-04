@@ -97,6 +97,7 @@ public class MessageStoreManager extends DataManager {
 	private static volatile boolean asyncSqlWriterDisabled = false;
 	private static volatile int asyncSqlBatchSize = DEFAULT_ASYNC_SQL_BATCH_SIZE;
 	private static volatile long asyncSqlMaxWaitMs = DEFAULT_ASYNC_SQL_MAX_WAIT_MS;
+	private static final java.util.concurrent.atomic.AtomicInteger liveAsyncWriters = new java.util.concurrent.atomic.AtomicInteger();
 
 	/**
 	 * Creates a new gmmsUtility of MessageQueueManager
@@ -166,9 +167,15 @@ public class MessageStoreManager extends DataManager {
 			}
 			runAsyncWriter = true;
 			for (int i = 0; i < writerThreads; i++) {
+				liveAsyncWriters.incrementAndGet();
 				new AsyncSqlWriterThread(i + 1).start();
 			}
 			asyncSqlWriterStarted = true;
+			com.king.framework.GracefulStop.register("SQL queue", new Runnable() {
+				public void run() {
+					stopAsyncSqlWriters();
+				}
+			});
 			log.info("AsyncSqlWriter global started. threads={}, queueSize={}, batchSize={}, maxWaitMs={}",
 					writerThreads, queueSize, asyncSqlBatchSize, asyncSqlMaxWaitMs);
 		}
@@ -191,6 +198,23 @@ public class MessageStoreManager extends DataManager {
 		} catch (Exception e) {
 			log.warn("Invalid long property {}, use default {}.", key, defaultValue, e);
 			return defaultValue;
+		}
+	}
+
+	/** New statements run directly from here on; the writers finish the queue and leave. */
+	private void stopAsyncSqlWriters() {
+		asyncSqlWriterDisabled = true;
+		runAsyncWriter = false;
+		while (liveAsyncWriters.get() > 0 && com.king.framework.GracefulStop.remainingMs() > 0) {
+			try {
+				Thread.sleep(20L);
+			} catch (InterruptedException e) {
+				return;
+			}
+		}
+		java.util.concurrent.BlockingQueue<String> queue = asyncSqlQueue;
+		if (liveAsyncWriters.get() > 0) {
+			log.warn("[STOP] SQL queue not finished in time: {} statements left", queue == null ? 0 : queue.size());
 		}
 	}
 
@@ -422,6 +446,14 @@ public class MessageStoreManager extends DataManager {
 				} catch (Exception e) {
 					log.error("Error in AsyncSqlWriterThread loop", e);
 				}
+			}
+			// what this thread holds is in no queue any more
+			try {
+				if (!batch.isEmpty()) {
+					executeBatch(batch);
+				}
+			} finally {
+				liveAsyncWriters.decrementAndGet();
 			}
 		}
 		

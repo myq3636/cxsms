@@ -44,6 +44,27 @@ public class SdqMessageManager implements LifecycleListener, SignalHandler {
 
 		lifecycle = GmmsUtility.getInstance().getLifecycleSupport();
 		lifecycle.addListener(Event.TYPE_SHUTDOWN, this, 1);
+		com.king.framework.GracefulStop.register("SDQ queue", new Runnable() {
+			public void run() {
+				isAlow.set(false);
+				drain();
+			}
+		});
+	}
+
+	/** Write what is still queued; new messages go to the synchronous writer once isAlow is false. */
+	private int drain() {
+		int n = 0;
+		GmmsMessage message;
+		while ((message = sdqQueue.poll()) != null) {
+			if (asynSdqWriter.insertSDQMessage(message)) {
+				n++;
+			}
+		}
+		if (n > 0) {
+			log.info("SDQ queue drained on stop: {} messages written", n);
+		}
+		return n;
 	}
 
 	public static SdqMessageManager getInstance() {
@@ -54,6 +75,7 @@ public class SdqMessageManager implements LifecycleListener, SignalHandler {
 		log.trace("Event Received. Type: {}", event.getEventType());
 		if (event.getEventType() == Event.TYPE_SHUTDOWN) {
 			isAlow.set(false);
+			drain();
 		}
 		return 1;
 	}

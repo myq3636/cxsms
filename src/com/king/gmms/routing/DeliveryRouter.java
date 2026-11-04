@@ -92,6 +92,12 @@ public class DeliveryRouter implements A2PService{
 		if(systemStatusChecker != null){
 			systemStatusChecker.stop();
 		}
+		stopReading();
+		return true;
+	}
+
+	@Override
+	public void stopReading() {
 		// Core module stream consumers
 		MTStreamConsumer.getInstance().stop();
 		InboundDRStreamConsumer.getInstance().stop();
@@ -100,7 +106,6 @@ public class DeliveryRouter implements A2PService{
 		DelayedInDRDispatcher.getInstance().stopDispatcher();
 		ChannelReleaseDispatcher.getInstance().stop();
 		CsmExpirySweeper.getInstance().stop();
-		return true;
 	}
 	/**
 	 * send stop request

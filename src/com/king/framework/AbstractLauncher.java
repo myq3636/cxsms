@@ -53,6 +53,7 @@ public abstract class AbstractLauncher implements Runnable {
             port = resolveCmdPort(moduleInfo);
             service = (A2PService) Class.forName(className).newInstance();
             new Thread(A2PThreadGroup.getInstance(),this).start();
+            GracefulStop.setService(service);
             if(service.startService()) {
                 Runtime.getRuntime().addShutdownHook(new Thread("AicShutdownHook") {
                     public void run() {

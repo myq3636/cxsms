@@ -52,6 +52,11 @@ public abstract class AbstractClient implements A2PService {
     protected void stopClientStreamConsumers() {
         stopOutboundConsumer();
     }
+
+    @Override
+    public void stopReading() {
+        stopClientStreamConsumers();
+    }
     
     /**
      * 新增：启动下行消息流消费者

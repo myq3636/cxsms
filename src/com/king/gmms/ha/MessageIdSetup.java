@@ -64,8 +64,8 @@ public class MessageIdSetup {
 		return true;
 	}
 
-	public static synchronized void configure(GmmsUtility gmmsUtility) {
-		String module = System.getProperty("module");
+	public static synchronized void configure(final GmmsUtility gmmsUtility) {
+		final String module = System.getProperty("module");
 		if (started || module == null) {
 			return;
 		}
@@ -86,6 +86,11 @@ public class MessageIdSetup {
 			log.info("[MSGID] v2 format on. module={}, moduleNo={}, counterPerSecond={}, counter={}", module, moduleNo,
 					counterPerSecond, MessageIdGenerator.v2Counter());
 			startMarkThread(gmmsUtility, module);
+			com.king.framework.GracefulStop.register("message id position", new Runnable() {
+				public void run() {
+					saveMarks(gmmsUtility, module, System.currentTimeMillis());
+				}
+			});
 		} catch (Exception e) {
 			log.error("[MSGID] v2 format not enabled for " + module, e);
 		}
@@ -135,14 +140,7 @@ public class MessageIdSetup {
 
 	private static void tick(GmmsUtility gmmsUtility, String module) {
 		long now = System.currentTimeMillis();
-		long counter = MessageIdGenerator.v2Counter();
-		if (counter != lastSaved && save(gmmsUtility, MARK_PREFIX, module, counter, now)) {
-			lastSaved = counter;
-		}
-		long hexCounter = MessageIdGenerator.v2HexCounter();
-		if (hexCounter != lastHexSaved && save(gmmsUtility, HEX_MARK_PREFIX, module, hexCounter, now)) {
-			lastHexSaved = hexCounter;
-		}
+		long counter = saveMarks(gmmsUtility, module, now);
 		long aheadSeconds = MessageIdGenerator.v2AheadSeconds();
 		if (aheadSeconds > longProperty(gmmsUtility, "MessageIdAheadWarnSeconds", 3600L)
 				&& now - lastAheadWarnAt >= WARN_INTERVAL_MS) {
@@ -162,6 +160,18 @@ public class MessageIdSetup {
 			windowCounter = counter;
 			windowStart = now;
 		}
+	}
+
+	private static synchronized long saveMarks(GmmsUtility gmmsUtility, String module, long now) {
+		long counter = MessageIdGenerator.v2Counter();
+		if (counter != lastSaved && save(gmmsUtility, MARK_PREFIX, module, counter, now)) {
+			lastSaved = counter;
+		}
+		long hexCounter = MessageIdGenerator.v2HexCounter();
+		if (hexCounter != lastHexSaved && save(gmmsUtility, HEX_MARK_PREFIX, module, hexCounter, now)) {
+			lastHexSaved = hexCounter;
+		}
+		return counter;
 	}
 
 	private static boolean save(GmmsUtility gmmsUtility, String prefix, String module, long counter, long now) {
