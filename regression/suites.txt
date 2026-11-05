@@ -54,3 +54,4 @@ CoreContentIT it.CoreContentIT it-multi
 CoreFailoverIT it.CoreFailoverIT it-multicore
 ShardZeroIT it.ShardZeroIT it-multicore
 GracefulStopIT it.GracefulStopIT it-multicore
+ModuleRegistryIT it.ModuleRegistryIT it-multi

@@ -4,6 +4,7 @@
 SEC-01 DEF-01 bind password in the PDU log
 TLS-05 DEF-02 SslSmppServer does not start the DR consumer
 B-05 DEF-03 bind_resp can be lost on close (race, may pass)
+P-02 DEF-03 enquire_link before bind: the response can be lost on close, same close right after the response (race, may pass)
 P-03 DEF-04 no answer to an unknown PDU
 P-04 DEF-04 no answer to a malformed PDU
 P-05 DEF-04 no answer to a malformed PDU

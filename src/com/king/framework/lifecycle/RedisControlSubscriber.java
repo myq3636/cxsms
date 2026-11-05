@@ -52,6 +52,10 @@ public class RedisControlSubscriber extends JedisPubSub implements Runnable {
 				log.info("Handled module status control command: {} args: {}", cmd, args);
 				return;
 			}
+			if ("RELOAD_MODULES".equalsIgnoreCase(cmd)) {
+				com.king.gmms.ha.ModuleRegistry.reload();
+				return;
+			}
 			if ("RELOAD_CORE_SHARDS".equalsIgnoreCase(cmd)) {
 				GmmsUtility.getInstance().initCoreShardAssignment();
 				ModuleStatusReporter.publishShardsNow();

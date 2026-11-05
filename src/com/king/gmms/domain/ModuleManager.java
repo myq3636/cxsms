@@ -48,10 +48,12 @@ public class ModuleManager {
 	private ModuleConnectionInfo connectionInfoOfSlaveMGT = null;
 	private Map<String, ArrayList<String>> moduleTypeMap = null; // module prefix,module name list
 	private Map<String, ArrayList<String>> moduleStatusMap = null;// module name,module status list
-	private List<String> routerList = null;
-	private List<String> serverList = null;
-	private List<String> clientList = null;
-	private List<String> mqmList = null;
+	/** the lists follow the registry: a position in them says nothing any more */
+	private volatile boolean registryApplied = false;
+	private volatile List<String> routerList = null;
+	private volatile List<String> serverList = null;
+	private volatile List<String> clientList = null;
+	private volatile List<String> mqmList = null;
 	private List<String> functionModuleList = null;
 	private List<String> systemMgtList = null;
 	private Set<String> moduleUrls = null;
@@ -183,6 +185,10 @@ public class ModuleManager {
 		if (getConnectionInfo(moduleName) != null) {
 			return;
 		}
+		registerModuleConnection(moduleName, role, newConnectionInfo(moduleName));
+	}
+
+	private ModuleConnectionInfo newConnectionInfo(String moduleName) {
 		ModuleConnectionInfo connectionInfo = new ModuleConnectionInfo();
 		connectionInfo.setModuleName(moduleName);
 		connectionInfo.setUserName(moduleName);
@@ -192,37 +198,109 @@ public class ModuleManager {
 		connectionInfo.setSysPort(resolveModuleInt(moduleName, "SysPort", -1));
 		connectionInfo.setInSessionNum(resolveModuleInt(moduleName, "InBindSessionNumber", 0));
 		connectionInfo.setOutSessionNum(resolveModuleInt(moduleName, "OutBindSessionNumber", 0));
-		registerModuleConnection(moduleName, role, connectionInfo);
+		return connectionInfo;
+	}
+
+	/**
+	 * The modules of the cluster as the registry sees them, each {name, role}: the lists of the module types
+	 * it manages are replaced as a whole, readers have the old or the new one. Modules on other machines need
+	 * not be in the local module list.
+	 */
+	public synchronized void applyRegistry(List<String[]> visible) {
+		Map<String, ArrayList<String>> byType = new HashMap<String, ArrayList<String>>();
+		List<String> routers = new ArrayList<String>();
+		List<String> servers = new ArrayList<String>();
+		List<String> clients = new ArrayList<String>();
+		List<String> mqms = new ArrayList<String>();
+		List<String[]> sorted = new ArrayList<String[]>(visible);
+		sorted.sort(new java.util.Comparator<String[]>() {
+			public int compare(String[] a, String[] b) {
+				return a[0].compareTo(b[0]);
+			}
+		});
+		for (String[] module : sorted) {
+			ModuleConnectionInfo info = getConnectionInfo(module[0]);
+			if (info == null) {
+				info = newConnectionInfo(module[0]);
+				registerModuleConnection(module[0], module[1], info, false);
+			}
+			String fullType = info.getFullModuleType();
+			ArrayList<String> ofType = byType.get(fullType);
+			if (ofType == null) {
+				ofType = new ArrayList<String>();
+				byType.put(fullType, ofType);
+			}
+			ofType.add(module[0]);
+			if (routerConnectionMap.containsKey(module[0])) {
+				routers.add(module[0]);
+			} else if (serverConnectionMap.containsKey(module[0])) {
+				servers.add(module[0]);
+			} else if (clientConnectionMap.containsKey(module[0])) {
+				clients.add(module[0]);
+			} else if (mqmConnectionMap.containsKey(module[0])) {
+				mqms.add(module[0]);
+			}
+		}
+		for (String type : new ArrayList<String>(moduleTypeMap.keySet())) {
+			if (!byType.containsKey(type) && !SystemConstants.MGT_MODULE_TYPE.equalsIgnoreCase(type)) {
+				moduleTypeMap.put(type, new ArrayList<String>());
+			}
+		}
+		moduleTypeMap.putAll(byType);
+		routerList = routers;
+		serverList = servers;
+		clientList = clients;
+		mqmList = mqms;
+		registryApplied = true;
 	}
 
 	private void registerModuleConnection(String moduleName, String role, ModuleConnectionInfo connectionInfo) {
+		registerModuleConnection(moduleName, role, connectionInfo, true);
+	}
+
+	/** addToLists false: the registry sets the lists itself, as a whole. */
+	private void registerModuleConnection(String moduleName, String role, ModuleConnectionInfo connectionInfo, boolean addToLists){
 		String fullModuleType = resolveFullModuleType(moduleName, role);
 		connectionInfo.setFullModuleType(fullModuleType);
 		if (SystemConstants.ROUTER_MODULE_TYPE.equalsIgnoreCase(fullModuleType)) {
 			connectionInfo.setModuleType(SystemConstants.ROUTER_MODULE_TYPE);
 			routerConnectionMap.put(moduleName, connectionInfo);
-			routerList.add(moduleName);
+			if (addToLists) {
+				routerList.add(moduleName);
+			}
 		} else if (SystemConstants.MQM_MODULE_TYPE.equalsIgnoreCase(fullModuleType)) {
 			connectionInfo.setModuleType(SystemConstants.MQM_MODULE_TYPE);
 			mqmConnectionMap.put(moduleName, connectionInfo);
-			mqmList.add(moduleName);
+			if (addToLists) {
+				mqmList.add(moduleName);
+			}
 		} else if (SystemConstants.MGT_MODULE_TYPE.equalsIgnoreCase(fullModuleType)) {
 			connectionInfo.setModuleType(SystemConstants.MGT_MODULE_TYPE);
 			systemMgtConnectionMap.put(moduleName, connectionInfo);
-			systemMgtList.add(moduleName);
+			if (addToLists) {
+				systemMgtList.add(moduleName);
+			}
 		} else if (fullModuleType.endsWith(SystemConstants.SERVER_MODULE_TYPE)) {
 			connectionInfo.setModuleType(SystemConstants.SERVER_MODULE_TYPE);
 			serverConnectionMap.put(moduleName, connectionInfo);
-			serverList.add(moduleName);
+			if (addToLists) {
+				serverList.add(moduleName);
+			}
 		} else if (fullModuleType.endsWith(SystemConstants.CLIENT_MODULE_TYPE)) {
 			connectionInfo.setModuleType(SystemConstants.CLIENT_MODULE_TYPE);
 			clientConnectionMap.put(moduleName, connectionInfo);
-			clientList.add(moduleName);
+			if (addToLists) {
+				clientList.add(moduleName);
+			}
 		} else {
 			functionConnectionMap.put(moduleName, connectionInfo);
-			functionModuleList.add(moduleName);
+			if (addToLists) {
+				functionModuleList.add(moduleName);
+			}
 		}
-		addModuleType(moduleName, fullModuleType);
+		if (addToLists) {
+			addModuleType(moduleName, fullModuleType);
+		}
 		addInitialModuleStatus(moduleName);
 		moduleUrls.add(connectionInfo.getURL());
 		log.info("Module added from {}. module={}, role={}, fullType={}, cmdPort={}",
@@ -697,6 +775,10 @@ public class ModuleManager {
 		ArrayList<String> moduleList = moduleTypeMap.get(moduleType);
 		if (moduleList != null) {
 			int index = moduleList.indexOf(module);
+			int fromName = trailingNumber(module);
+			if (registryApplied && fromName > 0) {
+				index = fromName - 1;
+			}
 			if (SystemConstants.CLIENT_MODULE_TYPE
 					.equalsIgnoreCase(moduleConnection.getModuleType())) {
 				return index + 3;

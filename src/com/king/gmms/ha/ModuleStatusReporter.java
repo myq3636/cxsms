@@ -50,6 +50,11 @@ public class ModuleStatusReporter {
 
 	public static synchronized ModuleStatusReporter start(GmmsUtility gmmsUtility, String role, String module, String nodeId) {
 		ModuleStatusReporter reporter = new ModuleStatusReporter(gmmsUtility, role, module, nodeId);
+		com.king.framework.GracefulStop.register("module status", new Runnable() {
+			public void run() {
+				removeStatusKeys();
+			}
+		});
 		ModuleStatusReporter old = reporters.put(reporter.identity, reporter);
 		if (old != null) {
 			old.stop();
@@ -162,6 +167,31 @@ public class ModuleStatusReporter {
 		} catch (Exception e) {
 			log.warn("Shard assignment check failed for " + identity, e);
 		}
+		ModuleRegistry.reload();
+	}
+
+	/**
+	 * The process is going down: the others see it at once, and the module can start on another machine. The
+	 * node sets stay: other modules of this machine have the same node id.
+	 */
+	private static void removeStatusKeys() {
+		for (ModuleStatusReporter reporter : reporters.values()) {
+			reporter.running = false;
+			RedisClient redis = reporter.gmmsUtility.getRedisClient();
+			redis.del(reporter.statusKey);
+			redis.del(reporter.detailKey);
+		}
+	}
+
+	/** After a registry change: whoever waits for all modules to have it sees it at once. */
+	public static void publishDetailNow() {
+		for (ModuleStatusReporter reporter : reporters.values()) {
+			try {
+				reporter.gmmsUtility.getRedisClient().setString(reporter.detailKey, reporter.buildDetail(), reporter.ttlSeconds * 2);
+			} catch (Exception e) {
+				log.warn("Failed to publish module detail for " + reporter.identity, e);
+			}
+		}
 	}
 
 	private void selfCheck() {
@@ -186,6 +216,7 @@ public class ModuleStatusReporter {
 				+ ";totalShards=" + gmmsUtility.getTotalShards()
 				+ ";myShards=" + gmmsUtility.formatShardSet(gmmsUtility.getMyShards())
 				+ ";status=ONLINE"
+				+ ";registryVersion=" + ModuleRegistry.version()
 				+ ";updatedAt=" + System.currentTimeMillis();
 	}
 
