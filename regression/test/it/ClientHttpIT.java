@@ -75,6 +75,32 @@ public class ClientHttpIT extends CoreRetryIT {
 		b.setRowId(5);
 		return b;
 	}
+	/** the result stream of this submit made a string: every XADD to it fails (WRONGTYPE) until unblock */
+	static String block(String id) {
+		GmmsMessage probe = mt(id, 8888, 51, 0);
+		probe.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT_RESP);
+		String key = q.resultStreamKey(probe);
+		if (jedis.exists(key)) jedis.rename(key, key + ":saved");
+		jedis.set(key, "blocked");
+		return key;
+	}
+	/** in one step: a retry writing between the two would be overwritten by the rename */
+	static void unblock(String key) {
+		jedis.eval("redis.call('DEL', KEYS[1]) if redis.call('EXISTS', KEYS[2]) == 1 then redis.call('RENAME', KEYS[2], KEYS[1]) end", 2, key, key + ":saved");
+	}
+	static String streamOf(String id) throws Exception {
+		for (String k : jedis.keys("stream:http:submit:51:*")) if (!inStreams(k, id).isEmpty()) return k;
+		return null;
+	}
+	static GmmsMessage readAs(String stream, String consumer) {
+		Map<String, redis.clients.jedis.StreamEntryID> query = new HashMap<>();
+		query.put(stream, redis.clients.jedis.StreamEntryID.UNRECEIVED_ENTRY);
+		return q.consumeBatch("HttpClientSubmitGroup", consumer, 10, query, true).get(0);
+	}
+	static boolean logHas(String text) throws Exception {
+		Path p = Paths.get(home + "log/it.log");
+		return Files.exists(p) && new String(Files.readAllBytes(p), "ISO-8859-1").contains(text);
+	}
 	static String last() { return bodies.isEmpty() ? "" : bodies.get(bodies.size() - 1); }
 
 	public static void main(String[] args) throws Exception {
@@ -82,7 +108,7 @@ public class ClientHttpIT extends CoreRetryIT {
 		Files.write(Paths.get(home + "conf/ITHTTP.xml"), IF.getBytes("UTF-8"));
 		Files.write(Paths.get(home + "conf/ITPLAIN.xml"), IF.replace("<HandlerClass>it.ItHttpHandler</HandlerClass>", "").replace("ITHTTP", "ITPLAIN").getBytes("UTF-8"));
 		Path cfg = Paths.get(home + "Gmms/GmmsConfig.properties");
-		Files.write(cfg, (new String(Files.readAllBytes(cfg), "UTF-8") + "\nAsyncSqlWriterEnable=false\nRedis_master_port=17796\n").getBytes("UTF-8"));
+		Files.write(cfg, (new String(Files.readAllBytes(cfg), "UTF-8") + "\nAsyncSqlWriterEnable=false\nRedis_master_port=17796\nHttpResultRetryIntervalMs=300\nHttpResultRetryMax=20\n").getBytes("UTF-8"));
 		RedisGate gate = new RedisGate(17796, 16379);
 		msmFactory = RecordingStore::new;
 		Path p = Paths.get(home + "conf/cm.cfg");
@@ -235,6 +261,8 @@ public class ClientHttpIT extends CoreRetryIT {
 			check(last().contains("txt=DELIVRD"), "HT-15d with the real status: " + last());
 
 			// ---- two copies of one entry: the vendor gets one real request ----
+			// from here on the results stay in their stream to be counted: Core reads none
+			com.king.gmms.messagequeue.ResultStreamConsumer.getInstance().stop();
 			HttpClientStreamConsumer.getInstance().stop();
 			Thread.sleep(500);
 			java.lang.reflect.Field sf = HttpClientStreamConsumer.class.getDeclaredField("submitConsumer");
@@ -282,8 +310,74 @@ public class ClientHttpIT extends CoreRetryIT {
 			long pending3 = jedis.xpending(cutStream, "HttpClientSubmitGroup").getTotal();
 			System.out.println("INFO after the cut: requests " + bodies.size() + ", results " + results3 + ", pending " + pending3);
 			check(bodies.size() == 1, "HT-13c Redis back: one request: " + bodies.size());
-			// the pool can still hold connections the cut ended: both tries to write the result may meet one, then the entry stays pending
-			check(results3 == 1 || (results3 == 0 && pending3 >= 1), "HT-13e one result, or the entry still pending when the write met a dead connection: " + results3 + "/" + pending3);
+			// the pool can still hold connections the cut ended: both tries to write the result may meet one; then it is written again, never sent again
+			check(waitFor(() -> inStreams("stream:core:results*", cutId).size() == 1, 10000) && bodies.size() == 1,
+					"HT-13e one result, written again if the write met a dead connection, one request: " + inStreams("stream:core:results*", cutId).size() + "/" + bodies.size());
+
+			// ---- the request went out, the result cannot be written (docs/HTTP外发结果写入失败重复发送修复设计.md) ----
+			com.king.gmms.messagequeue.HttpResultRetry retry = com.king.gmms.messagequeue.HttpResultRetry.getInstance();
+			answer = "id=VHR1&code=0&text=ok"; httpStatus = 200;
+			bodies.clear();
+			String hr = submit(51);
+			String hrKey = block(hr);
+			String hrStream = streamOf(hr);
+			GmmsMessage hrRead = readAs(hrStream, "worker");
+			pm.invoke(lane, hrStream, hrRead, false);
+			String marker = null;
+			for (String k : jedis.keys("client:sent:" + hr + "*")) marker = jedis.get(k);
+			check(bodies.size() == 1 && inStreams("stream:core:results*", hr).isEmpty() && "D".equals(marker) && retry.size() == 1,
+					"HR-02a sent, both writes fail: the marker says sent, the result waits to be written again: requests " + bodies.size() + ", marker " + marker + ", retries " + retry.size());
+			check(logHas("sent, result not written yet: written again, not sent again"), "HR-02b the log says so (not 'failed before HTTP response')");
+			GmmsMessage hrCopy = q.recoverPending(hrStream, "HttpClientSubmitGroup", "worker", 0L, 10, true).get(0);
+			pm.invoke(lane, hrStream, hrCopy, true);
+			check(bodies.size() == 1, "HR-03a redelivered to the same consumer while its result is retried: not sent: " + bodies.size());
+			GmmsMessage hrOther = q.recoverPending(hrStream, "HttpClientSubmitGroup", "claimer", 0L, 10, true).get(0);
+			pm.invoke(lane, hrStream, hrOther, true);
+			check(bodies.size() == 1, "HR-03b claimed by another consumer of this process meanwhile: not sent either: " + bodies.size());
+			unblock(hrKey);
+			check(waitFor(() -> !inStreams("stream:core:results*", hr).isEmpty() && retry.size() == 0, 5000), "HR-04a Redis writes again: the result is written");
+			GmmsMessage hrResult = result(hr, 1000);
+			check(hrResult != null && hrResult.getStatusCode() == 0 && "VHR1".equals(hrResult.getOutMsgID()), "HR-04b the real result: success, outMsgId of the one request: " + show(hrResult));
+			Thread.sleep(1500);
+			check(bodies.size() == 1 && inStreams("stream:core:results*", hr).size() == 1 && jedis.xpending(hrStream, "HttpClientSubmitGroup").getTotal() == 0
+					&& jedis.keys("client:sent:" + hr + "*").isEmpty(), "HR-04c one request, one result, nothing pending, no marker left");
+
+			// ---- never written: given up, still never sent again ----
+			bodies.clear();
+			String hg = submit(51);
+			String hgKey = block(hg);
+			String hgStream = streamOf(hg);
+			pm.invoke(lane, hgStream, readAs(hgStream, "worker"), false);
+			check(waitFor(() -> retry.size() == 0, 8000) && logHas("[HTTP-RESULT-RETRY] given up after 20 tries"), "HR-05a HttpResultRetryMax tries: given up, logged");
+			unblock(hgKey);
+			pm.invoke(lane, hgStream, q.recoverPending(hgStream, "HttpClientSubmitGroup", "claimer", 0L, 10, true).get(0), true);
+			check(bodies.size() == 1 && inStreams("stream:core:results*", hg).isEmpty(), "HR-05b redelivered after that: not sent (the Core outbox reports 2700): " + bodies.size());
+
+			// ---- the vendor answered an error: the failure result is retried the same way ----
+			bodies.clear();
+			httpStatus = 503; answer = "";
+			String he = submit(51);
+			String heKey = block(he);
+			String heStream = streamOf(he);
+			pm.invoke(lane, heStream, readAs(heStream, "worker"), false);
+			check(retry.size() == 1, "HR-06a HTTP 503 and the result not written: kept for writing");
+			unblock(heKey);
+			check(waitFor(() -> !inStreams("stream:core:results*", he).isEmpty(), 5000), "HR-06b written");
+			check(result(he, 1000).getStatusCode() == 2600 && bodies.size() == 1, "HR-06c with the status of the answer (2600), one request: " + show(result(he, 1000)) + " " + bodies.size());
+			httpStatus = 200; answer = "id=VHR2&code=0&text=ok";
+
+			// ---- the process stops while a result waits ----
+			bodies.clear();
+			String hs = submit(51);
+			String hsKey = block(hs);
+			String hsStream = streamOf(hs);
+			pm.invoke(lane, hsStream, readAs(hsStream, "worker"), false);
+			java.lang.reflect.Method flush = retry.getClass().getDeclaredMethod("flush");
+			flush.setAccessible(true);
+			flush.invoke(retry);
+			check(logHas("[HTTP-RESULT-RETRY] stopping with 1 result(s) not written, Core reports them 2700: [" + hs + "]"), "HR-08 stopping: one more try, what is left is named");
+			unblock(hsKey);
+			check(waitFor(() -> inStreams("stream:core:results*", hs).size() == 1, 5000) && bodies.size() == 1, "HR-08b (still running here) written afterwards, one request");
 		} catch (Throwable t) { t.printStackTrace(System.out); failures++; }
 		finally { vendor.stop(0); }
 		exit();

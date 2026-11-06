@@ -335,8 +335,13 @@ public class HttpClientStreamConsumer {
 			// vendor submits are sent at most once (ClientSendMarker); DRs pushed to HTTP customers are not
 			boolean useMarker = submitMq && ClientSendMarker.enabled();
 			boolean markerHeld = false;
+			Session session = null;
 			try {
 				targetSsid = resolveTargetSsid(msg);
+				if (submitMq && HttpResultRetry.getInstance().holds(msg)) {
+					// sent by this process, its result still being written: not sent again, left pending
+					return true;
+				}
 				if (submitMq && !DistributedThrottlingManager.getInstance().tryAcquire(targetSsid)) {
 					return false;
 				}
@@ -358,7 +363,7 @@ public class HttpClientStreamConsumer {
 					}
 					markerHeld = true;
 				}
-				Session session = clientFactory.getSession(targetSsid);
+				session = clientFactory.getSession(targetSsid);
 				if (session == null) {
 					failToCoreAndAck(streamKey, msg, targetSsid, "http session not found, ssid=" + targetSsid, markerHeld);
 					return true;
@@ -377,11 +382,19 @@ public class HttpClientStreamConsumer {
 					}
 					return true;
 				}
+				if (submitMq && requestAttempted(session)) {
+					sentResultNotWritten(streamKey, msg, sourceRedisId, useMarker, "http submit returned false, ssid=" + targetSsid);
+					return true;
+				}
 				failToCoreAndAck(streamKey, msg, targetSsid, "http submit returned false, ssid=" + targetSsid, markerHeld);
 			} catch (Exception e) {
 				logger.error(msg, "HTTP client stream message processing failed", e);
 				if (useMarker && !markerHeld) {
 					// sent (only the ack failed) or the marker was settled: the redelivery only acks
+					return true;
+				}
+				if (submitMq && requestAttempted(session)) {
+					sentResultNotWritten(streamKey, msg, sourceRedisId, useMarker, "exception:" + e.getClass().getSimpleName());
 					return true;
 				}
 				failToCoreAndAck(streamKey, msg, targetSsid, "exception:" + e.getClass().getSimpleName(), markerHeld);
@@ -391,6 +404,44 @@ public class HttpClientStreamConsumer {
 						System.nanoTime() - start);
 			}
 			return true;
+		}
+
+		private boolean requestAttempted(Session session) {
+			return session instanceof com.king.gmms.connectionpool.session.HttpSession
+					&& ((com.king.gmms.connectionpool.session.HttpSession) session).isRequestAttempted();
+		}
+
+		/**
+		 * The request went out, its result is not in Redis: the vendor may have the message, it is never sent
+		 * again (the marker stays, set to sent). The result is written once more here, then by HttpResultRetry.
+		 * Not answered yet or failed after the request: 2700 (may be sent), never 2500.
+		 */
+		private void sentResultNotWritten(String streamKey, GmmsMessage msg, String sourceRedisId, boolean useMarker, String reason) {
+			if (!GmmsMessage.MSG_TYPE_SUBMIT_RESP.equalsIgnoreCase(msg.getMessageType()) || msg.getStatusCode() < 0) {
+				msg.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT_RESP);
+				msg.setStatus(GmmsStatus.SUBMIT_RESP_ERROR);
+			}
+			logger.warn(msg, "[HTTP-OUT] sent, result not written yet: written again, not sent again. outMsgId={}, status={}, reason={}",
+					msg.getOutMsgID(), msg.getStatusCode(), reason);
+			boolean marked = !useMarker || ClientSendMarker.markSent(msg);
+			boolean produced = false;
+			try {
+				produced = queueManager.produceResult(msg);
+			} catch (Exception e) {
+				logger.debug(msg, "result not written", e);
+			}
+			msg.setRedisStreamID(sourceRedisId);
+			if (marked && produced) {
+				incrementResultWrittenMetric(resolveTargetSsid(msg));
+				boolean acked = useMarker ? ClientSendMarker.ackSent(streamKey, groupName, sourceRedisId, msg)
+						: queueManager.ackById(streamKey, groupName, sourceRedisId, msg, submitMq);
+				if (!acked) {
+					logger.warn(msg, "HTTP client stream ack failed after the result was written. streamKey={}, sourceRedisId={}",
+							streamKey, sourceRedisId);
+				}
+				return;
+			}
+			HttpResultRetry.getInstance().add(msg, streamKey, groupName, sourceRedisId, useMarker, marked, produced);
 		}
 
 		private int resolveTargetSsid(GmmsMessage msg) {

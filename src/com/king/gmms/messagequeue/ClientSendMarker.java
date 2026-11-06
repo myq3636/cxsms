@@ -173,6 +173,18 @@ public final class ClientSendMarker {
 		return acked;
 	}
 
+	/** Sent, the entry not settled yet (its result is still to be written): a redelivery only acks. */
+	public static boolean markSent(GmmsMessage msg) {
+		try {
+			redis().evalScript("return redis.call('SET', KEYS[1], 'D', 'EX', tonumber(ARGV[1]))", Arrays.asList(key(msg)),
+					Arrays.asList(String.valueOf(TTL_SECONDS)));
+			return true;
+		} catch (Exception e) {
+			log.warn(msg, "Outbound send marker not set to sent. marker={}", key(msg), e);
+			return false;
+		}
+	}
+
 	/** Not sent, entry stays pending for a retry: remove the marker so the retry can send. */
 	public static void release(GmmsMessage msg) {
 		try {

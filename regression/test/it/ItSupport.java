@@ -133,6 +133,7 @@ public class ItSupport {
 	static List<GmmsMessage> inStreams(String pattern, String msgId) {
 		List<GmmsMessage> found = new ArrayList<GmmsMessage>();
 		for (String k : jedis.keys(pattern)) {
+			if (!"stream".equals(jedis.type(k))) continue; // a key made a string to fail writes (ClientHttpIT HR)
 			for (StreamEntry e : jedis.xrange(k, (StreamEntryID) null, (StreamEntryID) null)) {
 				GmmsMessage m = SerializableHandler.convertRedisMssage2GmmsMessage(e.getFields().get("body"));
 				if (m != null && msgId.equals(m.getMsgID())) found.add(m);

@@ -290,6 +290,7 @@ public class CommonHttpSession extends HttpSession {
 		String resp = null;
 		try {
 			if ("YunPian".equalsIgnoreCase(cst.getProtocol())) {
+				requestAttempted = true;
 				resp = super.post(serverAddress, post);
 			}else {
 				if (httpMethod.equalsIgnoreCase("get")) {

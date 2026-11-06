@@ -98,6 +98,8 @@ public abstract class HttpSession extends Session {
 
 	protected String module ="";
 	protected boolean lastRouterQueuePutResult = true;
+	/** a request went out (or may have): the vendor may have the message, whatever happens after */
+	protected boolean requestAttempted = false;
 	
 	private SslContextFactory sslContextFactory = null;
 	
@@ -154,6 +156,7 @@ public abstract class HttpSession extends Session {
 	}
 
 	protected String doGet(URL url, boolean supportHttps) throws IOException {
+		requestAttempted = true;
 
 		try {
 			if(supportHttps){
@@ -248,6 +251,7 @@ public abstract class HttpSession extends Session {
 
 	protected String doPost(URL url, String post, String cookie, boolean supportHttps)
 			throws IOException {
+		requestAttempted = true;
 		try {
 			if(supportHttps){
 				connection = (HttpsURLConnection) url.openConnection();
@@ -314,6 +318,7 @@ public abstract class HttpSession extends Session {
 
 	protected String doPost(URL url, String post, Map<String, String> header,String contentType, boolean supportHttps)
 			throws Exception {
+		requestAttempted = true;
 		try {
 			if(supportHttps){							
 				HostnameVerifier hv = new HostnameVerifier() {
@@ -670,6 +675,11 @@ public abstract class HttpSession extends Session {
 
 	protected boolean getLastRouterQueuePutResult() {
 		return lastRouterQueuePutResult;
+	}
+
+	/** One session per message: true once its request went out, sent or not, answered or not. */
+	public boolean isRequestAttempted() {
+		return requestAttempted;
 	}
 
 	/**
