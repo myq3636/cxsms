@@ -18,6 +18,10 @@ import com.king.redis.RedisClient;
  * drain NAME [--wait]  start draining a Core or a Client (move its shards away by hand), --wait until it is done
  * cancel NAME          back to normal service
  * remove NAME [--force] the module is drained and stopped: REMOVED
+ * add NAME --node-id N [--shards 4-5] [--dry-run] [--force]  register it JOINING; once it runs (resume) give it shards, ACTIVE
+ * remove NAME [--shards-to OTHER] [--dry-run] [--force]  an ACTIVE module, the whole way: its shards to the others, drained,
+ *                      REMOVED once stopped (resume)
+ * resume [--force]     go on with the operation that stopped; cancel [NAME] without NAME: cancel it
  * drain-dr NAME [--dry-run] [--force]  a Server that is gone: move the DRs left in its streams
  */
 public final class A2pCtl {
@@ -37,7 +41,9 @@ public final class A2pCtl {
 
 	private static int run(String[] args) throws Exception {
 		if (args.length == 0) {
-			System.out.println("Usage: A2pCtl init [--from-file] | status | drain NAME [--wait] | cancel NAME | remove NAME [--force] | drain-dr NAME [--dry-run] [--force]");
+			System.out.println("Usage: A2pCtl init [--from-file] | status | add NAME --node-id N [--shards S] [--dry-run] [--force]"
+					+ " | remove NAME [--shards-to OTHER] [--dry-run] [--force] | resume [--force] | cancel [NAME] | drain NAME [--wait]"
+					+ " | drain-dr NAME [--dry-run] [--force]");
 			return 1;
 		}
 		String home = System.getProperty("a2p_home", "/usr/local/a2p/");
@@ -55,21 +61,62 @@ public final class A2pCtl {
 		if ("status".equals(args[0])) {
 			return status();
 		}
+		List<String> flags = java.util.Arrays.asList(args).subList(Math.min(args.length, 2), args.length);
 		if (args.length > 1 && "drain".equals(args[0])) {
+			if (ModuleOps.refusedByOp(null)) {
+				return 1;
+			}
 			return drain(args[1], args.length > 2 && "--wait".equals(args[2]));
 		}
-		if (args.length > 1 && "cancel".equals(args[0])) {
-			return cancel(args[1]);
+		if ("cancel".equals(args[0])) {
+			return new ModuleOps().cancel(args.length > 1 ? args[1] : null);
+		}
+		if ("resume".equals(args[0])) {
+			if (args.length > 1 && "--force".equals(args[1]) && !ModuleOps.op().isEmpty()) {
+				forceOp();
+			}
+			return new ModuleOps().resume();
+		}
+		if (args.length > 1 && "add".equals(args[0])) {
+			String node = option(flags, "--node-id");
+			if (node == null) {
+				System.out.println("add " + args[1] + ": --node-id N is needed (the machine, as -DNodeID of its start)");
+				return 1;
+			}
+			return new ModuleOps().add(args[1], node, option(flags, "--shards"), flags.contains("--dry-run"), flags.contains("--force"));
 		}
 		if (args.length > 1 && "drain-dr".equals(args[0])) {
-			List<String> flags = java.util.Arrays.asList(args).subList(2, args.length);
 			return drainDr(args[1], flags.contains("--dry-run"), flags.contains("--force"));
 		}
 		if (args.length > 1 && "remove".equals(args[0])) {
-			return remove(args[1], args.length > 2 && "--force".equals(args[2]));
+			ModuleRegistry.Module m = ModuleRegistry.load().get(args[1]);
+			if (m != null && ModuleRegistry.ACTIVE.equals(m.state)) {
+				return new ModuleOps().remove(args[1], option(flags, "--shards-to"), flags.contains("--dry-run"), flags.contains("--force"));
+			}
+			Map<String, String> op = ModuleOps.op();
+			if (args[1].equals(op.get("module"))) {
+				System.out.println(args[1] + " is being " + ("add".equals(op.get("action")) ? "added" : "removed") + " (" + op.get("step") + "): resume or cancel");
+				return 1;
+			}
+			if (ModuleOps.refusedByOp(null)) {
+				return 1;
+			}
+			return remove(args[1], flags.contains("--force"));
 		}
 		System.out.println("Unknown command: " + args[0]);
 		return 1;
+	}
+
+	private static String option(List<String> flags, String name) {
+		int i = flags.indexOf(name);
+		return i >= 0 && i + 1 < flags.size() ? flags.get(i + 1) : null;
+	}
+
+	/** resume --force: a module that does not answer is taken as gone */
+	private static void forceOp() {
+		try (redis.clients.jedis.Jedis j = RedisClient.getInstance().getStateRedis().getJedis()) {
+			j.hset(ModuleOps.OP_KEY, "force", "true");
+		}
 	}
 
 	private static int init(boolean fromFile) {
@@ -119,13 +166,13 @@ public final class A2pCtl {
 		return 0;
 	}
 
-	private static Map<String, String> progress(String module) {
+	static Map<String, String> progress(String module) {
 		Map<String, String> p = RedisClient.getInstance().hgetAll("module:drain:" + module);
 		return p == null ? new HashMap<String, String>() : p;
 	}
 
 	/** entries in stream:dr:pending:*:{module}:*, read or not */
-	private static long drLeft(String module) {
+	static long drLeft(String module) {
 		long n = 0;
 		RedisClient redis = RedisClient.getInstance();
 		for (String key : redis.keysReportMq(StreamQueueManager.STR_DR_PENDING_PREFIX + "*:" + module + ":*")) {
@@ -134,11 +181,11 @@ public final class A2pCtl {
 		return n;
 	}
 
-	private static boolean running(String module) {
+	static boolean running(String module) {
 		return !RedisClient.getInstance().getStateRedis().scanAll("module:status:*:" + module + ":*").isEmpty();
 	}
 
-	private static void changed(String module, String state) {
+	static void changed(String module, String state) {
 		ModuleRegistry.write(module, "state", state);
 		RedisClient.getInstance().publishState(ModuleStatusReporter.CONTROL_CHANNEL, "RELOAD_MODULES");
 		System.out.println(module + ": " + state);
@@ -196,7 +243,7 @@ public final class A2pCtl {
 	}
 
 	/** customers whose SmppServerModules lists this module and no other ACTIVE one */
-	private static List<String> pinnedCustomers(String module, Map<String, ModuleRegistry.Module> modules) {
+	static List<String> pinnedCustomers(String module, Map<String, ModuleRegistry.Module> modules) {
 		List<String> pinned = new ArrayList<String>();
 		com.king.gmms.domain.A2PCustomerManager customers = GmmsUtility.getInstance().getCustomerManager();
 		if (customers == null) {
@@ -245,7 +292,7 @@ public final class A2pCtl {
 		return r.failed > 0 ? 1 : 0;
 	}
 
-	private static int cancel(String module) {
+	static int cancelDrain(String module) {
 		ModuleRegistry.Module m = ModuleRegistry.load().get(module);
 		if (m == null || !(ModuleRegistry.DRAINING.equals(m.state) || ModuleRegistry.DRAINED.equals(m.state))) {
 			System.out.println(module + " is not draining: " + (m == null ? "not registered" : m.state));
@@ -295,6 +342,12 @@ public final class A2pCtl {
 			return 1;
 		}
 		System.out.println("version " + version);
+		Map<String, String> op = ModuleOps.op();
+		if (!op.isEmpty()) {
+			System.out.println("operation: " + op.get("action") + " " + op.get("module") + " at " + op.get("step") + ", by " + op.get("operator")
+					+ (op.get("target").length() > 0 ? ", shards to be " + op.get("target") : "")
+					+ (redis.getString(ModuleOps.LOCK_KEY) == null ? " (nobody at work on it: resume or cancel)" : " (at work: " + redis.getString(ModuleOps.LOCK_KEY) + ")"));
+		}
 		Map<String, ModuleRegistry.Module> modules = new TreeMap<String, ModuleRegistry.Module>(ModuleRegistry.load());
 		System.out.println(String.format("%-22s %-20s %-3s %-9s %-5s %-14s %-12s %s", "module", "type", "no", "state", "node", "running on", "shards", "drain"));
 		for (ModuleRegistry.Module m : modules.values()) {

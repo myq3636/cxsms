@@ -54,12 +54,18 @@ public class DeliveryRouter implements A2PService{
 		DBBackupHandler.getInstance();
 		// Core module stream consumers
 		MTStreamConsumer.getInstance().start();
-		InboundDRStreamConsumer.getInstance().start();
-		ResultStreamConsumer.getInstance().start();
+		// a JOINING Core starts these once ACTIVE (DrainController)
+		boolean joining = com.king.gmms.ha.DrainController.holdsCoreReaders();
+		if (!joining) {
+			InboundDRStreamConsumer.getInstance().start();
+			ResultStreamConsumer.getInstance().start();
+		}
 		CoreMQMStreamConsumer.getInstance().start();
 		DelayedInDRDispatcher.getInstance().startDispatcher();
-		ChannelReleaseDispatcher.getInstance().start();
-		CsmExpirySweeper.getInstance().start();
+		if (!joining) {
+			ChannelReleaseDispatcher.getInstance().start();
+			CsmExpirySweeper.getInstance().start();
+		}
 		//SenderRentHandler.getInstance();
 		
 		if(gmmsUtility.isStoreDRModeEnable()){

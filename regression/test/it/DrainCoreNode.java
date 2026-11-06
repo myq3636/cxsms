@@ -8,7 +8,7 @@ import com.king.gmms.messagequeue.MTStreamConsumer;
 import com.king.gmms.messagequeue.ResultStreamConsumer;
 import com.king.gmms.processor.CsmExpirySweeper;
 
-/** One real Core process of DrainCoreIT: the stream consumers of a Core, its heartbeat, SQL kept in memory. */
+/** One real Core process of DrainCoreIT and ModuleOpsIT: the stream consumers of a Core, its heartbeat, SQL kept in memory. */
 public class DrainCoreNode extends ItSupport {
 	public static void main(String[] a) throws Exception {
 		msmFactory = CoreRetryIT.RecordingStore::new;
@@ -16,10 +16,13 @@ public class DrainCoreNode extends ItSupport {
 		GmmsUtility g = GmmsUtility.getInstance();
 		ModuleStatusReporter.start(g, "core", System.getProperty("module"), g.getNodeId());
 		MTStreamConsumer.getInstance().start();
-		ResultStreamConsumer.getInstance().start();
-		InboundDRStreamConsumer.getInstance().start();
-		ChannelReleaseDispatcher.getInstance().start();
-		CsmExpirySweeper.getInstance().start();
+		// as DeliveryRouter: a JOINING Core starts these once ACTIVE
+		if (!com.king.gmms.ha.DrainController.holdsCoreReaders()) {
+			ResultStreamConsumer.getInstance().start();
+			InboundDRStreamConsumer.getInstance().start();
+			ChannelReleaseDispatcher.getInstance().start();
+			CsmExpirySweeper.getInstance().start();
+		}
 		System.out.println("READY");
 		Thread.sleep(Long.MAX_VALUE);
 	}

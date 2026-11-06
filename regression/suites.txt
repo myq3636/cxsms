@@ -1,6 +1,7 @@
 Batch1Check com.king.gmms.connectionpool.session.Batch1Check unit
 InlineDrCheck com.king.message.gmms.InlineDrCheck unit
 MessageIdCheck com.king.message.gmms.MessageIdCheck unit
+ShardPlanCheck com.king.gmms.ha.ShardPlanCheck unit
 DrShardCheck com.king.gmms.messagequeue.DrShardCheck unit
 CoreDrFlowIT it.CoreDrFlowIT it
 Batch3IT it.Batch3IT it
@@ -59,3 +60,4 @@ DrainCoreIT it.DrainCoreIT it-multicore
 DrainClientIT it.DrainClientIT it-multiclient
 DrainServerIT it.DrainServerIT it-multi
 DrTransferIT it.DrTransferIT it-multi
+ModuleOpsIT it.ModuleOpsIT it-multicore

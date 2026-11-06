@@ -144,13 +144,27 @@ public final class ShardAssignmentChecker {
 				}
 			}
 			if (!missing.isEmpty()) {
-				problems.add("ERROR " + role.getKey() + " shards owned by no node (never consumed): " + missing
-						+ ", TotalShards=" + total + ", nodes=" + role.getValue());
+				String operation = maintenance(redis);
+				if (operation != null) {
+					// a2pctl moves them one at a time: each is without owner for a moment
+					log.info("[SHARD-CHECK] {} shards owned by no node now: {}, a2pctl at work ({})", role.getKey(), missing, operation);
+				} else {
+					problems.add("ERROR " + role.getKey() + " shards owned by no node (never consumed): " + missing
+							+ ", TotalShards=" + total + ", nodes=" + role.getValue());
+				}
 			}
 		}
 		logSummary(totals, owned);
 		report(problems);
 		return problems;
+	}
+
+	private static String maintenance(RedisClient redis) {
+		try {
+			return redis.getString("system:modules:maintenance");
+		} catch (Exception e) {
+			return null;
+		}
 	}
 
 	/** Shards of every node, per group: logged when the picture changes (first check, node added/gone, config). */

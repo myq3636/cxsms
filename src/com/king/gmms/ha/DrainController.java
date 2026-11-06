@@ -64,8 +64,30 @@ public final class DrainController {
 		return rejectConnections;
 	}
 
+	/**
+	 * A Core added by a2pctl add is JOINING until its shards are moved to it: it reads no results, inbound DRs and held
+	 * MTs either (these streams are read by every Core whatever its shards), so a wrong configuration of a new Core
+	 * touches no traffic. Read from ACTIVE on.
+	 */
+	private static volatile boolean joining = false;
+
+	public static boolean holdsCoreReaders() {
+		return joining;
+	}
+
 	/** The registry state of this module, at start and on every change. */
 	public static synchronized void onState(String state) {
+		boolean core = ModuleManager.getInstance().isCoreEngine(System.getProperty("module"));
+		if (core && ModuleRegistry.JOINING.equals(state) && !joining) {
+			joining = true;
+			stopCoreReaders();
+			readersStopped = false;
+			log.info("[MODULE-REG] {} is JOINING: it reads results, inbound DRs and held MTs once ACTIVE", System.getProperty("module"));
+		} else if (joining && !ModuleRegistry.JOINING.equals(state)) {
+			joining = false;
+			startCoreReaders();
+			log.info("[MODULE-REG] {} is {}: reads results, inbound DRs and held MTs", System.getProperty("module"), state);
+		}
 		boolean wanted = ModuleRegistry.DRAINING.equals(state) || ModuleRegistry.DRAINED.equals(state);
 		if (wanted && !draining) {
 			begin();
@@ -186,10 +208,7 @@ public final class DrainController {
 			thread = null;
 		}
 		if (readersStopped) {
-			ResultStreamConsumer.getInstance().start();
-			InboundDRStreamConsumer.getInstance().start();
-			ChannelReleaseDispatcher.getInstance().start();
-			CsmExpirySweeper.getInstance().start();
+			startCoreReaders();
 			readersStopped = false;
 		}
 		if (connectionsClosed) {
@@ -203,6 +222,14 @@ public final class DrainController {
 			log.warn("[DRAIN] progress not removed", e);
 		}
 		log.info("[DRAIN] {} cancelled, back to normal service", System.getProperty("module"));
+	}
+
+	/** the readers DeliveryRouter starts, unless the Core is JOINING */
+	private static void startCoreReaders() {
+		ResultStreamConsumer.getInstance().start();
+		InboundDRStreamConsumer.getInstance().start();
+		ChannelReleaseDispatcher.getInstance().start();
+		CsmExpirySweeper.getInstance().start();
 	}
 
 	/** Every second: a reader that started late (the module restarted while draining) is stopped again. */

@@ -105,6 +105,18 @@ public class DrainClientIT extends ClientFailoverIT {
 			check(waitFor(() -> results(held2) == 40, 10000) && failedResults(held2, 2700) == 0, "DL-06c its MTs get their results");
 			Thread.sleep(6000);
 			check(a.closed.get() == closed2 && a.binds.get() == binds2, "DL-06d its connection was never closed");
+
+			// ---- a2pctl remove: the whole way, its shard moved by the tool ----
+			shards(C1, "0");
+			shards(C2, "1");
+			Thread.sleep(1500);
+			t = DrainCoreIT.tool("remove", C1);
+			check("0".equals(t[0]) && t[1].contains("shard 0: " + C1 + " -> " + C2) && "DRAINED".equals(state(C1)) && t[1].contains("Stop it with the stop script")
+					&& "WAIT_STOP".equals(jedis.hget("system:modules:op", "step")), "DL-07a remove " + C1 + ": shard 0 moved to " + C2 + " (RELOAD_CLIENT_SHARDS), drained, asks to stop it");
+			List<String> viaC2 = send("R", 40);
+			check(waitFor(() -> tally(a, viaC2)[0] == 0, 15000) && tally(a, viaC2)[1] == 0, "DL-07b MTs of both shards go out through " + C2 + ", each once");
+			t = DrainCoreIT.tool("cancel");
+			check("0".equals(t[0]) && "ACTIVE".equals(state(C1)) && t[1].contains("restart it"), "DL-07c cancel: ACTIVE, its connections are closed: restart asked");
 		} catch (Throwable x) { x.printStackTrace(System.out); failures++; }
 		finally {
 			if (n1 != null) n1.destroyForcibly();

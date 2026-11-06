@@ -105,6 +105,13 @@ public class DrainServerIT extends MultiServerIT {
 			t = DrainCoreIT.tool("cancel", S1);
 			check("0".equals(t[0]) && "ACTIVE".equals(state(S1)), "DS-07a cancel: ACTIVE");
 			check(waitFor(() -> bound(tryBind(P1, "sx", "pw130")), 6000), "DS-07b server 1 takes connections again");
+
+			// ---- a2pctl remove: the whole way ----
+			t = DrainCoreIT.tool("remove", S1);
+			check("0".equals(t[0]) && t[1].contains("load balancer") && "DRAINED".equals(state(S1)) && t[1].contains("Stop it with the stop script"),
+					"DS-08a remove: DRAINING, told about the load balancer, drained, asks to stop it");
+			t = DrainCoreIT.tool("cancel");
+			check("0".equals(t[0]) && "ACTIVE".equals(state(S1)) && jedis.hget("system:modules:op", "step") == null, "DS-08b cancel: ACTIVE, no operation left");
 		} catch (Throwable x) { x.printStackTrace(System.out); failures++; }
 		finally {
 			for (R r : new R[] { x1, y1, y2, x2 }) if (r != null) r.close();
