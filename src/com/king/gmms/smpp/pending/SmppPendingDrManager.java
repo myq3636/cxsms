@@ -244,7 +244,7 @@ public class SmppPendingDrManager {
     private void processTimeoutTask(PendingDrTimeoutTask task) {
         PendingSubmitEntry entry = task.getEntry();
         String sequence = task.getSequence();
-        if (stopped.get() || pendingMap.get(sequence) != entry) {
+        if (entry == null || stopped.get() || pendingMap.get(sequence) != entry) {
             recordTimeoutSkipped();
             return;
         }
@@ -653,15 +653,19 @@ public class SmppPendingDrManager {
                 GLOBAL_TIMEOUT_PROCESSED.get(), GLOBAL_TIMEOUT_SKIPPED.get());
     }
 
+    /**
+     * Holds its entry weakly: the entry (and its message) of a submit answered long before the timeout is gone
+     * from pendingMap and must not stay alive until then (BufferTimeout of every message sent, per second of TPS).
+     */
     private static class PendingDrTimeoutTask implements Delayed {
         private final SmppPendingDrManager manager;
-        private final PendingSubmitEntry entry;
+        private final java.lang.ref.WeakReference<PendingSubmitEntry> entry;
         private final String sequence;
         private final long dueAt;
 
         PendingDrTimeoutTask(SmppPendingDrManager manager, PendingSubmitEntry entry) {
             this.manager = manager;
-            this.entry = entry;
+            this.entry = new java.lang.ref.WeakReference<PendingSubmitEntry>(entry);
             this.sequence = entry == null ? null : entry.getSequence();
             this.dueAt = entry == null ? System.currentTimeMillis() : entry.getNextCheckAt();
         }
@@ -686,8 +690,9 @@ public class SmppPendingDrManager {
             return manager;
         }
 
+        /** null once the entry is collected: it is no longer pending */
         PendingSubmitEntry getEntry() {
-            return entry;
+            return entry.get();
         }
 
         String getSequence() {

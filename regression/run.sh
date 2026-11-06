@@ -1,5 +1,6 @@
 #!/bin/bash
-# Long-term regression: run.sh [suite ...]   (no argument: every suite in suites.txt)
+# Long-term regression: run.sh [suite ...]   (no argument: every suite in suites.txt; manual-suites.txt only by name)
+#   SUITE_TIMEOUT seconds one suite may take (default 400); SUITE_JAVA_OPTS more options for the suite JVM
 #   JAVA_HOME     JDK 17 (default: java on PATH)
 #   REDIS_SERVER  redis-server to start when nothing answers on 127.0.0.1:16379 (default: redis-server on PATH)
 #   REDIS_CLI     redis-cli (default: redis-cli on PATH)
@@ -40,7 +41,7 @@ run() {  # name class mode
         it-multiclient) modules '1|CoreEngine1|CoreEngine|x\n1|MultiSmppServer1|MultiSmppServer|x\n1|MultiSmppClient1|MultiSmppClient|x\n1|MultiSmppClient2|MultiSmppClient|x\n' ;;
         it-multi) modules '1|CoreEngine1|CoreEngine|x\n1|MultiSmppServer1|MultiSmppServer|x\n1|MultiSmppServer2|MultiSmppServer|x\n1|MultiSmppClient1|MultiSmppClient|x\n' ;;
       esac
-      (cd "$W" && timeout 400 "$J/java" $EXTRA -Dknown.defects="$REG/known-defects.txt" -Da2p_home="$HD" -Dmodule=$MOD -DNodeID=1 -Dlog4j.configurationFile="$HD/conf/log4j2.xml" -cp "$CP" "$2" > "$OUT/$1.txt" 2>&1)
+      (cd "$W" && timeout ${SUITE_TIMEOUT:-400} "$J/java" $EXTRA $SUITE_JAVA_OPTS -Dknown.defects="$REG/known-defects.txt" -Da2p_home="$HD" -Dmodule=$MOD -DNodeID=1 -Dlog4j.configurationFile="$HD/conf/log4j2.xml" -cp "$CP" "$2" > "$OUT/$1.txt" 2>&1)
       mkdir -p "$OUT/logs"; cp "$HD/log/it.log" "$OUT/logs/$1.log" 2>/dev/null ;;
   esac
   local p f k x
@@ -56,7 +57,7 @@ while read -r name class mode; do
   [ -z "$name" ] && continue
   if [ $# -gt 0 ]; then case " $* " in *" $name "*) ;; *) continue ;; esac; fi
   run "$name" "$class" "$mode"
-done < "$REG/suites.txt"
+done < <(cat "$REG/suites.txt"; [ $# -gt 0 ] && cat "$REG/manual-suites.txt" 2>/dev/null)
 echo "TOTAL pass=$P fail=$F known=$K fixed=$X suites_failed=$BAD" | tee -a "$OUT/summary.txt"
 grep -h '^FAIL\|^FIXED' "$OUT"/*.txt 2>/dev/null | cut -c1-160
 [ "$BAD" -eq 0 ]
