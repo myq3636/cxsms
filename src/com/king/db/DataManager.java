@@ -79,12 +79,18 @@ public abstract class DataManager {
      */
     public Connection currentConnection() throws DataControlException{
         Connection connection = (Connection) connectionHolder.get();
-        try {
-            if (connection != null && !connection.isClosed()) {
+        if (connection != null) {
+            boolean usable;
+            try {
+                usable = !connection.isClosed();
+            } catch (SQLException e) {
+                usable = false;
+                logger.warn("Check JDBC connection failed. dsName={}", dsName, e);
+            }
+            if (usable) {
                 return connection;
             }
-        } catch (SQLException e) {
-            logger.warn("Check JDBC connection failed. dsName={}", dsName, e);
+            discard(connection);
         }
         connection = openConnectionByStatus();
         if (connection == null) {
@@ -97,6 +103,19 @@ public abstract class DataManager {
         connectionHolder.set(connection);
         allConnectionsForThread.get().add(connection);
         return connection;
+    }
+
+    /**
+     * The connection this thread holds is closed or cannot be checked (the database went away): given back to its
+     * pool (HikariCP drops a broken one) and forgotten before another is opened. Otherwise the pool never gets it
+     * back, and the list of this thread keeps one more dead connection per outage.
+     */
+    private void discard(Connection connection) {
+        String activeDsName = (String) activeDsNameHolder.get();
+        connectionHolder.set(null);
+        activeDsNameHolder.set(null);
+        allConnectionsForThread.get().remove(connection);
+        DataControl.releaseConnection(activeDsName == null ? resolveActiveDsName() : activeDsName, connection);
     }
 
     private Connection openConnectionByStatus() throws DataControlException {
