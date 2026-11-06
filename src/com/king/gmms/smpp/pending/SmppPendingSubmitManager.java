@@ -66,6 +66,7 @@ public class SmppPendingSubmitManager {
     private final ConcurrentMap<String, String> redisKeyBySequence;
     private final Semaphore permits;
     private final AtomicBoolean stopped = new AtomicBoolean(false);
+    private static final java.util.Set<SmppPendingSubmitManager> LIVE = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public enum PutResult {
         STORED,
@@ -87,6 +88,7 @@ public class SmppPendingSubmitManager {
         this.permits = windowSize > 0 ? new Semaphore(windowSize) : null;
         startRedisScanner();
         startGlobalTimeoutWorkers();
+        LIVE.add(this);
         log.info("SMPP pending submit manager started. sessionKey={}, windowSize={}, timeoutMs={}",
                 this.sessionKey, this.windowSize, this.timeoutMs);
     }
@@ -263,10 +265,20 @@ public class SmppPendingSubmitManager {
         return pendingMap.size();
     }
 
+    /** Submits waiting for their response, over all sessions of this process. */
+    public static int totalPending() {
+        int n = 0;
+        for (SmppPendingSubmitManager m : LIVE) {
+            n += m.size();
+        }
+        return n;
+    }
+
     public void shutdown(boolean failPending, String reason) {
         if (!stopped.compareAndSet(false, true)) {
             return;
         }
+        LIVE.remove(this);
         if (failPending) {
             failAll(reason);
         } else {

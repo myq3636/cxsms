@@ -21,6 +21,17 @@ final class StreamDeferrals {
 	}
 
 	private final Map<String, List<GmmsMessage>> deferred = new HashMap<String, List<GmmsMessage>>();
+
+	/** Entries read and put off, not sent yet. */
+	public int size() {
+		synchronized (deferred) {
+			int n = 0;
+			for (List<GmmsMessage> l : deferred.values()) {
+				n += l.size();
+			}
+			return n;
+		}
+	}
 	private final ScheduledExecutorService timer;
 	private final Resume resume;
 

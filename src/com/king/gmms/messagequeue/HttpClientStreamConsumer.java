@@ -49,6 +49,11 @@ public class HttpClientStreamConsumer {
 		drConsumer.start();
 	}
 
+	/** Streams a worker is on now. */
+	public int inFlight() {
+		return submitConsumer.processingMap.size() + drConsumer.processingMap.size();
+	}
+
 	public synchronized void stop() {
 		submitConsumer.stop();
 		drConsumer.stop();

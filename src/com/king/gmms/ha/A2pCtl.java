@@ -14,7 +14,7 @@ import com.king.redis.RedisClient;
  * Operations on the module registry: java -Da2p_home=... -cp ... com.king.gmms.ha.A2pCtl status
  * init [--from-file]   take the modules of a2p_modules.conf into the registry
  * status               modules, states, numbers, nodes, shards, drain progress, and what differs from the file
- * drain NAME [--wait]  start draining a Core (move its shards away by hand), --wait until it is done
+ * drain NAME [--wait]  start draining a Core or a Client (move its shards away by hand), --wait until it is done
  * cancel NAME          back to normal service
  * remove NAME [--force] the module is drained and stopped: REMOVED
  */
@@ -134,8 +134,8 @@ public final class A2pCtl {
 			System.out.println(module + " is not an ACTIVE module: " + (m == null ? "not registered" : m.state));
 			return 1;
 		}
-		if (!"CoreEngine".equals(m.type)) {
-			System.out.println("Draining is done for Core modules only so far; " + module + " is " + m.type);
+		if (!"CoreEngine".equals(m.type) && !"MultiSmppClient".equals(m.type) && !"CommonHttpClient".equals(m.type)) {
+			System.out.println("Draining is done for Core and Client modules only so far; " + module + " is " + m.type);
 			return 1;
 		}
 		boolean other = false;
@@ -147,7 +147,9 @@ public final class A2pCtl {
 			return 1;
 		}
 		changed(module, ModuleRegistry.DRAINING);
-		System.out.println("Now move its shards to other Cores: system:core:shards:" + module + " = none, then RELOAD_CORE_SHARDS");
+		String group = "CoreEngine".equals(m.type) ? "core" : "client";
+		System.out.println("Now move its shards to other modules of its type: system:" + group + ":shards:" + module
+				+ " = none, then RELOAD_" + group.toUpperCase() + "_SHARDS");
 		if (!wait) {
 			return 0;
 		}
@@ -174,8 +176,12 @@ public final class A2pCtl {
 			System.out.println(module + " is stopped: start it again instead");
 			return 1;
 		}
+		boolean closed = progress(module).containsKey("channelsClosed");
 		changed(module, ModuleRegistry.ACTIVE);
 		System.out.println("Give it its shards back if it should have some");
+		if (closed) {
+			System.out.println("Its vendor connections were closed already: restart it with the start script to connect again");
+		}
 		return 0;
 	}
 

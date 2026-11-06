@@ -109,6 +109,11 @@ public class OutboundStreamConsumer {
             consumerName, GmmsUtility.getInstance().getMyShards(), consumerConfig.summary());
     }
 
+    /** Streams a worker is on now, and entries read and put off. */
+    public int inFlight() {
+        return processingMap.size() + (deferrals == null ? 0 : deferrals.size());
+    }
+
     public synchronized void stop() {
         running = false;
         if (dispatcherThread != null) dispatcherThread.shutdownNow();

@@ -7,7 +7,11 @@ import java.util.List;
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.domain.ModuleManager;
+import com.king.gmms.customerconnectionfactory.MultiSmppClientFactory;
 import com.king.gmms.messagequeue.ChannelReleaseDispatcher;
+import com.king.gmms.messagequeue.HttpClientStreamConsumer;
+import com.king.gmms.messagequeue.OutboundStreamConsumer;
+import com.king.gmms.smpp.pending.SmppPendingSubmitManager;
 import com.king.gmms.messagequeue.CoreMQMStreamConsumer;
 import com.king.gmms.messagequeue.InboundDRStreamConsumer;
 import com.king.gmms.messagequeue.MTStreamConsumer;
@@ -18,8 +22,9 @@ import com.king.redis.RedisClient;
 /**
  * Draining a module that is going away (registry state DRAINING, see docs/模块动态扩缩容设计.md section 8): it
  * takes no new work and finishes what it has, then reports done; the process is stopped by hand. Writing what
- * memory holds is left to the stop itself (GracefulStop). For a Core the shards are moved away by hand first:
- * results, inbound DRs and held MTs are read by every Core, so this Core stops reading them once it has no shard.
+ * memory holds is left to the stop itself (GracefulStop). The shards are moved away by hand first. A Core then
+ * stops reading results, inbound DRs and held MTs, which every Core reads. An SMPP Client waits for the
+ * responses of what it sent, keeps its vendor connections a while for the receipts on the way, then closes them.
  */
 public final class DrainController {
 	private static final SystemLogger log = SystemLogger.getSystemLogger(DrainController.class);
@@ -32,12 +37,17 @@ public final class DrainController {
 
 	public static final String WAIT_SHARDS = "WAIT_SHARDS";
 	public static final String WAIT_INFLIGHT = "WAIT_INFLIGHT";
+	public static final String WAIT_WINDOW = "WAIT_WINDOW";
+	public static final String WAIT_DR = "WAIT_DR";
 	public static final String DONE = "DONE";
 	public static final String NOT_SUPPORTED = "NOT_SUPPORTED";
 
 	private static Thread thread = null;
 	private static volatile boolean draining = false;
 	private static volatile boolean readersStopped = false;
+	private static volatile boolean connectionsClosed = false;
+	private static volatile int channelsClosed = 0;
+	private static final long DEFAULT_DR_WAIT_SECONDS = 30L;
 
 	private DrainController() {
 	}
@@ -64,15 +74,50 @@ public final class DrainController {
 		thread = new Thread("DrainController") {
 			public void run() {
 				long readersStoppedAt = 0L;
+				long noShardsAt = 0L;
+				long drWaitFrom = 0L;
+				String type = ModuleManager.getInstance().getFullModuleType(module);
 				while (draining) {
 					try {
 						String stage;
 						List<String> detail = new ArrayList<String>();
-						if (!ModuleManager.getInstance().isCoreEngine(module)) {
+						boolean core = ModuleManager.getInstance().isCoreEngine(module);
+						boolean smppClient = "MultiSmppClient".equals(type);
+						boolean httpClient = "CommonHttpClient".equals(type);
+						if (!core && !smppClient && !httpClient) {
 							stage = NOT_SUPPORTED;
 						} else if (!GmmsUtility.getInstance().getMyShards().isEmpty()) {
 							stage = WAIT_SHARDS;
 							detail.addAll(Arrays.asList("shards", GmmsUtility.getInstance().formatShardSet(GmmsUtility.getInstance().getMyShards())));
+						} else if (httpClient) {
+							int inflight = HttpClientStreamConsumer.getInstance().inFlight();
+							noShardsAt = noShardsAt == 0L ? System.currentTimeMillis() : noShardsAt;
+							boolean late = System.currentTimeMillis() - noShardsAt > maxSeconds() * 1000L;
+							stage = inflight == 0 || late ? DONE : WAIT_INFLIGHT;
+							detail.addAll(Arrays.asList("inflight", String.valueOf(inflight)));
+						} else if (smppClient) {
+							int inflight = OutboundStreamConsumer.getInstance().inFlight() + SmppPendingSubmitManager.totalPending();
+							noShardsAt = noShardsAt == 0L ? System.currentTimeMillis() : noShardsAt;
+							boolean late = System.currentTimeMillis() - noShardsAt > maxSeconds() * 1000L;
+							detail.addAll(Arrays.asList("inflight", String.valueOf(inflight)));
+							if (connectionsClosed) {
+								stage = DONE;
+								detail.addAll(Arrays.asList("channelsClosed", String.valueOf(channelsClosed)));
+							} else if (inflight > 0 && !late) {
+								stage = WAIT_WINDOW;
+							} else {
+								drWaitFrom = drWaitFrom == 0L ? System.currentTimeMillis() : drWaitFrom;
+								long left = drWaitSeconds() * 1000L - (System.currentTimeMillis() - drWaitFrom);
+								if (left > 0) {
+									stage = WAIT_DR;
+									detail.addAll(Arrays.asList("closeInMs", String.valueOf(left)));
+								} else {
+									channelsClosed = MultiSmppClientFactory.getInstance().closeAllForDrain();
+									detail.addAll(Arrays.asList("channelsClosed", String.valueOf(channelsClosed)));
+									connectionsClosed = true;
+									stage = DONE;
+								}
+							}
 						} else {
 							stopCoreReaders();
 							if (readersStoppedAt == 0L) {
@@ -112,6 +157,11 @@ public final class DrainController {
 			ChannelReleaseDispatcher.getInstance().start();
 			CsmExpirySweeper.getInstance().start();
 			readersStopped = false;
+		}
+		if (connectionsClosed) {
+			MultiSmppClientFactory.getInstance().allowConnectAgain();
+			connectionsClosed = false;
+			log.warn("[DRAIN] {}: its vendor connections were closed, restart the module to connect again", System.getProperty("module"));
 		}
 		try {
 			RedisClient.getInstance().del(PROGRESS_PREFIX + System.getProperty("module"));
@@ -157,6 +207,15 @@ public final class DrainController {
 				"updatedAt", String.valueOf(System.currentTimeMillis())));
 		args.addAll(detail);
 		RedisClient.getInstance().getStateRedis().evalScript(PROGRESS_LUA, Arrays.asList(PROGRESS_PREFIX + module), args);
+	}
+
+	private static long drWaitSeconds() {
+		try {
+			return Long.parseLong(GmmsUtility.getInstance().getCommonProperty("ModuleDrainDrWaitSeconds",
+					String.valueOf(DEFAULT_DR_WAIT_SECONDS)).trim());
+		} catch (Exception e) {
+			return DEFAULT_DR_WAIT_SECONDS;
+		}
 	}
 
 	private static long maxSeconds() {

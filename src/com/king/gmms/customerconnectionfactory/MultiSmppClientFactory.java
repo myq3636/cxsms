@@ -79,7 +79,37 @@ public class MultiSmppClientFactory extends AbstractConnectionFactory {
 	 *       com.king.gmms.customerconnectionfactory.AbstractConnectionFactory
 	 *       method
 	 */
+	/** channels closed by draining: a RELOAD_CUSTOMER must not open them again */
+	private volatile boolean drained = false;
+
+	/** Draining: every vendor connection is closed, as when its channel is removed by a reload. */
+	public synchronized int closeAllForDrain() {
+		drained = true;
+		int n = 0;
+		for (Integer ssid : new ArrayList<Integer>(ssid2SessionStrategies.keySet())) {
+			A2PCustomerInfo cust = com.king.gmms.GmmsUtility.getInstance().getCustomerManager().getCustomerBySSID(ssid);
+			if (cust != null) {
+				clearConnectionFactory(cust);
+				n++;
+			}
+		}
+		log.info("[DRAIN] closed the connections of {} channels", n);
+		return n;
+	}
+
+	/**
+	 * Draining cancelled after the connections were closed. Closing removed the connections from the channel
+	 * settings in memory, as removing a channel does, so they are back only with a restart of the module.
+	 */
+	public void allowConnectAgain() {
+		drained = false;
+	}
+
 	public void initConnectionFactory(int ssid, int type) {
+		if (drained) {
+			log.info("[DRAIN] channel {} not connected: this module is drained", ssid);
+			return;
+		}
 		if(log.isInfoEnabled()){
 			log.info("initConnectionFactory for ssid:{},type:{}", ssid, type);
 		}

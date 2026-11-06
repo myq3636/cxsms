@@ -214,7 +214,9 @@ public class MessageStoreManager extends DataManager {
 		}
 		java.util.concurrent.BlockingQueue<String> queue = asyncSqlQueue;
 		if (liveAsyncWriters.get() > 0) {
-			log.warn("[STOP] SQL queue not finished in time: {} statements left", queue == null ? 0 : queue.size());
+			// a failure, so that the stop reports it as not finished
+			throw new IllegalStateException("SQL queue not finished in time: " + (queue == null ? 0 : queue.size())
+					+ " statements left, " + liveAsyncWriters.get() + " writers still busy");
 		}
 	}
 
