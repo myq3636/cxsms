@@ -345,13 +345,11 @@ final class ModuleOps {
 				System.out.println(module + ": DRAINED. Stop it with the stop script, then: resume");
 				return 0;
 			}
+			// not with --force either: nobody would ever read them
 			long left = A2pCtl.drLeft(module);
 			if (left > 0) {
-				System.out.println(module + ": " + left + " DR(s) left in its streams, nobody reads them once it is removed: drain-dr " + module
-						+ (force ? " (removed anyway, --force)" : ", then resume (or cancel)"));
-				if (!force) {
-					return 1;
-				}
+				System.out.println(A2pCtl.drLeftText(module, left) + ". Then: resume");
+				return 1;
 			}
 			ModuleRegistry.write(module, "state", ModuleRegistry.REMOVED, "removedAt", String.valueOf(System.currentTimeMillis()));
 			if (group != null) {

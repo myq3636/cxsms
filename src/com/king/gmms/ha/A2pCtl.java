@@ -181,6 +181,12 @@ public final class A2pCtl {
 		return n;
 	}
 
+	static String drLeftText(String module, long left) {
+		return module + ": " + left + " DR(s) left in its streams, nobody reads them once it is removed: not removed, also not with --force."
+				+ " drain-dr " + module + " first; DRs of customers that can use no other Server stay: change their configuration"
+				+ " and run drain-dr again, or delete stream:dr:pending:{ssid}:" + module + ":* by hand if they are not wanted";
+	}
+
 	static boolean running(String module) {
 		return !RedisClient.getInstance().getStateRedis().scanAll("module:status:*:" + module + ":*").isEmpty();
 	}
@@ -322,10 +328,10 @@ public final class A2pCtl {
 			System.out.println(module + (running(module) ? " is still running" : " is not drained") + ": not removed (--force when it is gone for good)");
 			return 1;
 		}
+		// not with --force either: nobody would ever read them
 		long drLeft = drLeft(module);
-		if (!force && drLeft > 0) {
-			System.out.println(module + ": " + drLeft + " DR(s) left in its streams, nobody reads them once it is removed: drain-dr " + module
-					+ " first (--force to remove anyway)");
+		if (drLeft > 0) {
+			System.out.println(drLeftText(module, drLeft));
 			return 1;
 		}
 		ModuleRegistry.write(module, "state", ModuleRegistry.REMOVED, "removedAt", String.valueOf(System.currentTimeMillis()));

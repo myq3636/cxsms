@@ -129,6 +129,8 @@ public class DrTransferIT extends MultiServerIT {
 			com.king.gmms.ha.ModuleRegistry.write(S1, "type", "MultiSmppServer", "role", "smpp-server", "nodeId", "1", "state", "DRAINED", "removedAt", "0");
 			t = DrainCoreIT.tool("remove", S1);
 			check("1".equals(t[0]) && t[1].contains("2 DR(s) left") && "DRAINED".equals(jedis.hget("system:module:" + S1, "state")), "DT-04f remove: refused while Z's 2 are left");
+			t = DrainCoreIT.tool("remove", S1, "--force");
+			check("1".equals(t[0]) && t[1].contains("also not with --force") && "DRAINED".equals(jedis.hget("system:module:" + S1, "state")), "DT-04g --force: refused all the same");
 
 			// ---- X has no session on server 2: back to Core as 11005, which sends it again (no Core here) ----
 			check(waitFor(() -> backToCore().containsAll(forX), 8000), "DT-05 X's 3 went to server 2 as Core sends them, and back to Core as 11005 for a retry: " + backToCore());
