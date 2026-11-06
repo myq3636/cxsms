@@ -101,6 +101,10 @@ public class ChannelReleaseDispatcher {
 		log.info("Channel release dispatcher started. consumer={}", consumerName);
 	}
 
+	public boolean isRunning() {
+		return running;
+	}
+
 	public synchronized void stop() {
 		running = false;
 		if (thread != null) {

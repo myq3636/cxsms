@@ -80,6 +80,15 @@ public class MTStreamConsumer {
             consumerName, GmmsUtility.getInstance().getMyShards(), consumerConfig.summary());
     }
 
+    public boolean isRunning() {
+        return running;
+    }
+
+    /** Streams a worker is on now. */
+    public int inFlight() {
+        return processingMap.size();
+    }
+
     public synchronized void stop() {
         running = false;
         if (dispatcherThread != null) dispatcherThread.shutdownNow();

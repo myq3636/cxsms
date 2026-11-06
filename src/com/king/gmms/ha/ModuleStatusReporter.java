@@ -138,14 +138,17 @@ public class ModuleStatusReporter {
 	private void unregister() {
 		try {
 			RedisClient redis = gmmsUtility.getRedisClient();
-			redis.srem(nodesKey, nodeId);
-			if ("server".equalsIgnoreCase(role)) {
-				redis.srem("system:server:nodes", nodeId);
-			} else if ("httpserver".equalsIgnoreCase(role)) {
-				redis.srem("system:httpserver:nodes", nodeId);
-			}
 			redis.del(statusKey);
 			redis.del(detailKey);
+			// the node id is the machine: other modules of this role on this machine keep it in the sets
+			if (!otherModuleOnThisNode(redis)) {
+				redis.srem(nodesKey, nodeId);
+				if ("server".equalsIgnoreCase(role)) {
+					redis.srem("system:server:nodes", nodeId);
+				} else if ("httpserver".equalsIgnoreCase(role)) {
+					redis.srem("system:httpserver:nodes", nodeId);
+				}
+			}
 		} catch (Exception e) {
 			log.warn("Failed to unregister module status for " + identity, e);
 		}
@@ -181,6 +184,15 @@ public class ModuleStatusReporter {
 			redis.del(reporter.statusKey);
 			redis.del(reporter.detailKey);
 		}
+	}
+
+	private boolean otherModuleOnThisNode(RedisClient redis) {
+		for (String key : redis.getStateRedis().scanAll("module:status:" + role + ":*:" + nodeId)) {
+			if (!key.equals(statusKey)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** After a registry change: whoever waits for all modules to have it sees it at once. */

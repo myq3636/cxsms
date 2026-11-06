@@ -84,6 +84,15 @@ public class ResultStreamConsumer {
                 groupName, consumerName, consumerConfig.summary());
     }
 
+    public boolean isRunning() {
+        return running;
+    }
+
+    /** Streams a worker is on now. */
+    public int inFlight() {
+        return processingMap.size();
+    }
+
     public synchronized void stop() {
         running = false;
         if (dispatcherThread != null) {

@@ -163,6 +163,8 @@ public final class ModuleRegistry {
 		current = modules;
 		version = stored == null ? version : stored;
 		log.info("[MODULE-REG] version {} in use: {} modules, active {}", version, modules.size(), active);
+		Module me = modules.get(self);
+		DrainController.onState(me == null ? null : me.state);
 	}
 
 	private static String conflict(Map<String, Module> modules, String module, String nodeId) {

@@ -13,7 +13,10 @@ import com.king.redis.RedisClient;
 /**
  * Operations on the module registry: java -Da2p_home=... -cp ... com.king.gmms.ha.A2pCtl status
  * init [--from-file]   take the modules of a2p_modules.conf into the registry
- * status               modules, states, numbers, nodes, shards, and what differs from the file
+ * status               modules, states, numbers, nodes, shards, drain progress, and what differs from the file
+ * drain NAME [--wait]  start draining a Core (move its shards away by hand), --wait until it is done
+ * cancel NAME          back to normal service
+ * remove NAME [--force] the module is drained and stopped: REMOVED
  */
 public final class A2pCtl {
 	private A2pCtl() {
@@ -32,7 +35,7 @@ public final class A2pCtl {
 
 	private static int run(String[] args) throws Exception {
 		if (args.length == 0) {
-			System.out.println("Usage: A2pCtl init [--from-file] | status");
+			System.out.println("Usage: A2pCtl init [--from-file] | status | drain NAME [--wait] | cancel NAME | remove NAME [--force]");
 			return 1;
 		}
 		String home = System.getProperty("a2p_home", "/usr/local/a2p/");
@@ -48,6 +51,15 @@ public final class A2pCtl {
 		}
 		if ("status".equals(args[0])) {
 			return status();
+		}
+		if (args.length > 1 && "drain".equals(args[0])) {
+			return drain(args[1], args.length > 2 && "--wait".equals(args[2]));
+		}
+		if (args.length > 1 && "cancel".equals(args[0])) {
+			return cancel(args[1]);
+		}
+		if (args.length > 1 && "remove".equals(args[0])) {
+			return remove(args[1], args.length > 2 && "--force".equals(args[2]));
 		}
 		System.out.println("Unknown command: " + args[0]);
 		return 1;
@@ -100,6 +112,90 @@ public final class A2pCtl {
 		return 0;
 	}
 
+	private static Map<String, String> progress(String module) {
+		Map<String, String> p = RedisClient.getInstance().hgetAll("module:drain:" + module);
+		return p == null ? new HashMap<String, String>() : p;
+	}
+
+	private static boolean running(String module) {
+		return !RedisClient.getInstance().getStateRedis().scanAll("module:status:*:" + module + ":*").isEmpty();
+	}
+
+	private static void changed(String module, String state) {
+		ModuleRegistry.write(module, "state", state);
+		RedisClient.getInstance().publishState(ModuleStatusReporter.CONTROL_CHANNEL, "RELOAD_MODULES");
+		System.out.println(module + ": " + state);
+	}
+
+	private static int drain(String module, boolean wait) throws Exception {
+		Map<String, ModuleRegistry.Module> modules = ModuleRegistry.load();
+		ModuleRegistry.Module m = modules.get(module);
+		if (m == null || !ModuleRegistry.ACTIVE.equals(m.state)) {
+			System.out.println(module + " is not an ACTIVE module: " + (m == null ? "not registered" : m.state));
+			return 1;
+		}
+		if (!"CoreEngine".equals(m.type)) {
+			System.out.println("Draining is done for Core modules only so far; " + module + " is " + m.type);
+			return 1;
+		}
+		boolean other = false;
+		for (ModuleRegistry.Module o : modules.values()) {
+			other |= !o.name.equals(module) && m.type.equals(o.type) && ModuleRegistry.ACTIVE.equals(o.state);
+		}
+		if (!other) {
+			System.out.println(module + " is the last ACTIVE " + m.type + ": not drained");
+			return 1;
+		}
+		changed(module, ModuleRegistry.DRAINING);
+		System.out.println("Now move its shards to other Cores: system:core:shards:" + module + " = none, then RELOAD_CORE_SHARDS");
+		if (!wait) {
+			return 0;
+		}
+		while (!"true".equals(progress(module).get("done"))) {
+			Thread.sleep(1000L);
+			System.out.println("  " + progress(module));
+			if (!ModuleRegistry.DRAINING.equals(ModuleRegistry.load().get(module).state)) {
+				System.out.println(module + " is not draining any more");
+				return 1;
+			}
+		}
+		changed(module, ModuleRegistry.DRAINED);
+		System.out.println("Done: stop the process now");
+		return 0;
+	}
+
+	private static int cancel(String module) {
+		ModuleRegistry.Module m = ModuleRegistry.load().get(module);
+		if (m == null || !(ModuleRegistry.DRAINING.equals(m.state) || ModuleRegistry.DRAINED.equals(m.state))) {
+			System.out.println(module + " is not draining: " + (m == null ? "not registered" : m.state));
+			return 1;
+		}
+		if (ModuleRegistry.DRAINED.equals(m.state) && !running(module)) {
+			System.out.println(module + " is stopped: start it again instead");
+			return 1;
+		}
+		changed(module, ModuleRegistry.ACTIVE);
+		System.out.println("Give it its shards back if it should have some");
+		return 0;
+	}
+
+	private static int remove(String module, boolean force) {
+		ModuleRegistry.Module m = ModuleRegistry.load().get(module);
+		if (m == null || ModuleRegistry.REMOVED.equals(m.state)) {
+			System.out.println(module + " is " + (m == null ? "not registered" : "removed already"));
+			return 1;
+		}
+		boolean drained = ModuleRegistry.DRAINED.equals(m.state) || "true".equals(progress(module).get("done"));
+		if (!force && (!drained || running(module))) {
+			System.out.println(module + (running(module) ? " is still running" : " is not drained") + ": not removed (--force when it is gone for good)");
+			return 1;
+		}
+		ModuleRegistry.write(module, "state", ModuleRegistry.REMOVED, "removedAt", String.valueOf(System.currentTimeMillis()));
+		RedisClient.getInstance().publishState(ModuleStatusReporter.CONTROL_CHANNEL, "RELOAD_MODULES");
+		System.out.println(module + ": REMOVED");
+		return 0;
+	}
+
 	private static int status() {
 		RedisClient redis = RedisClient.getInstance();
 		String version = redis.getString("system:modules:version");
@@ -109,7 +205,7 @@ public final class A2pCtl {
 		}
 		System.out.println("version " + version);
 		Map<String, ModuleRegistry.Module> modules = new TreeMap<String, ModuleRegistry.Module>(ModuleRegistry.load());
-		System.out.println(String.format("%-22s %-20s %-3s %-9s %-5s %-14s %s", "module", "type", "no", "state", "node", "running on", "shards"));
+		System.out.println(String.format("%-22s %-20s %-3s %-9s %-5s %-14s %-12s %s", "module", "type", "no", "state", "node", "running on", "shards", "drain"));
 		for (ModuleRegistry.Module m : modules.values()) {
 			List<String> running = new ArrayList<String>();
 			for (String key : redis.getStateRedis().scanAll("module:status:*:" + m.name + ":*")) {
@@ -123,8 +219,10 @@ public final class A2pCtl {
 					shards = shards.length() == 0 ? "none" : shards;
 				}
 			}
-			System.out.println(String.format("%-22s %-20s %-3d %-9s %-5s %-14s %s", m.name, m.type,
-					ModuleManager.trailingNumber(m.name), m.state, m.nodeId, running.isEmpty() ? "-" : running.toString(), shards));
+			Map<String, String> p = progress(m.name);
+			String drain = p.isEmpty() ? "" : p.get("stage") + (p.containsKey("inflight") ? " inflight=" + p.get("inflight") : "");
+			System.out.println(String.format("%-22s %-20s %-3d %-9s %-5s %-14s %-12s %s", m.name, m.type,
+					ModuleManager.trailingNumber(m.name), m.state, m.nodeId, running.isEmpty() ? "-" : running.toString(), shards, drain));
 		}
 		for (String[] line : ModuleRegistry.readModuleList()) {
 			if (!modules.containsKey(line[0])) {

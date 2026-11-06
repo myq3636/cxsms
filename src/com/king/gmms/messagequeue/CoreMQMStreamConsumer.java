@@ -61,6 +61,11 @@ public class CoreMQMStreamConsumer {
         reportLane.stop();
     }
 
+    /** Streams a worker is on now. */
+    public int inFlight() {
+        return submitLane.processingMap.size() + reportLane.processingMap.size();
+    }
+
     private static class ConsumerLane {
         private final String functionName;
         private final String groupName;
@@ -76,7 +81,7 @@ public class CoreMQMStreamConsumer {
         private ExecutorService dispatcherThread;
         private ExecutorService recoveryThread;
         private ThreadPoolExecutor workerPool;
-        private final ConcurrentHashMap<String, Boolean> processingMap = new ConcurrentHashMap<String, Boolean>();
+        final ConcurrentHashMap<String, Boolean> processingMap = new ConcurrentHashMap<String, Boolean>();
         private final ConcurrentHashMap<String, Boolean> pendingDoorbellMap = new ConcurrentHashMap<String, Boolean>();
 
         private ConsumerLane(String functionName, String groupName, String doorbellKey,

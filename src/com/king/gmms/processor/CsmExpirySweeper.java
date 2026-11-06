@@ -61,6 +61,10 @@ public class CsmExpirySweeper {
 		log.info("CSM expiry sweeper started.");
 	}
 
+	public boolean isRunning() {
+		return running;
+	}
+
 	public synchronized void stop() {
 		running = false;
 		if (thread != null) {

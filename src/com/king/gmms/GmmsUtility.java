@@ -1092,7 +1092,7 @@ public class GmmsUtility {
 			"SmppPduLogEnable", "SmppServerSessionKeeperShared", "SmppServerSendQueueMax",
 			"SmppServerSendQueueHighWater", "ServerDrAckOnResp", "SmppServerDrLivenessCheck",
 			"ConfigFileStableCheckMs", "ReloadCustomerMaxRemovePercent",
-			"ClientOutboundWindowFullRetryMs", "MessageIdAheadWarnSeconds", "ModuleStopMaxWaitSeconds", "ModuleIndexRetainHours",
+			"ClientOutboundWindowFullRetryMs", "MessageIdAheadWarnSeconds", "ModuleStopMaxWaitSeconds", "ModuleIndexRetainHours", "ModuleDrainMaxSeconds",
 			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress",
 			"DescendingTime", "Skytel_Prefix", "Indigo_prefix", "APBW_CPID", "APBW_SID",
 			"ReadBuffersize", "enquirelinktime",
@@ -1191,6 +1191,7 @@ public class GmmsUtility {
 				|| "MessageIdAheadWarnSeconds".equals(key)
 				|| "ModuleStopMaxWaitSeconds".equals(key)
 				|| "ModuleIndexRetainHours".equals(key)
+				|| "ModuleDrainMaxSeconds".equals(key)
 				|| "SmppPendingDrTimeoutWorkerCount".equals(key)
 				|| "SmppPendingSubmitTimeoutWorkerCount".equals(key)
 				|| "ServerDrWindowFullRetryBatchSize".equals(key)
