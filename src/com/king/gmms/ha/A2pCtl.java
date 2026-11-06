@@ -134,8 +134,9 @@ public final class A2pCtl {
 			System.out.println(module + " is not an ACTIVE module: " + (m == null ? "not registered" : m.state));
 			return 1;
 		}
-		if (!"CoreEngine".equals(m.type) && !"MultiSmppClient".equals(m.type) && !"CommonHttpClient".equals(m.type)) {
-			System.out.println("Draining is done for Core and Client modules only so far; " + module + " is " + m.type);
+		if (!"CoreEngine".equals(m.type) && !"MultiSmppClient".equals(m.type) && !"CommonHttpClient".equals(m.type)
+				&& !"MultiSmppServer".equals(m.type)) {
+			System.out.println("Draining is done for Core, Client and SMPP Server modules only so far; " + module + " is " + m.type);
 			return 1;
 		}
 		boolean other = false;
@@ -146,10 +147,21 @@ public final class A2pCtl {
 			System.out.println(module + " is the last ACTIVE " + m.type + ": not drained");
 			return 1;
 		}
+		if ("MultiSmppServer".equals(m.type)) {
+			List<String> pinned = pinnedCustomers(module, modules);
+			if (!pinned.isEmpty()) {
+				System.out.println("Customers that may only use " + module + " (SmppServerModules): " + pinned + ". Change their configuration first");
+				return 1;
+			}
+		}
 		changed(module, ModuleRegistry.DRAINING);
-		String group = "CoreEngine".equals(m.type) ? "core" : "client";
-		System.out.println("Now move its shards to other modules of its type: system:" + group + ":shards:" + module
-				+ " = none, then RELOAD_" + group.toUpperCase() + "_SHARDS");
+		if ("MultiSmppServer".equals(m.type)) {
+			System.out.println("It takes no new connection and closes its customer sessions one by one. Take it out of the load balancer");
+		} else {
+			String group = "CoreEngine".equals(m.type) ? "core" : "client";
+			System.out.println("Now move its shards to other modules of its type: system:" + group + ":shards:" + module
+					+ " = none, then RELOAD_" + group.toUpperCase() + "_SHARDS");
+		}
 		if (!wait) {
 			return 0;
 		}
@@ -164,6 +176,33 @@ public final class A2pCtl {
 		changed(module, ModuleRegistry.DRAINED);
 		System.out.println("Done: stop the process now");
 		return 0;
+	}
+
+	/** customers whose SmppServerModules lists this module and no other ACTIVE one */
+	private static List<String> pinnedCustomers(String module, Map<String, ModuleRegistry.Module> modules) {
+		List<String> pinned = new ArrayList<String>();
+		com.king.gmms.domain.A2PCustomerManager customers = GmmsUtility.getInstance().getCustomerManager();
+		if (customers == null) {
+			return pinned;
+		}
+		SmppServerAssignmentResolver assignments = SmppServerAssignmentResolver.getInstance();
+		for (com.king.gmms.domain.A2PCustomerInfo c : customers.getAllCustomerInfos()) {
+			if (c == null || !assignments.isRestricted(c)) {
+				continue;
+			}
+			boolean here = false, elsewhere = false;
+			for (String m : assignments.assignedModules(c)) {
+				if (m.equalsIgnoreCase(module)) {
+					here = true;
+				} else if (modules.containsKey(m) && ModuleRegistry.ACTIVE.equals(modules.get(m).state)) {
+					elsewhere = true;
+				}
+			}
+			if (here && !elsewhere) {
+				pinned.add(c.getShortName() + "(" + c.getSSID() + ")");
+			}
+		}
+		return pinned;
 	}
 
 	private static int cancel(String module) {

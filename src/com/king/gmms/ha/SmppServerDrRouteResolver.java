@@ -59,7 +59,8 @@ public class SmppServerDrRouteResolver {
 		if (isBlank(originalModule)) {
 			originalModule = activeDeliveryChannelModule(msg, ossid);
 		}
-		if (!isBlank(originalModule) && registry.hasActiveSessionInModule(ossid, originalModule)) {
+		boolean originalBound = !isBlank(originalModule) && registry.hasActiveSessionInModule(ossid, originalModule);
+		if (originalBound && !ModuleRegistry.isDraining(originalModule)) {
 			return originalModule;
 		}
 		String fallbackModule = registry.selectActiveModule(ossid, originalModule);
@@ -67,6 +68,12 @@ public class SmppServerDrRouteResolver {
 			logLimited(msg, false, "fallback-active", "SMPP DR target server module fallback. ossid={}, originalModule={}, fallbackModule={}",
 					ossid, originalModule, fallbackModule);
 			return fallbackModule;
+		}
+		if (originalBound) {
+			// the customer is bound to the draining Server only: it still gets its DR there
+			logLimited(msg, false, "draining-only", "SMPP DR to a draining server module, the customer has no other session. ossid={}, module={}",
+					ossid, originalModule);
+			return originalModule;
 		}
 		A2PCustomerInfo customer = gmmsUtility.getCustomerManager().getCustomerBySSID(ossid);
 		if (assignmentResolver.isRestricted(customer)) {
@@ -231,6 +238,9 @@ public class SmppServerDrRouteResolver {
 	}
 
 	private boolean isOnlineServerModule(String module) {
+		if (ModuleRegistry.isDraining(module)) {
+			return false;
+		}
 		try {
 			RedisClient redis = gmmsUtility.getRedisClient();
 			if (redis == null) {

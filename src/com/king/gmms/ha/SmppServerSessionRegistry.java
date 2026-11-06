@@ -360,7 +360,7 @@ public class SmppServerSessionRegistry {
 		List<String> modules = new ArrayList<String>(moduleSet);
 		Collections.reverse(modules);
 		for (String module : modules) {
-			if (isBlank(module) || module.equalsIgnoreCase(excludedModule)) {
+			if (isBlank(module) || module.equalsIgnoreCase(excludedModule) || ModuleRegistry.isDraining(module)) {
 				continue;
 			}
 			if (hasActiveSessionInModule(ossid, module)) {

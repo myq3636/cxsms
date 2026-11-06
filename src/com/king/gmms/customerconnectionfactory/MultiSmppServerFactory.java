@@ -360,6 +360,11 @@ public class MultiSmppServerFactory extends AbstractConnectionFactory {
 		registry.reconcileFinished(sessions.size(), ok, failed, removed, !snapshotComplete[0], System.currentTimeMillis() - start);
 	}
 
+	/** The customer sessions bound to this Server now. */
+	public List<MultiSmppSession> liveServerSessions() {
+		return getLiveServerSessionsSnapshot(new boolean[] { true });
+	}
+
 	private List<MultiSmppSession> getLiveServerSessionsSnapshot(boolean[] complete) {
 		List<MultiSmppSession> sessions = new ArrayList<MultiSmppSession>();
 		Set<ConnectionManager> seenManagers = Collections.newSetFromMap(new IdentityHashMap<ConnectionManager, Boolean>());

@@ -57,3 +57,4 @@ GracefulStopIT it.GracefulStopIT it-multicore
 ModuleRegistryIT it.ModuleRegistryIT it-multi
 DrainCoreIT it.DrainCoreIT it-multicore
 DrainClientIT it.DrainClientIT it-multiclient
+DrainServerIT it.DrainServerIT it-multi

@@ -59,6 +59,11 @@ public abstract class AbstractServer implements A2PService, Runnable {
 					nextClient = serverSocket.accept();
 					String host = nextClient.getInetAddress().getHostAddress();
 					if (nextClient != null) {
+						if (com.king.gmms.ha.DrainController.rejectsConnections()) {
+							log.info("{} is draining: connection from {} closed", module, host);
+							nextClient.close();
+							continue;
+						}
 						if (gmmsUtility.isAddressScreened(host)) {
 							nextClient.close();
 							continue;

@@ -128,7 +128,7 @@ public class DrainCoreIT extends CoreFailoverIT {
 
 			// ---- refused ----
 			t = tool("drain", "MultiSmppServer1");
-			check("1".equals(t[0]) && t[1].contains("Core and Client modules only"), "DC-02a drain of a Server: not done yet, refused");
+			check("1".equals(t[0]) && t[1].contains("last ACTIVE"), "DC-02a drain of the only Server: refused, it is the last active one");
 			t = tool("drain", D2);
 			check("0".equals(t[0]) && "DRAINING".equals(state(D2)), "DC-02b drain " + D2 + ": DRAINING");
 			t = tool("drain", D3);

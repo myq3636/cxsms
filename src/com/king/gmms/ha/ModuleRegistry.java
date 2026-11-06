@@ -81,6 +81,15 @@ public final class ModuleRegistry {
 		return version;
 	}
 
+	/** A module going away: others route new work elsewhere when they can. */
+	public static boolean isDraining(String module) {
+		if (module == null || !enabled()) {
+			return false;
+		}
+		String state = stateOf(module);
+		return DRAINING.equals(state) || DRAINED.equals(state);
+	}
+
 	public static String stateOf(String module) {
 		Module m = current.get(module);
 		return m == null ? null : m.state;

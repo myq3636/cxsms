@@ -39,6 +39,9 @@ public final class DrainController {
 	public static final String WAIT_INFLIGHT = "WAIT_INFLIGHT";
 	public static final String WAIT_WINDOW = "WAIT_WINDOW";
 	public static final String WAIT_DR = "WAIT_DR";
+	public static final String CLOSE_SESSIONS = "CLOSE_SESSIONS";
+	private static final long DEFAULT_SESSION_INTERVAL_MS = 1000L;
+	private static volatile boolean rejectConnections = false;
 	public static final String DONE = "DONE";
 	public static final String NOT_SUPPORTED = "NOT_SUPPORTED";
 
@@ -54,6 +57,11 @@ public final class DrainController {
 
 	public static boolean isDraining() {
 		return draining;
+	}
+
+	/** A draining Server takes no new customer connection. */
+	public static boolean rejectsConnections() {
+		return rejectConnections;
 	}
 
 	/** The registry state of this module, at start and on every change. */
@@ -76,6 +84,8 @@ public final class DrainController {
 				long readersStoppedAt = 0L;
 				long noShardsAt = 0L;
 				long drWaitFrom = 0L;
+				long lastCloseAt = System.currentTimeMillis();
+				long sessionsGoneAt = 0L;
 				String type = ModuleManager.getInstance().getFullModuleType(module);
 				while (draining) {
 					try {
@@ -84,7 +94,30 @@ public final class DrainController {
 						boolean core = ModuleManager.getInstance().isCoreEngine(module);
 						boolean smppClient = "MultiSmppClient".equals(type);
 						boolean httpClient = "CommonHttpClient".equals(type);
-						if (!core && !smppClient && !httpClient) {
+						boolean smppServer = "MultiSmppServer".equals(type);
+						if (smppServer) {
+							rejectConnections = true;
+							List<com.king.gmms.connectionpool.session.MultiSmppSession> sessions =
+									com.king.gmms.customerconnectionfactory.MultiSmppServerFactory.getInstance().liveServerSessions();
+							if (!sessions.isEmpty()) {
+								// one at a time: the customers bind again to the other Servers, not all at once
+								if (System.currentTimeMillis() - lastCloseAt >= sessionIntervalMs()) {
+									com.king.gmms.connectionpool.session.MultiSmppSession s = sessions.get(0);
+									log.info("[DRAIN] closing customer session {}", s.getSessionName());
+									s.stop();
+									lastCloseAt = System.currentTimeMillis();
+								}
+								stage = CLOSE_SESSIONS;
+								detail.addAll(Arrays.asList("sessions", String.valueOf(sessions.size())));
+							} else {
+								// DRs left for this module find no session: they go back to Core as 11005 and are sent again
+								sessionsGoneAt = sessionsGoneAt == 0L ? System.currentTimeMillis() : sessionsGoneAt;
+								int left = serverDrBacklog();
+								boolean late = System.currentTimeMillis() - sessionsGoneAt > maxSeconds() * 1000L;
+								stage = left == 0 || late ? DONE : WAIT_DR;
+								detail.addAll(Arrays.asList("drLeft", String.valueOf(left)));
+							}
+						} else if (!core && !smppClient && !httpClient) {
 							stage = NOT_SUPPORTED;
 						} else if (!GmmsUtility.getInstance().getMyShards().isEmpty()) {
 							stage = WAIT_SHARDS;
@@ -147,6 +180,7 @@ public final class DrainController {
 
 	private static void cancel() {
 		draining = false;
+		rejectConnections = false;
 		if (thread != null) {
 			thread.interrupt();
 			thread = null;
@@ -207,6 +241,24 @@ public final class DrainController {
 				"updatedAt", String.valueOf(System.currentTimeMillis())));
 		args.addAll(detail);
 		RedisClient.getInstance().getStateRedis().evalScript(PROGRESS_LUA, Arrays.asList(PROGRESS_PREFIX + module), args);
+	}
+
+	private static int serverDrBacklog() {
+		com.king.gmms.messagequeue.StreamQueueManager q = com.king.gmms.messagequeue.StreamQueueManager.getInstance();
+		long n = com.king.gmms.smpp.pending.SmppPendingDrManager.totalPending();
+		for (String stream : q.listResponsibleStreams(com.king.gmms.messagequeue.StreamQueueManager.STR_DR_PENDING_PREFIX + "*", false)) {
+			n += q.streamLength(stream, false);
+		}
+		return (int) Math.min(Integer.MAX_VALUE, n);
+	}
+
+	private static long sessionIntervalMs() {
+		try {
+			return Long.parseLong(GmmsUtility.getInstance().getCommonProperty("ModuleDrainSessionIntervalMs",
+					String.valueOf(DEFAULT_SESSION_INTERVAL_MS)).trim());
+		} catch (Exception e) {
+			return DEFAULT_SESSION_INTERVAL_MS;
+		}
 	}
 
 	private static long drWaitSeconds() {

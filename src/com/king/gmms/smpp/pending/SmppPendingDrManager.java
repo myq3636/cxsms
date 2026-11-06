@@ -72,6 +72,7 @@ public class SmppPendingDrManager {
     private final ConcurrentMap<String, String> redisKeyBySequence;
     private final Semaphore permits;
     private final AtomicBoolean stopped = new AtomicBoolean(false);
+    private static final java.util.Set<SmppPendingDrManager> LIVE = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public enum PutResult {
         STORED,
@@ -93,6 +94,7 @@ public class SmppPendingDrManager {
         this.permits = windowSize > 0 ? new Semaphore(windowSize) : null;
         startRedisScanner();
         startGlobalTimeoutWorkers();
+        LIVE.add(this);
         log.info("SMPP pending DR manager started. sessionKey={}, windowSize={}, timeoutMs={}",
                 this.sessionKey, this.windowSize, this.timeoutMs);
     }
@@ -212,6 +214,15 @@ public class SmppPendingDrManager {
         }
     }
 
+    /** DRs waiting for the customer's response, over all sessions of this process. */
+    public static int totalPending() {
+        int n = 0;
+        for (SmppPendingDrManager m : LIVE) {
+            n += m.size();
+        }
+        return n;
+    }
+
     public int size() {
         return pendingMap.size();
     }
@@ -220,6 +231,7 @@ public class SmppPendingDrManager {
         if (!stopped.compareAndSet(false, true)) {
             return;
         }
+        LIVE.remove(this);
         if (failPending) {
             failAll(reason);
         } else {
