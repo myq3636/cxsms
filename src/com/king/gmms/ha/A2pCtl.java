@@ -8,6 +8,7 @@ import java.util.TreeMap;
 
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.domain.ModuleManager;
+import com.king.gmms.messagequeue.StreamQueueManager;
 import com.king.redis.RedisClient;
 
 /**
@@ -17,6 +18,7 @@ import com.king.redis.RedisClient;
  * drain NAME [--wait]  start draining a Core or a Client (move its shards away by hand), --wait until it is done
  * cancel NAME          back to normal service
  * remove NAME [--force] the module is drained and stopped: REMOVED
+ * drain-dr NAME [--dry-run] [--force]  a Server that is gone: move the DRs left in its streams
  */
 public final class A2pCtl {
 	private A2pCtl() {
@@ -35,7 +37,7 @@ public final class A2pCtl {
 
 	private static int run(String[] args) throws Exception {
 		if (args.length == 0) {
-			System.out.println("Usage: A2pCtl init [--from-file] | status | drain NAME [--wait] | cancel NAME | remove NAME [--force]");
+			System.out.println("Usage: A2pCtl init [--from-file] | status | drain NAME [--wait] | cancel NAME | remove NAME [--force] | drain-dr NAME [--dry-run] [--force]");
 			return 1;
 		}
 		String home = System.getProperty("a2p_home", "/usr/local/a2p/");
@@ -45,7 +47,8 @@ public final class A2pCtl {
 		}
 		System.setProperty("module", "A2pCtl");
 		GmmsUtility.getInstance().initUtility(home + "Gmms/GmmsConfig.properties");
-		RedisClient.getInstance().setRedisHaFlag(true);
+		// also GmmsUtility.getRedisClient(): the SMPP bind registry reads through it (drain-dr)
+		GmmsUtility.getInstance().setRedisClientFlag("M");
 		if ("init".equals(args[0])) {
 			return init(args.length > 1 && "--from-file".equals(args[1]));
 		}
@@ -57,6 +60,10 @@ public final class A2pCtl {
 		}
 		if (args.length > 1 && "cancel".equals(args[0])) {
 			return cancel(args[1]);
+		}
+		if (args.length > 1 && "drain-dr".equals(args[0])) {
+			List<String> flags = java.util.Arrays.asList(args).subList(2, args.length);
+			return drainDr(args[1], flags.contains("--dry-run"), flags.contains("--force"));
 		}
 		if (args.length > 1 && "remove".equals(args[0])) {
 			return remove(args[1], args.length > 2 && "--force".equals(args[2]));
@@ -115,6 +122,16 @@ public final class A2pCtl {
 	private static Map<String, String> progress(String module) {
 		Map<String, String> p = RedisClient.getInstance().hgetAll("module:drain:" + module);
 		return p == null ? new HashMap<String, String>() : p;
+	}
+
+	/** entries in stream:dr:pending:*:{module}:*, read or not */
+	private static long drLeft(String module) {
+		long n = 0;
+		RedisClient redis = RedisClient.getInstance();
+		for (String key : redis.keysReportMq(StreamQueueManager.STR_DR_PENDING_PREFIX + "*:" + module + ":*")) {
+			n += redis.xlenReportMq(key);
+		}
+		return n;
 	}
 
 	private static boolean running(String module) {
@@ -205,6 +222,29 @@ public final class A2pCtl {
 		return pinned;
 	}
 
+	private static int drainDr(String module, boolean dryRun, boolean force) {
+		if (running(module) && !force) {
+			System.out.println(module + " is running: drain it instead (drain " + module + "); its DRs go back to Core and are sent again");
+			return 1;
+		}
+		if (ModuleRegistry.enabled()) {
+			ModuleRegistry.reloadForTool();
+		}
+		DrTransfer.Result r = DrTransfer.run(module, dryRun);
+		System.out.println((dryRun ? "Would move: " : "Moved: ") + r.movedTo);
+		if (!r.noTarget.isEmpty()) {
+			System.out.println("No Server to move to, left where they are (customer ssid: count): " + r.noTarget
+					+ ". Run again once these customers can use another Server (bound there, SmppServerModules)");
+		}
+		if (r.failed > 0) {
+			System.out.println("Failed: " + r.failed + ", left where they are");
+		}
+		if (!dryRun) {
+			System.out.println("Streams emptied and removed: " + r.streamsRemoved);
+		}
+		return r.failed > 0 ? 1 : 0;
+	}
+
 	private static int cancel(String module) {
 		ModuleRegistry.Module m = ModuleRegistry.load().get(module);
 		if (m == null || !(ModuleRegistry.DRAINING.equals(m.state) || ModuleRegistry.DRAINED.equals(m.state))) {
@@ -233,6 +273,12 @@ public final class A2pCtl {
 		boolean drained = ModuleRegistry.DRAINED.equals(m.state) || "true".equals(progress(module).get("done"));
 		if (!force && (!drained || running(module))) {
 			System.out.println(module + (running(module) ? " is still running" : " is not drained") + ": not removed (--force when it is gone for good)");
+			return 1;
+		}
+		long drLeft = drLeft(module);
+		if (!force && drLeft > 0) {
+			System.out.println(module + ": " + drLeft + " DR(s) left in its streams, nobody reads them once it is removed: drain-dr " + module
+					+ " first (--force to remove anyway)");
 			return 1;
 		}
 		ModuleRegistry.write(module, "state", ModuleRegistry.REMOVED, "removedAt", String.valueOf(System.currentTimeMillis()));

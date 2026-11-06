@@ -37,7 +37,7 @@ public class DrainServerIT extends MultiServerIT {
 		String base = new String(Files.readAllBytes(cm), "UTF-8") + cust("SX", 130, null) + cust("SY", 131, null);
 		Files.write(cm, (base + cust("SP", 132, S1)).getBytes("UTF-8"));
 		Path cfg = Paths.get(home + "Gmms/GmmsConfig.properties");
-		Files.write(cfg, (new String(Files.readAllBytes(cfg), "UTF-8") + "\nModuleStatusTTLSeconds=5\nModuleStatusHeartbeatSeconds=1\nModuleDrainSessionIntervalMs=3000\nModuleDrainMaxSeconds=20\n").getBytes("UTF-8"));
+		Files.write(cfg, (new String(Files.readAllBytes(cfg), "UTF-8") + "\nModuleStatusTTLSeconds=5\nModuleStatusHeartbeatSeconds=1\nModuleDrainSessionIntervalMs=5000\nModuleDrainMaxSeconds=30\n").getBytes("UTF-8"));
 		Process n1 = null, n2 = null;
 		R x1 = null, y1 = null, y2 = null, x2 = null;
 		try {
@@ -64,8 +64,6 @@ public class DrainServerIT extends MultiServerIT {
 			Files.write(cm, base.getBytes("UTF-8"));
 			t = DrainCoreIT.tool("drain", S1);
 			check("0".equals(t[0]) && "DRAINING".equals(state(S1)) && t[1].contains("load balancer"), "DS-01b configuration changed: DRAINING, told about the load balancer");
-			t = DrainCoreIT.tool("drain", S2);
-			check("1".equals(t[0]) && t[1].contains("last ACTIVE"), "DS-01c the last active server is not drained");
 			check(waitFor(() -> ModuleRegistry.isDraining(S1), 4000), "DS-02a Core knows it is draining");
 
 			// ---- where DRs go now ----
@@ -92,6 +90,9 @@ public class DrainServerIT extends MultiServerIT {
 			check(waitFor(() -> !inStreams("stream:core:results*", "2000088").isEmpty(), 8000)
 					&& inStreams("stream:core:results*", "2000088").get(0).getStatusCode() == GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT.getCode(), "DS-05b a DR left for server 1, no session: back to Core as 11005");
 			check(waitFor(() -> "DONE".equals(stage(S1)), 10000), "DS-05c nothing left: DONE: " + jedis.hgetAll("module:drain:" + S1));
+			// after the checks above, which must come soon after the drain started: a tool JVM takes seconds on a loaded machine
+			t = DrainCoreIT.tool("drain", S2);
+			check("1".equals(t[0]) && t[1].contains("last ACTIVE"), "DS-01c the last active server is not drained");
 
 			// ---- X binds again, to server 2 ----
 			x2 = new R(P2); x2.bind("sx", "pw130");

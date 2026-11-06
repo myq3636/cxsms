@@ -81,8 +81,18 @@ public final class ModuleRegistry {
 		return version;
 	}
 
+	/** a module this process treats as going away whatever the registry says: the one DrTransfer empties */
+	private static final java.util.Set<String> excluded = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+	public static void excludeLocally(String module) {
+		excluded.add(module);
+	}
+
 	/** A module going away: others route new work elsewhere when they can. */
 	public static boolean isDraining(String module) {
+		if (module != null && excluded.contains(module)) {
+			return true;
+		}
 		if (module == null || !enabled()) {
 			return false;
 		}
@@ -125,6 +135,17 @@ public final class ModuleRegistry {
 		register(modules.get(module), module, gmmsUtility.getNodeId());
 		warnWithoutShards(gmmsUtility, module);
 		apply();
+	}
+
+	/** A tool reads the states once, to route as the modules do. */
+	public static synchronized void reloadForTool() {
+		try {
+			current = load();
+			Long stored = readVersion();
+			version = stored == null ? version : stored;
+		} catch (Exception e) {
+			log.warn("[MODULE-REG] registry not readable", e);
+		}
 	}
 
 	/** RELOAD_MODULES, and the check with each heartbeat for a command that got lost. */
