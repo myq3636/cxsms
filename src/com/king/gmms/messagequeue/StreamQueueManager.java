@@ -406,7 +406,11 @@ public class StreamQueueManager {
 		if (StreamAttempt.current() == null) {
 			return produce(key, msg, false);
 		}
-		return produceOnce(key, msg, false, "dr:" + key + ":" + msg.getSplitStatus() + ":" + msg.getStatusCode());
+		// the DRs a long SMS is split back into (CsmUtility.splitCsmDr, one per segment the customer sent) differ only
+		// by their segment: without it each after the first counts as produced already and is never sent
+		int segment = msg.getSarSegmentSeqNum();
+		return produceOnce(key, msg, false, "dr:" + key + ":" + msg.getSplitStatus() + ":" + msg.getStatusCode()
+				+ (segment > 0 ? ":" + segment : ""));
 	}
 
 	/**
