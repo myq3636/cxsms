@@ -585,9 +585,11 @@ public class Smpp {
 			// we need to judge whether the contentType is defined in SMPP3.4
 			// spec.
 
-			// SMSC Default Alphabet is 0.
-			if((cst.getSmsOptionOutgoingGSM7bit()==0)
-					||gmmsMsg.isGsm7bit()) {
+			// SMSC Default Alphabet is 0: the bytes above are GSM 7-bit (a 7-bit channel), or ASCII on a channel
+			// without 7-bit, as createSmppDeliverSM does. Any other content keeps the data_coding of its charset
+			// (ISO-8859-1 3, UCS2 8, binary 4 ...): its bytes are in that charset (DEF-C6).
+			boolean gsmBytes = gmmsMsg.isGsm7bit() && cst.getSmsOptionOutgoingGSM7bit() != 0;
+			if (gsmBytes || (cst.getSmsOptionOutgoingGSM7bit() == 0 && GmmsMessage.AIC_CS_ASCII.equalsIgnoreCase(contentType))) {
 				contentType = "SMSCdefaultCharset";
 			}
 			String specialDcs = gmmsMsg.getSpecialDataCodingScheme();//todo
@@ -2844,6 +2846,7 @@ public class Smpp {
 				int []chars = new int[newContent.length];
 				int i = 0;
 				int j = 0;
+				int notGsm = 0;   // bytes above 0x7F: no GSM 7-bit character, replaced with '?' as before
 				for(i =0, j=0; i<newContent.length;i++,j++){
 					//mapping ASCII characters
 					int temp = newContent[i];
@@ -2892,8 +2895,17 @@ public class Smpp {
 						}
 					}else{
 						value = 63;
+						notGsm++;
 					}					
 					chars[j]=value;
+				}
+				if (notGsm > 0) {
+					// a customer set to GSM 7-bit sends something else (ISO-8859-1?): shown, the parsing stays
+					long times = com.king.gmms.util.LogRateLimiter.allow("gsm7-not-gsm:" + msg.getOSsID(), 600000L);
+					if (times > 0) {
+						log.warn(msg, "[GSM7] ossid={} SMSOptionSupportIncomingGSM7bit={}: {} byte(s) above 0x7F, no GSM 7-bit character, replaced with '?'"
+								+ " ({} message(s) in 10 min)", msg.getOSsID(), smsOptionIncomingGSM7bit, notGsm, times);
+					}
 				}
 				int tempContent[] = new int[j]; 
 				System.arraycopy(chars, 0, tempContent, 0, j);

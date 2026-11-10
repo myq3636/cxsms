@@ -6,6 +6,7 @@ DataManagerCheck com.king.db.DataManagerCheck unit
 DrShardCheck com.king.gmms.messagequeue.DrShardCheck unit
 CoreDrFlowIT it.CoreDrFlowIT it
 CsmCdrIT it.CsmCdrIT it
+Gsm7LengthIT it.Gsm7LengthIT it
 Batch3IT it.Batch3IT it
 CoreE2EIT it.CoreE2EIT it
 ChannelRateIT it.ChannelRateIT it

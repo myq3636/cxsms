@@ -199,7 +199,7 @@ flowchart LR
 | ID | 级别 | 配置 / 前置 | 场景 | 预期 | 现状 | 现有用例 |
 |---|---|---|---|---|---|---|
 | PD-01 | P0 | 普通 MT，抓真实 PDU | 发送 | 发送方、接收方、内容一致；默认没有 service_type、protocol 0、esm 0、没有 validity；`ServiceType` 生效 | 已覆盖 | ClientPduIT |
-| PD-02 | P1 | `SMSOptionSupportOutgoingGSM7bit`、编码 | ASCII、UCS2、7bit | ASCII→dcs 0；配 1 或 2 时 UCS2→dcs 8，7bit 分别是不打包和打包。**配 0（默认）时 UCS2 的 dcs 是 0，见第 12.1 节（DEF-C6）** | 已覆盖（已知缺陷） | ClientPduIT |
+| PD-02 | P1 | `SMSOptionSupportOutgoingGSM7bit`、编码 | ASCII、ISO、UCS2、二进制、7bit | 配 1 或 2：ASCII→dcs 1（配 `SMSOptionConvert2GSM7bit` 时 Core 先转成 7-bit→dcs 0），ISO→3，UCS2→8，7bit→0（不打包/打包）。配 0：ASCII→0，ISO→3，UCS2→8，二进制→4（DEF-C6 已修复，见 12.1） | 已覆盖 | ClientPduIT PD-02a～h |
 | PD-03 | P1 | `ChlUdhConcatenated` | 长短信分段 | 开启：esm 0x40，UDH 在内容前，没有 SAR 参数；默认：SAR 可选参数，段号正确 | 已覆盖 | ClientPduIT |
 | PD-04 | P1 | `SMSOptionTransferValidityPeriod`、`SMSOptionIsRelateValidityPeriod` | 有效期 | 绝对时间或相对时间（`000000hhmmss000R`）；默认不传 | 已覆盖 | ClientPduIT |
 | PD-05 | P1 | `ChlIsSupportDeliveryReport` | 发送 | 默认 registered_delivery 1；配 No 时 0 | 已覆盖 | ClientPduIT |
@@ -490,18 +490,24 @@ flowchart LR
 
 新增 `ClientPduIT`（抓真实 submit_sm，逐字段校验），`FakeSmsc` 增加完整的 submit_sm 解析。已加入 `regression/suites.txt`。这批只加测试，没有改产品代码，没有跑全量回归。
 
-### 12.1 已确认线上不触发：默认配置下 UCS2 的 data_coding 是 0（DEF-C6）
+### 12.1 已修复：默认配置下 data_coding 和内容不一致（DEF-C6）
 
-通道的 `SMSOptionSupportOutgoingGSM7bit` 是 0（默认）时，`Smpp.createSmppSubmitSM` 把字符集强制设成默认字符集，所以：
+**原来：** 通道的 `SMSOptionSupportOutgoingGSM7bit` 是 0（默认）时，`Smpp.createSmppSubmitSM` 一律标 `data_coding=0`，字节却按真实字符集编码：ISO 是 Latin-1、UCS2 是 UTF-16、二进制是原始字节，按规范解析是乱码。线上通道都配了 1，不触发，所以当时只登记（`PD-02a`）。
 
-| 通道配置 | 消息 | data_coding | short_message |
+**现在（2026-11-10）：** 和 `createSmppDeliverSM` 一致：字节是 GSM 7-bit（带 `gsm7bit` 且通道配了 1 或 2），或通道是 0 且内容是 ASCII 时标 0；其他按字符集（ISO 3、UCS2 8、二进制 4 ……）。
+
+| 通道配置 | 消息 | 原来 | 现在 |
 |---|---|---|---|
-| 0（默认） | UCS2 中文 | **0** | `4F60597D`（UTF-16） |
-| 1 | UCS2 中文 | 8 | `4F60597D` |
+| 0（默认） | ASCII | 0 | 0 |
+| 0 | ISO `Café` | 0 + Latin-1 | **3** + Latin-1 |
+| 0 | UCS2 中文 | 0 + UTF-16 | **8** + UTF-16 |
+| 0 | 二进制 | 0 | **4** |
+| 0 | 带 `gsm7bit` 的 ISO（直接到 Client；从 Core 来时已去掉 `gsm7bit`） | 0 + Latin-1 | **3** + Latin-1 |
+| 1 / 2 | 任意 | 不变 | 不变 |
 
-字节是 UTF-16，却标成默认字符集，按规范解析会是乱码。已确认链路：真实 Core 发到 Client 的消息确实是 UCS2（`CoreContentIT` 的 `OUT-05c`），Client 发给假供应商的 PDU 里就是上表的值。
+线上通道都配了 1，**这次修改对线上没有变化**。新通道仍建议配 1（加 `SMSOptionConvert2GSM7bit: yes`），这样 GSM 7-bit 和 ASCII 都按 GSM 7-bit 发。
 
-**处理：** 已确认线上配的是 1，UCS2 的 data_coding 是 8，不会触发，所以不改代码，只保留登记（`PD-02a`）。新通道也要配 1，不能用默认值 0。
+**没做：** 非 7-bit 的 ISO 消息按通道的 `MsgSplitLen` 拆分，没配时用模块的 `ContentLength`（默认 160），超过 8 位编码单条的 140 字节。这和通道是不是 0 无关，客户用 `data_coding=3` 发的 ISO 长短信发往配了 1 的通道时同样如此。线上通道一般配了 `MsgSplitLen`，所以没有改默认值，需要时单独处理。
 
 ### 12.2 用例确认的其他行为
 

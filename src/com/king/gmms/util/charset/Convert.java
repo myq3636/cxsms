@@ -129,6 +129,27 @@ public class Convert {
 	    return output;
 	  }
 	  
+	  /**
+	   * GSM 7-bit characters (septets) a text takes in one SMS: 1 each, 2 for those of the extension table
+	   * (escape + code): form feed ^ { } \ [ ] ~ | and the euro sign.
+	   */
+	  public static int gsm7Septets(String text) {
+		  if (text == null) {
+			  return 0;
+		  }
+		  int n = 0;
+		  for (int i = 0; i < text.length(); i++) {
+			  switch (text.charAt(i)) {
+			  case 12: case 94: case 123: case 125: case 92: case 91: case 126: case 93: case 124: case 8364:
+				  n += 2;
+				  break;
+			  default:
+				  n++;
+			  }
+		  }
+		  return n;
+	  }
+
 	  public static int[] charToint(final char[] data) {
 		    final int length = data.length;
 		    final int[] output = new int[length];

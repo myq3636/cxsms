@@ -118,6 +118,19 @@ public class ClientPduIT extends ItSupport {
 			m.setTextContent("hello"); m.setMessageSize(5); m.setGsm7bit(true);
 			s = send(a4, m);
 			check(s != null && s.dcs == 0 && hex(s.sm).equals("E8329BFD06"), "PD-02e GSM7bit 2: packed: " + (s == null ? "" : hex(s.sm)));
+			// a channel without 7-bit: the data_coding of the charset its bytes are in (DEF-C6)
+			m = msg(701);
+			m.setContentType(GmmsMessage.AIC_CS_ISO8859_1); m.setTextContent("Café"); m.setMessageSize(4);
+			s = send(a1, m);
+			check(s != null && s.dcs == 3 && hex(s.sm).equals("436166E9"), "PD-02f ISO-8859-1 on a default channel: data_coding 3, Latin-1 bytes: dcs " + (s == null ? "" : s.dcs + " " + hex(s.sm)));
+			m = msg(701);
+			m.setGmmsMsgType(GmmsMessage.AIC_MSG_TYPE_BINARY); m.setMimeMultiPartData(new byte[] { 0x01, 0x02, (byte) 0xFF }); m.setTextContent(null); m.setMessageSize(3);
+			s = send(a1, m);
+			check(s != null && s.dcs == 4 && hex(s.sm).equals("0102FF"), "PD-02g binary on a default channel: data_coding 4: dcs " + (s == null ? "" : s.dcs + " " + hex(s.sm)));
+			m = msg(701);
+			m.setContentType(GmmsMessage.AIC_CS_ISO8859_1); m.setTextContent("Café"); m.setMessageSize(4); m.setGsm7bit(true);
+			s = send(a1, m);
+			check(s != null && s.dcs == 3 && hex(s.sm).equals("436166E9"), "PD-02h 7-bit flag but a channel without 7-bit: Latin-1 bytes, so data_coding 3: dcs " + (s == null ? "" : s.dcs + " " + hex(s.sm)));
 
 			// ---- segments ----
 			m = msg(705);

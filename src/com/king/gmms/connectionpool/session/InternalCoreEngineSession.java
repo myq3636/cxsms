@@ -1934,6 +1934,21 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 		return result;
 	}
 
+	/**
+	 * NeedCheckMsgSize: longer than one SMS. ASCII is not checked (as before). GSM 7-bit (data_coding 0 of a customer
+	 * with SMSOptionSupportIncomingGSM7bit): up to 160 GSM characters, although its contentType says ISO-8859-1 or
+	 * UCS2 when it has characters such as é or Δ. Other (data_coding 3 ...): up to 140 bytes.
+	 */
+	static boolean overOneSms(GmmsMessage msg) {
+		if ("ASCII".equalsIgnoreCase(msg.getContentType())) {
+			return false;
+		}
+		if (msg.isGsm7bit()) {
+			return com.king.gmms.util.charset.Convert.gsm7Septets(msg.getTextContent()) > 160;
+		}
+		return msg.getMessageSize() > 140;
+	}
+
 	public boolean processInnerAck(GmmsMessage msg) {		
 		
 		boolean result = false;
@@ -1981,8 +1996,7 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 							if("SMPP".equalsIgnoreCase(oCustomer.getProtocol())){
 								//TODO
 								if(oCustomer.isNeedCheckMsgSize()) {
-									if(!"ASCII".equalsIgnoreCase(msg.getContentType()) 
-											&& msg.getMessageSize()>140){
+									if(overOneSms(msg)){
 										msg.setStatus(GmmsStatus.MSG_SIZE_OVERLENGTH);
 										msg.setRSsID(gmmsUtility.getBlackholeSsid());
 										msgStoreManager.handleOutSubmitResForInnack(msg);
