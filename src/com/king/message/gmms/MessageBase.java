@@ -448,7 +448,8 @@ public abstract class MessageBase
         this.recipientAddrTon = oneMsg.recipientAddrTon;
 //        this.billingId = oneMsg.billingId;
         this.dateIn = oneMsg.dateIn;
-        this.milterActionCode = oneMsg.milterActionCode;
+        // a copy of its own: setMilterActionCode(index, flag) changes the array in place
+        this.milterActionCode = oneMsg.milterActionCode == null ? null : oneMsg.milterActionCode.clone();
         this.oA2P = oneMsg.oA2P;
         this.rA2P = oneMsg.rA2P;
         this.actionCode = oneMsg.actionCode;

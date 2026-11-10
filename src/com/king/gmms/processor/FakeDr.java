@@ -64,8 +64,6 @@ public final class FakeDr {
 	/** the fake DR: a copy of the MT, without the bits of the MT */
 	static GmmsMessage build(GmmsMessage mt, GmmsStatus status) {
 		GmmsMessage dr = new GmmsMessage(mt);
-		// the copy shares the milterActionCode array with the MT: a copy of its own first
-		dr.setMilterActionCode(mt.getMilterActionCode());
 		dr.setMilterActionCode(GIVEN_BIT, false);
 		dr.setMilterActionCode(TIMER_BIT, false);
 		dr.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);

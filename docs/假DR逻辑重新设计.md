@@ -220,7 +220,7 @@
 **和设计稿不同的地方：**
 - 决定记录用 `milterActionCode` 的第 15、16 位，不是新的序列化字段（第 5 节）。
 - 方式 1、2、4 都要求客户在 submit 里要了 DR（`registered_delivery`）才回；原来方式 1 不检查。
-- 实现中发现：`GmmsMessage` 的复制构造函数和原消息**共用同一个 `milterActionCode` 数组**，改一边另一边也变。生成假 DR 时先给它一份独立的副本。其他地方的复制没有改。
+- 实现中发现：`GmmsMessage` 的复制构造函数（`MessageBase(MessageBase)`）和原消息**共用同一个 `milterActionCode` 数组**，改一边另一边也变（`setMilterActionCode(位, 值)` 原地改数组）。已改为复制一份数组，所有复制消息的地方都不再共用。
 
 **测试：**
 - `FakeDrIT`（新，`suites.txt`）25 项全部通过：未路由的消息仍回失败 DR；方式 1 全部 / 比例 0；DEF-C8 的场景（前缀外号码最后一次重试失败收到失败 DR，前缀内只有 1 条）；方式 2 通道开、客户拒绝、之后 EXPIRED 不回第二条也不进 WDQ（DEF-C9 的场景）；方式 3 改写 UNDELIV、REJECTED，前缀外不改，`OUT_DELI_REP` 记真实状态，外发失败不改；方式 4 真实 DR 先到、超时后回成功再来真实 DR 只记 CDR、`fail` 状态、计时清空；旧配置 `SMSOptionSendFakeDR` 不生效并打 WARN。
