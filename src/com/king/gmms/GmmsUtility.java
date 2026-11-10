@@ -1041,9 +1041,9 @@ public class GmmsUtility {
 			"MessageIdIncludeNodeId", "ScreenedIPs", "LoopbackAddresses", "Metrics.Enable", "Metrics.ReportIntervalSeconds",
 			"Metrics.LogLevel", "Metrics.PrintZero", "Metrics.PrintGauge", "Metrics.MinTPS",
 			"Metrics.Ssid.Enable",
-			"AutoInDR.DirectStreamEnable", "AutoInDR.DelayDispatcherEnable", "AutoInDR.DelayBatchSize",
+			"AutoInDR.DelayDispatcherEnable", "AutoInDR.DelayBatchSize",
 			"AutoInDR.DelayClaimTimeoutMs", "AutoInDR.DelayRetryDelayMs", "AutoInDR.DelayMaxRetry",
-			"AutoInDR.FallbackToLegacyDelayDR", "AutoInDR.DelayPayloadTTLSeconds",
+			"AutoInDR.DelayPayloadTTLSeconds",
 			"AutoInDR.DispatcherIdleSleepMs",
 			"DB.StartupCheck", "DB.StartupCheckSql", "DB.PoolStats.Enable", "DB.PoolStats.IntervalSeconds",
 			"ThrottlingControl.ConsecutiveNumToAlert", "ThrottlingControl.MaxAlertMailNum",
@@ -1246,9 +1246,7 @@ public class GmmsUtility {
 				|| "RedisStreamMonitor.Enable".equals(key)
 				|| "Metrics.Enable".equals(key) || "Metrics.PrintZero".equals(key)
 				|| "Metrics.PrintGauge".equals(key) || "Metrics.Ssid.Enable".equals(key)
-				|| "AutoInDR.DirectStreamEnable".equals(key)
 				|| "AutoInDR.DelayDispatcherEnable".equals(key)
-				|| "AutoInDR.FallbackToLegacyDelayDR".equals(key)
 				|| "MQM.ActiveStandbyEnable".equals(key)
 				|| "CoreOutboundOutboxEnable".equals(key)
 				|| "CoreDrInlineDispatch".equals(key)

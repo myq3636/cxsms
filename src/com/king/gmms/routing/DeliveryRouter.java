@@ -62,6 +62,8 @@ public class DeliveryRouter implements A2PService{
 		}
 		CoreMQMStreamConsumer.getInstance().start();
 		DelayedInDRDispatcher.getInstance().startDispatcher();
+		com.king.gmms.processor.FakeDrTimeoutScheduler.getInstance().start();
+		com.king.gmms.processor.LegacyDelayDrMigrator.startOnce();
 		if (!joining) {
 			ChannelReleaseDispatcher.getInstance().start();
 			CsmExpirySweeper.getInstance().start();

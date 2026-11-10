@@ -355,9 +355,19 @@ public abstract class A2PCustomerInfo {
 	protected int drBiasRatio=0; //adjust in dr by out dr
 	protected int sendDelayDRImmediately=0; //0=normal, 1= immediately send, 2=not sent. default =0
 	protected String drDelayTimeInSec; //adjust in dr by out dr
-	protected boolean smsOptionSendFakeDR = false;
+	/** channel: fake DR to the customer once the vendor accepted the MT (SMSOptionSendDRByOutSubmit) */
+	protected boolean sendDrByOutSubmit = false;
     protected boolean smsOptionSendDRByInSubmitInCU = false;
-	protected boolean smsOptionSendDRBeforeOutSubmitInDC = false;
+	/** customer: fake DR status, percent DELIVERED (the rest UNDELIVERABLE); 100 = always DELIVERED */
+	protected int fakeDrSuccessRatio = 100;
+	/** customer: no fake DR from a channel (SMSOptionSendDRByOutSubmit) */
+	protected boolean fakeDrDisable = false;
+	/** customer: recipients whose real DR may be rewritten by SMSOptionDRSuccessRatio; empty = all */
+	protected ArrayList<String> drSuccessRatioPrefix = new ArrayList<String>();
+	/** customer: seconds without a final vendor DR after the vendor accepted, then a fake DR; 0 = off */
+	protected int fakeDrTimeoutSec = 0;
+	/** customer: status of that fake DR: success, fail or ratio (SMSOptionFakeDRSuccessRatio) */
+	protected String fakeDrTimeoutStatus = "success";
 	protected ArrayList<String> smsRecPrefixForFakeDR = new ArrayList<String>();
 	//send fake dr by insubmt with country
 	protected ArrayList<String> smsSendFakeDRByInSubmitRecPrefixInCU = new ArrayList<String>();
@@ -1623,9 +1633,18 @@ public abstract class A2PCustomerInfo {
 		drBiasRatio = cfg.getInt("SMSOptionDRSuccessBiasValue", 0);
 		sendDelayDRImmediately = cfg.getInt("SMSOptionSendDelayDRImmediately", 0);
 		drDelayTimeInSec = cfg.getString("SMSOptionDRDelayTimeMinMaxInSec", "0");
-		smsOptionSendFakeDR = cfg.getBool("SMSOptionSendDRByOutSubmit", false);
-		if (cfg.getBool("SMSOptionSendFakeDR", false)) {
-			smsOptionSendFakeDR = cfg.getBool("SMSOptionSendFakeDR", false);
+		sendDrByOutSubmit = cfg.getBool("SMSOptionSendDRByOutSubmit", false);
+		if (cfg.getString("SMSOptionSendFakeDR") != null) {
+			log.warn("{}: SMSOptionSendFakeDR is no longer used; set SMSOptionSendDRByOutSubmit on the channel instead", shortName);
+		}
+		fakeDrSuccessRatio = Math.max(0, Math.min(100, cfg.getInt("SMSOptionFakeDRSuccessRatio", 100)));
+		fakeDrDisable = cfg.getBool("SMSOptionFakeDRDisable", false);
+		drSuccessRatioPrefix = prefixList(cfg.getString("SMSOptionDRSuccessRatioPrefix"));
+		fakeDrTimeoutSec = Math.max(0, cfg.getInt("SMSOptionFakeDRTimeoutSec", 0));
+		fakeDrTimeoutStatus = cfg.getString("SMSOptionFakeDRTimeoutStatus", "success").trim().toLowerCase();
+		if (!"success".equals(fakeDrTimeoutStatus) && !"fail".equals(fakeDrTimeoutStatus) && !"ratio".equals(fakeDrTimeoutStatus)) {
+			log.warn("{}: SMSOptionFakeDRTimeoutStatus={} is not success, fail or ratio; success is used", shortName, fakeDrTimeoutStatus);
+			fakeDrTimeoutStatus = "success";
 		}
 		
 		String tempSmsRecPrefixForFakeDR = cfg.getString("SMSOptionRecPrefixForFakeDR");
@@ -1709,7 +1728,9 @@ public abstract class A2PCustomerInfo {
 		this.enumRoutingURL = cfg.getString("SMSOptionEnumRoutingURL", "");
 		this.templatecoderegex = cfg.getString("SMSOptionTemplateCodeRegex", "");
 		
-		smsOptionSendDRBeforeOutSubmitInDC = cfg.getBool("SMSOptionSendDRBeforeOutSubmitInDC", false);
+		if (cfg.getString("SMSOptionSendDRBeforeOutSubmitInDC") != null) {
+			log.warn("{}: SMSOptionSendDRBeforeOutSubmitInDC is no longer supported and has no effect", shortName);
+		}
         smsOptionSendDRByInSubmitInCU = cfg.getBool("SMSOptionSendDRByInSubmitInCU", false);
 		smsOptionChargeByGateWay = cfg.getBool("SMSOptionChargeByGateWay", false);
 		smsOptionChargeCountryByGateWay = cfg.getBool("SMSOptionChargeCountryByGateWay", false);
@@ -2774,12 +2795,55 @@ public abstract class A2PCustomerInfo {
 		SMSOptionHttpType = optionHttpType;
 	}	
 
-	public boolean isSmsOptionSendFakeDR() {
-		return smsOptionSendFakeDR;
+	/** channel: SMSOptionSendDRByOutSubmit and the recipient in SMSOptionRecPrefixForFakeDR (empty = all) */
+	public boolean isFakeDrByOutSubmit(String recipient) {
+		return sendDrByOutSubmit && isNeedFakeDRForRecPrefix(recipient);
 	}
 
-	public void setSmsOptionSendFakeDR(boolean smsOptionSendFakeDR) {
-		this.smsOptionSendFakeDR = smsOptionSendFakeDR;
+	/** customer: SMSOptionSendDRByInSubmitInCU, or the recipient in SMSOptionSendFakeDRByInSubmitRecPrefixInCU */
+	public boolean isFakeDrByInSubmit(String recipient) {
+		return smsOptionSendDRByInSubmitInCU || isNeedFakeDRByInSubmitRecPrefixInCU(recipient);
+	}
+
+	public int getFakeDrSuccessRatio() {
+		return fakeDrSuccessRatio;
+	}
+
+	public boolean isFakeDrDisable() {
+		return fakeDrDisable;
+	}
+
+	/** customer: the recipient in SMSOptionDRSuccessRatioPrefix (empty = all) */
+	public boolean isDrSuccessRatioRecipient(String recipient) {
+		if (drSuccessRatioPrefix.isEmpty()) {
+			return true;
+		}
+		for (String prefix : drSuccessRatioPrefix) {
+			if (recipient != null && recipient.startsWith(prefix)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public int getFakeDrTimeoutSec() {
+		return fakeDrTimeoutSec;
+	}
+
+	public String getFakeDrTimeoutStatus() {
+		return fakeDrTimeoutStatus;
+	}
+
+	private static ArrayList<String> prefixList(String value) {
+		ArrayList<String> l = new ArrayList<String>();
+		if (value != null) {
+			for (String p : value.split(",")) {
+				if (p.trim().length() > 0) {
+					l.add(p.trim());
+				}
+			}
+		}
+		return l;
 	}
 
 	public boolean isSmsOptionChargeByGateWay() {
@@ -2967,7 +3031,9 @@ public abstract class A2PCustomerInfo {
 		.append(prefix).append("SMSOptionParseScheduleDeliveryTime:").append(this.parseScheduleDeliveryTime)
 		.append(prefix).append("SMSOptionDRSuccessRatio:").append(this.drSucRatio)
 		.append(prefix).append("SMSOptionSubmitRetryCode:").append(this.smsOptionSubmitRetryCode)
-		.append(prefix).append("SMSOptionSendFakeDR:").append(this.smsOptionSendFakeDR)
+		.append(prefix).append("SMSOptionSendDRByOutSubmit:").append(this.sendDrByOutSubmit)
+		.append(prefix).append("SMSOptionFakeDRSuccessRatio:").append(this.fakeDrSuccessRatio)
+		.append(prefix).append("SMSOptionFakeDRTimeoutSec:").append(this.fakeDrTimeoutSec)
 		.append(prefix).append("SMSOptionTimeZone:").append(this.getSmsOptionTimeZone().getDisplayName())
 		.append(prefix).append("SMSOptionDeliveryStartTime:").append(this.deliveryStartHH).append(":").append(this.deliveryStartmm)
 		.append(prefix).append("SMSOptionDeliveryEndTime:").append(this.deliveryEndHH).append(":").append(this.deliveryEndmm)
@@ -3298,15 +3364,6 @@ public abstract class A2PCustomerInfo {
 
 	public void setDrDelayTimeInSec(String drDelayTimeInSec) {
 		this.drDelayTimeInSec = drDelayTimeInSec;
-	}
-
-	public boolean isSmsOptionSendDRBeforeOutSubmitInDC() {
-		return smsOptionSendDRBeforeOutSubmitInDC;
-	}
-
-	public void setSmsOptionSendDRBeforeOutSubmitInDC(
-			boolean smsOptionSendDRBeforeOutSubmitInDC) {
-		this.smsOptionSendDRBeforeOutSubmitInDC = smsOptionSendDRBeforeOutSubmitInDC;
 	}
 
 	public int getSendDelayDRImmediately() {

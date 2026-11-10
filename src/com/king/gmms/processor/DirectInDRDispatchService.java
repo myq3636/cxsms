@@ -38,10 +38,6 @@ public class DirectInDRDispatchService {
 		return instance;
 	}
 
-	public boolean isEnabled() {
-		return Boolean.parseBoolean(gmmsUtility.getCommonProperty("AutoInDR.DirectStreamEnable", "false"));
-	}
-
 	public boolean dispatchOrDelay(GmmsMessage message, int delaySeconds) {
 		if (message == null) {
 			return true;
@@ -204,20 +200,5 @@ public class DirectInDRDispatchService {
 			return moduleAndShard.substring(0, lastColon);
 		}
 		return moduleAndShard;
-	}
-
-	public GmmsMessage buildAutoInDR(GmmsMessage source) {
-		if (source == null) {
-			return null;
-		}
-		A2PCustomerInfo oInfo = ctm.getCustomerBySSID(source.getOSsID());
-		GmmsMessage drMsg = new GmmsMessage(source);
-		drMsg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
-		if (oInfo != null && GmmsUtility.isModifySuccessDR(oInfo.getSSID(), oInfo.getDrSucRatio(), oInfo.getDrBiasRatio())) {
-			drMsg.setStatus(GmmsStatus.DELIVERED);
-		} else {
-			drMsg.setStatus(GmmsStatus.UNDELIVERABLE);
-		}
-		return drMsg;
 	}
 }

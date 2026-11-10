@@ -28,6 +28,7 @@ import com.king.gmms.ha.ModuleURI;
 import com.king.gmms.mqm.TaskConfiguration;
 import com.king.gmms.processor.CsmKeyInfo;
 import com.king.gmms.processor.CsmUtility;
+import com.king.gmms.processor.FakeDr;
 import com.king.gmms.processor.CsmValueInfo;
 import com.king.gmms.processor.CsmValueInfoMark;
 import com.king.gmms.processor.DirectInDRDispatchService;
@@ -611,8 +612,6 @@ public class MessageStoreManager extends DataManager {
 					message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 					A2PCustomerInfo ocustomer = ctm.getCustomerBySSID(message.getOSsID());
 					if (ocustomer.getSmsOptionSubmitErrorCodesForFakeDR()!=null 
-							&& !ocustomer.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())
-							&& !ocustomer.isSmsOptionSendDRByInSubmitInCU()
 							&& ocustomer.getSmsOptionSubmitErrorCodesForFakeDR().contains(message.getStatusCode())) {
 						message.setStatus(GmmsStatus.DELIVERED);
 					} else {
@@ -634,21 +633,11 @@ public class MessageStoreManager extends DataManager {
 									 && ((message.getOA2P() == message.getCurrentA2P())) || ctm.vpOnSameA2P(message.getOA2P(),message.getCurrentA2P()))) {
 							updateMsgForDRQuery(message);
 						} else {
-							if(!oinfo.isNullFakeDRByInSubmitRecPrefixInCU()
-									||oinfo.isSmsOptionSendDRByInSubmitInCU()) {
-								//not need to send dr
-							}else {
-								sendDRMessage(message);
-							}
+							sendDRMessage(message);
 							
 						}
 					} else {
-						if(!oinfo.isNullFakeDRByInSubmitRecPrefixInCU()
-								||oinfo.isSmsOptionSendDRByInSubmitInCU()) {
-							//not need to send dr
-						}else {
-							sendDRMessage(message);
-						}
+						sendDRMessage(message);
 					}
 				}
 			} else {				
@@ -717,47 +706,8 @@ public class MessageStoreManager extends DataManager {
 								sendDRMessage(acceptMsg);
 							}
 						}**/
-						//adjust send success in dr by out submit in 20190202
-						if (oInfo.isSmsOptionSendFakeDR() && 							 
-								message.getDeliveryReport() &&								
-								!message.hasDRFailedReroute() &&
-								message.getSplitStatus() <= 1 && 
-							    (!oInfo.isSmsOptionSendDRByInSubmitInCU()&&!oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())) && 								
-								customerInfo != null && customerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress())) {
-							GmmsMessage acceptMsg = new GmmsMessage(message);
-							acceptMsg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
-							if (GmmsUtility.isModifySuccessDR(oInfo.getSSID(), oInfo.getDrSucRatio(), oInfo.getDrBiasRatio())) {
-								acceptMsg.setStatus(GmmsStatus.DELIVERED);
-							}else {
-								GmmsStatus converDRStatus = GmmsStatus.SubmitConvertErrorDRStatus(message.getStatusText());
-								if(converDRStatus!=null) {
-									acceptMsg.setStatus(converDRStatus);
-								}else {
-									acceptMsg.setStatus(GmmsStatus.UNDELIVERABLE);
-								}
-							}						
-							acceptMsg.setDeliveryChannel(module);
-							acceptMsg.setInMsgID(message.getInMsgID());
-							if (message.getInClientPull() == 2
-									&& (message.getOA2P() == message.getRA2P())) {
-								updateMsgForDRQuery(acceptMsg);
-							} else {
-								if (message.hasFakeSendDR()&&(
-										!oInfo.isSmsOptionSendDRByInSubmitInCU() && oInfo.isNullFakeDRByInSubmitRecPrefixInCU()
-										)) {
-									int sendDrImmediately = oInfo.getSendDelayDRImmediately();
-									if(sendDrImmediately == 1){
-										sendDRMessage(acceptMsg);
-									}else{
-										String delayTimeInterval = oInfo.getDrDelayTimeInSec();
-										int delayTime = GmmsUtility.getRandomValueByDelayTimeInterval(delayTimeInterval);
-										insertMsgForDRDelay(acceptMsg, delayTime);										
-									}
-									message.setFakeDR(false);
-									
-								}								
-							}
-						}
+						// a fake DR from the channel (way 2), or the timeout of way 4 starts; before the MT is stored for its DR
+						FakeDr.onOutSubmitOk(message, oInfo, customerInfo);
 						if (isRedisEnable) {
 							String temp = SerializableHandler
 									.convertGmmsMessage2RedisMessage(message);
@@ -876,13 +826,6 @@ public class MessageStoreManager extends DataManager {
 					}
 				}
 			} else {
-				//TODO 判断客户fakedr类型，防止二次dr返回。		
-				  if((oInfo.isSmsOptionSendDRByInSubmitInCU()
-						  || oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress()))
-						  && message.getSplitStatus() < 2){ 
-					  return;
-				  }
-				 
 				if (message.getDeliveryReport() && message.getSplitStatus() < 2) {
 					message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 					//message.setStatusCode(GmmsStatus.REJECTED.getCode());
@@ -984,8 +927,6 @@ public class MessageStoreManager extends DataManager {
 					message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 					A2PCustomerInfo ocustomer = ctm.getCustomerBySSID(message.getOSsID());
 					if (ocustomer.getSmsOptionSubmitErrorCodesForFakeDR()!=null 
-							&& !ocustomer.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())
-							&& !ocustomer.isSmsOptionSendDRByInSubmitInCU()
 							&& ocustomer.getSmsOptionSubmitErrorCodesForFakeDR().contains(message.getStatusCode())) {
 						message.setStatus(GmmsStatus.DELIVERED);
 					} else {
@@ -1007,21 +948,11 @@ public class MessageStoreManager extends DataManager {
 									 && ((message.getOA2P() == message.getCurrentA2P())) || ctm.vpOnSameA2P(message.getOA2P(),message.getCurrentA2P()))) {
 							updateMsgForDRQuery(message);
 						} else {
-							if(!oinfo.isNullFakeDRByInSubmitRecPrefixInCU()
-									||oinfo.isSmsOptionSendDRByInSubmitInCU()) {
-								//not need to send dr
-							}else {
-								sendDRMessage(message);
-							}
+							sendDRMessage(message);
 							
 						}
 					} else {
-						if(!oinfo.isNullFakeDRByInSubmitRecPrefixInCU()
-								||oinfo.isSmsOptionSendDRByInSubmitInCU()) {
-							//not need to send dr
-						}else {
-							sendDRMessage(message);
-						}
+						sendDRMessage(message);
 					}
 				}
 			} else {				
@@ -1090,47 +1021,8 @@ public class MessageStoreManager extends DataManager {
 								sendDRMessage(acceptMsg);
 							}
 						}**/
-						//adjust send success in dr by out submit in 20190202
-						if (oInfo.isSmsOptionSendFakeDR() && 							 
-								message.getDeliveryReport() &&								
-								!message.hasDRFailedReroute() &&
-								message.getSplitStatus() <= 1 && 
-							    (!oInfo.isSmsOptionSendDRByInSubmitInCU()&&!oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())) && 								
-								customerInfo != null && customerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress())) {
-							GmmsMessage acceptMsg = new GmmsMessage(message);
-							acceptMsg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
-							if (GmmsUtility.isModifySuccessDR(oInfo.getSSID(), oInfo.getDrSucRatio(), oInfo.getDrBiasRatio())) {
-								acceptMsg.setStatus(GmmsStatus.DELIVERED);
-							}else {
-								GmmsStatus converDRStatus = GmmsStatus.SubmitConvertErrorDRStatus(message.getStatusText());
-								if(converDRStatus!=null) {
-									acceptMsg.setStatus(converDRStatus);
-								}else {
-									acceptMsg.setStatus(GmmsStatus.UNDELIVERABLE);
-								}
-							}						
-							acceptMsg.setDeliveryChannel(module);
-							acceptMsg.setInMsgID(message.getInMsgID());
-							if (message.getInClientPull() == 2
-									&& (message.getOA2P() == message.getRA2P())) {
-								updateMsgForDRQuery(acceptMsg);
-							} else {
-								if (message.hasFakeSendDR()&&(
-										!oInfo.isSmsOptionSendDRByInSubmitInCU() && oInfo.isNullFakeDRByInSubmitRecPrefixInCU()
-										)) {
-									int sendDrImmediately = oInfo.getSendDelayDRImmediately();
-									if(sendDrImmediately == 1){
-										sendDRMessage(acceptMsg);
-									}else{
-										String delayTimeInterval = oInfo.getDrDelayTimeInSec();
-										int delayTime = GmmsUtility.getRandomValueByDelayTimeInterval(delayTimeInterval);
-										insertMsgForDRDelay(acceptMsg, delayTime);										
-									}
-									message.setFakeDR(false);
-									
-								}								
-							}
-						}
+						// a fake DR from the channel (way 2), or the timeout of way 4 starts; before the MT is stored for its DR
+						FakeDr.onOutSubmitOk(message, oInfo, customerInfo);
 						if (isRedisEnable) {
 							String temp = SerializableHandler
 									.convertGmmsMessage2RedisMessage(message);
@@ -1434,13 +1326,7 @@ public class MessageStoreManager extends DataManager {
 					}
 					//just record the out_dr into CDR table with real status
 					A2PCustomerInfo info = ctm.getCustomerBySSID(message.getOSsID());
-					A2PCustomerInfo rCustomerInfo = ctm.getCustomerBySSID(message.getOSsID());
-					if((info.isSmsOptionSendFakeDR()&&rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress()))
-							&&info.isNullFakeDRByInSubmitRecPrefixInCU()
-							||info.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())
-							||info.isSmsOptionSendDRByInSubmitInCU()
-							) {
-					}else {
+					if (!FakeDr.given(message)) {
 						message.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT);
 						insertMessageToDB(message, WDQ);
 						message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
@@ -1483,7 +1369,8 @@ public class MessageStoreManager extends DataManager {
 					// in dr has been sent by out submit, so doesn't need to send in dr.
 				    return;			
 				}*/
-				
+				// way 3: a real DR that is not DELIVERED, by SMSOptionDRSuccessRatio
+				FakeDr.rewriteRealDr(message, info);
 				if (message.getDeliveryReport()
 						&& message.getSplitStatus() <= 1) {
 					if (message.getInClientPull() == 2) {
@@ -1558,13 +1445,7 @@ public class MessageStoreManager extends DataManager {
 								"but for IN_DR of current message is not expired");
 					}
 					A2PCustomerInfo info = ctm.getCustomerBySSID(message.getOSsID());
-					A2PCustomerInfo rCustomerInfo = ctm.getCustomerBySSID(message.getOSsID());
-					if((info.isSmsOptionSendFakeDR()&&rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress()))
-							&&info.isNullFakeDRByInSubmitRecPrefixInCU()
-							||info.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())
-							||info.isSmsOptionSendDRByInSubmitInCU()
-							) {
-					}else {
+					if (!FakeDr.given(message)) {
 						message.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT);
 						insertMessageToDB(message, WDQ);
 						message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
@@ -1601,6 +1482,7 @@ public class MessageStoreManager extends DataManager {
 						if ((message.getOA2P() == message.getRA2P())
 								|| ((message.getOA2P() != message.getRA2P()) 
 									 &&(message.getOA2P() == message.getCurrentA2P()))) {
+							FakeDr.rewriteRealDr(message, info);
 							updateMsgForDRQuery(message);
 						} else {
 							A2PCustomerInfo rCustomerInfo = ctm.getCustomerBySSID(message.getRSsID());
@@ -1618,36 +1500,14 @@ public class MessageStoreManager extends DataManager {
 										if(!rerouteOutMsg(message)){
 											message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 											message.setStatus(temp);
-											if (GmmsUtility.isModifySuccessDR(info.getSSID(), info.getDrSucRatio(), info.getDrBiasRatio()) 									
-													&& rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress())
-													&&info.isNullFakeDRByInSubmitRecPrefixInCU()
-													&& !info.isSmsOptionSendDRByInSubmitInCU()
-													&& GmmsStatus.DELIVERED.getCode() != message.getStatusCode()) {
-												message.setStatus(GmmsStatus.DELIVERED);								
-											}
-											if((info.isSmsOptionSendFakeDR()&&rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress()))
-													&&info.isNullFakeDRByInSubmitRecPrefixInCU()
-													||info.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())
-													||info.isSmsOptionSendDRByInSubmitInCU()
-													) {
-											}else {
+											FakeDr.rewriteRealDr(message, info);
+											if (!FakeDr.given(message)) {
 												sendDRMessage(message);
 											}
 										}
 									}else{
-										if (GmmsUtility.isModifySuccessDR(info.getSSID(), info.getDrSucRatio(), info.getDrBiasRatio()) 
-												&& rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress())
-												&&info.isNullFakeDRByInSubmitRecPrefixInCU()
-												&& !info.isSmsOptionSendDRByInSubmitInCU()
-												&& GmmsStatus.DELIVERED.getCode() != message.getStatusCode()) {
-											message.setStatus(GmmsStatus.DELIVERED);								
-										}
-										if((info.isSmsOptionSendFakeDR()&&rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress()))
-												&&info.isNullFakeDRByInSubmitRecPrefixInCU()
-												||info.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())
-												||info.isSmsOptionSendDRByInSubmitInCU()
-												) {
-										}else {
+										FakeDr.rewriteRealDr(message, info);
+										if (!FakeDr.given(message)) {
 											sendDRMessage(message);
 										}
 									}
@@ -1663,55 +1523,22 @@ public class MessageStoreManager extends DataManager {
 										if(!rerouteOutMsg(message)){
 											message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 											message.setStatus(temp);
-											if (GmmsUtility.isModifySuccessDR(info.getSSID(), info.getDrSucRatio(), info.getDrBiasRatio()) 
-													&&info.isNullFakeDRByInSubmitRecPrefixInCU()
-													&& !info.isSmsOptionSendDRByInSubmitInCU()
-													&& rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress())
-													&& GmmsStatus.DELIVERED.getCode() != message.getStatusCode()) {
-												message.setStatus(GmmsStatus.DELIVERED);								
-											}
-											if((info.isSmsOptionSendFakeDR()&&rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress()))
-													&&info.isNullFakeDRByInSubmitRecPrefixInCU()
-													||info.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())
-													||info.isSmsOptionSendDRByInSubmitInCU()
-													) {
-											}else {
+											FakeDr.rewriteRealDr(message, info);
+											if (!FakeDr.given(message)) {
 												sendDRMessage(message);
 											}
 										}
 									}else{
-										if (GmmsUtility.isModifySuccessDR(info.getSSID(), info.getDrSucRatio(), info.getDrBiasRatio()) 
-												&&info.isNullFakeDRByInSubmitRecPrefixInCU()
-												&& !info.isSmsOptionSendDRByInSubmitInCU()
-												&& rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress())
-												&& GmmsStatus.DELIVERED.getCode() != message.getStatusCode()) {
-											message.setStatus(GmmsStatus.DELIVERED);								
-										}
-										if((info.isSmsOptionSendFakeDR()&&rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress()))
-												&&info.isNullFakeDRByInSubmitRecPrefixInCU()
-												||info.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())
-												||info.isSmsOptionSendDRByInSubmitInCU()
-												) {
-										}else {
+										FakeDr.rewriteRealDr(message, info);
+										if (!FakeDr.given(message)) {
 											sendDRMessage(message);
 										}
 									}
 								}													
 							}else {
 								//modify to support add success ratio in 20190201
-								if (GmmsUtility.isModifySuccessDR(info.getSSID(), info.getDrSucRatio(), info.getDrBiasRatio()) 
-										&& rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress())
-										&& info.isNullFakeDRByInSubmitRecPrefixInCU()
-										&& !info.isSmsOptionSendDRByInSubmitInCU()
-										&& GmmsStatus.DELIVERED.getCode() != message.getStatusCode()) {
-									message.setStatus(GmmsStatus.DELIVERED);								
-								}
-								if((info.isSmsOptionSendFakeDR()&&rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress()))
-										&& info.isNullFakeDRByInSubmitRecPrefixInCU()
-										||info.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())
-										||info.isSmsOptionSendDRByInSubmitInCU()
-										) {
-								}else {
+								FakeDr.rewriteRealDr(message, info);
+								if (!FakeDr.given(message)) {
 									sendDRMessage(message);
 								}
 							}
@@ -1747,36 +1574,14 @@ public class MessageStoreManager extends DataManager {
 									if(!rerouteOutMsg(message)){
 										message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 										message.setStatus(temp);
-										if (GmmsUtility.isModifySuccessDR(info.getSSID(), info.getDrSucRatio(), info.getDrBiasRatio()) 									
-												&& info.isNullFakeDRByInSubmitRecPrefixInCU()
-												&& !info.isSmsOptionSendDRByInSubmitInCU()
-												&& rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress())
-												&& GmmsStatus.DELIVERED.getCode() != message.getStatusCode()) {
-											message.setStatus(GmmsStatus.DELIVERED);								
-										}
-										if((info.isSmsOptionSendFakeDR()&&rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress()))
-												&& info.isNullFakeDRByInSubmitRecPrefixInCU()
-												||info.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())
-												||info.isSmsOptionSendDRByInSubmitInCU()
-												) {
-										}else {
+										FakeDr.rewriteRealDr(message, info);
+										if (!FakeDr.given(message)) {
 											sendDRMessage(message);
 										}
 									}
 								}else{
-									if (GmmsUtility.isModifySuccessDR(info.getSSID(), info.getDrSucRatio(), info.getDrBiasRatio()) 
-											&& info.isNullFakeDRByInSubmitRecPrefixInCU()
-											&& !info.isSmsOptionSendDRByInSubmitInCU()
-											&& rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress())
-											&& GmmsStatus.DELIVERED.getCode() != message.getStatusCode()) {
-										message.setStatus(GmmsStatus.DELIVERED);								
-									}
-									if((info.isSmsOptionSendFakeDR()&&rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress()))
-											&&info.isNullFakeDRByInSubmitRecPrefixInCU()
-											||info.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())
-											||info.isSmsOptionSendDRByInSubmitInCU()
-											) {
-									}else {
+									FakeDr.rewriteRealDr(message, info);
+									if (!FakeDr.given(message)) {
 										sendDRMessage(message);
 									}
 								}
@@ -1787,38 +1592,16 @@ public class MessageStoreManager extends DataManager {
 								if(!rerouteOutMsg(message)){
 									message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 									message.setStatus(temp);
-									if (GmmsUtility.isModifySuccessDR(info.getSSID(), info.getDrSucRatio(), info.getDrBiasRatio()) 
-											&&info.isNullFakeDRByInSubmitRecPrefixInCU()
-											&& !info.isSmsOptionSendDRByInSubmitInCU()
-											&& rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress())
-											&& GmmsStatus.DELIVERED.getCode() != message.getStatusCode()) {
-										message.setStatus(GmmsStatus.DELIVERED);								
-									}
-									if((info.isSmsOptionSendFakeDR()&&rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress()))
-											&&info.isNullFakeDRByInSubmitRecPrefixInCU()
-											||info.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())
-											||info.isSmsOptionSendDRByInSubmitInCU()
-											) {
-									}else {
+									FakeDr.rewriteRealDr(message, info);
+									if (!FakeDr.given(message)) {
 										sendDRMessage(message);
 									}
 								}
 							}
 							
 						}else {
-							if (GmmsUtility.isModifySuccessDR(info.getSSID(), info.getDrSucRatio(), info.getDrBiasRatio()) 
-									&& info.isNullFakeDRByInSubmitRecPrefixInCU()
-									&& !info.isSmsOptionSendDRByInSubmitInCU()
-									&& rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress())
-									&& GmmsStatus.DELIVERED.getCode() != message.getStatusCode()) {
-								message.setStatus(GmmsStatus.DELIVERED);								
-							}
-							if((info.isSmsOptionSendFakeDR()&&rCustomerInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress()))
-									&&info.isNullFakeDRByInSubmitRecPrefixInCU()
-									||info.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress())
-									||info.isSmsOptionSendDRByInSubmitInCU()
-									) {
-							}else {
+							FakeDr.rewriteRealDr(message, info);
+							if (!FakeDr.given(message)) {
 								sendDRMessage(message);
 							}
 						}
@@ -1931,40 +1714,29 @@ public class MessageStoreManager extends DataManager {
 	 * @param message
 	 */
 	public void sendDRMessage(GmmsMessage message) {
+		if (FakeDr.given(message)) {
+			log.info(message, "[DR-SKIP] ossid={} status={}: the customer had its fake DR, this DR is only recorded",
+					message.getOSsID(), message.getStatusCode());
+			return;
+		}
 		if (!StreamAttempt.once("dr", message.getStatusCode() + ":" + message.getSplitStatus())) {
 			log.info(message, "MT redelivered, DR {} already sent", message.getStatusCode());
 			return;
 		}
-		// concatenated message and is the first DR
-		if (ctm == null) {
-			ctm = gmmsUtility.getCustomerManager();
-		}
-		A2PCustomerInfo oInfo = ctm.getCustomerBySSID(message.getOSsID());
-		boolean isSend = false;
-		if (oInfo!=null && oInfo.isSmsOptionSendFakeDR()) {
-			//if msg hasFakeDR flag can be sent.
-			if (message.hasFakeSendDR()) {
-				isSend = true;
-			}			
-		}else {
-			isSend = true;
-		}
-		
-		if (isSend) {
-			if (message.getSarMsgRefNum() != null
-					&& message.getSarMsgRefNum().trim().length() > 0) {
-				List<GmmsMessage> msgList = new ArrayList<GmmsMessage>();
-				if (log.isTraceEnabled()) {
-					log.trace(message, "sendDRMessage, before splitCsmDr:{}",
-							message.toString());
-				}
-				CsmUtility.splitCsmDr(message, msgList);
-				for (GmmsMessage msg : msgList) {
-					doSendDRMessage(msg);
-				}
-			} else {
-				doSendDRMessage(message);
+		// concatenated message: one DR per segment the customer sent
+		if (message.getSarMsgRefNum() != null
+				&& message.getSarMsgRefNum().trim().length() > 0) {
+			List<GmmsMessage> msgList = new ArrayList<GmmsMessage>();
+			if (log.isTraceEnabled()) {
+				log.trace(message, "sendDRMessage, before splitCsmDr:{}",
+						message.toString());
 			}
+			CsmUtility.splitCsmDr(message, msgList);
+			for (GmmsMessage msg : msgList) {
+				doSendDRMessage(msg);
+			}
+		} else {
+			doSendDRMessage(message);
 		}
 	}
 	
@@ -4317,41 +4089,12 @@ public class MessageStoreManager extends DataManager {
 		}
 	}
 	
-	private void insertMsgForDelayDR(GmmsMessage msg, long timemark) {
-		if (isRedisEnable) {			
-			String temp = SerializableHandler
-					.convertGmmsMessage2RedisMessage(msg);
-			if (log.isDebugEnabled()) {
-				log.debug("insertMsgforDelayDR=[{}], delayTime={}", temp, timemark);
-			}
-
-			if (temp == null) {
-				insertMessageToDB(msg, RDQ);
-			} else {
-				int expirTime = gmmsUtility.getRedisExpireTime(msg);
-				if (!redis.setDelayDR(
-						this.INMSGIDPREFIXFORDELAYDR + msg.getInMsgID(), temp,
-						expirTime, timemark, msg.getOSsID())) {
-
-					insertMessageToDB(msg, RDQ);
-					if (log.isInfoEnabled()) {
-						log.info(
-								"message set redis error, so insert RDQ and the inmsgid is {}",
-								msg.getInMsgID());
-					}
-				}
-			}
-		} else {
-			insertMessageToDB(msg, RDQ);
-		}
-	}
-	
-	public void doInsertMsgForDRDelay(GmmsMessage message, int delayTime) {				
-		long timemark = delayTime+System.currentTimeMillis()/1000;
-		insertMsgForDelayDR(message, timemark);
-	}
-	
 	public void insertMsgForDRDelay(GmmsMessage message, int delayTime) {
+		if (FakeDr.given(message)) {
+			log.info(message, "[DR-SKIP] ossid={} status={}: the customer had its fake DR, this DR is only recorded",
+					message.getOSsID(), message.getStatusCode());
+			return;
+		}
 		if (!StreamAttempt.once("drdelay", message.getStatusCode() + ":" + message.getSplitStatus())) {
 			log.info(message, "MT redelivered, delayed DR {} already stored", message.getStatusCode());
 			return;
@@ -4368,31 +4111,21 @@ public class MessageStoreManager extends DataManager {
 		}
 	}
 
+	/** the DR goes out from Core: at once (delay 0) or by DelayedInDRDispatcher; RDQ when neither works */
 	private void insertSingleMsgForDRDelay(GmmsMessage message, int delayTime) {
-		if (tryDirectInDRDispatch(message, delayTime)) {
+		if (DirectInDRDispatchService.getInstance().dispatchSingleOrDelay(message, delayTime)) {
 			return;
 		}
-		doInsertMsgForDRDelay(message, delayTime);
-	}
-
-	private boolean tryDirectInDRDispatch(GmmsMessage message, int delayTime) {
-		DirectInDRDispatchService service = DirectInDRDispatchService.getInstance();
-		if (!service.isEnabled()) {
-			return false;
-		}
-		boolean success = service.dispatchSingleOrDelay(message, delayTime);
-		if (success) {
-			return true;
-		}
-		if (!Boolean.parseBoolean(gmmsUtility.getCommonProperty("AutoInDR.FallbackToLegacyDelayDR", "true"))) {
-			log.warn(message, "Auto IN_DR direct dispatch failed and legacy fallback disabled. delaySeconds={}", delayTime);
-			return true;
-		}
-		log.warn(message, "Auto IN_DR direct dispatch failed, fallback to legacy delayDR. delaySeconds={}", delayTime);
-		return false;
+		log.warn(message, "DR to the customer not dispatched (delay {}s), kept in RDQ", delayTime);
+		insertMessageToDB(message, RDQ);
 	}
 
 	public void updateMsgForDRQuery(GmmsMessage message) {
+		if (FakeDr.given(message)) {
+			log.info(message, "[DR-SKIP] ossid={} status={}: the customer had its fake DR, this DR is only recorded",
+					message.getOSsID(), message.getStatusCode());
+			return;
+		}
 		if (message.getSarMsgRefNum() != null
 				&& message.getSarMsgRefNum().trim().length() > 0) {
 			List<GmmsMessage> msgList = new ArrayList<GmmsMessage>();

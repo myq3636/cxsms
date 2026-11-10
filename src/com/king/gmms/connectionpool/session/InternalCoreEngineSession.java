@@ -895,10 +895,6 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 			gmmsUtility.getCdrManager().logInDelivery(msg);
 		}
 		A2PCustomerInfo cst = ctm.getCustomerBySSID(msg.getOSsID());
-		if (cst!= null && cst.isSmsOptionSendFakeDR() && msg.getDeliveryReport()) {
-			//TODO set in dr to redis for delay send dr by insubmit 2021.01.19						
-			msg.setFakeDR(true);						
-		}
 		if (!cst.getProtocol().startsWith("SMPP") && msg.getDeliveryReport() 
 				&&GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(msg.getMessageType())) {
 			//http protocal, didn't need send response to commonHttpServer.			
@@ -931,10 +927,6 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
         msg.setOriginalSenderAddr(msg.getSenderAddress());
         A2PCustomerInfo cst = ctm.getCustomerBySSID(msg.getOSsID());       
         if (cst != null) {
-        	if (cst.isSmsOptionSendFakeDR() && msg.getDeliveryReport()) {
-    			//TODO set in dr to redis for delay send dr by insubmit 2021.01.19						
-    			msg.setFakeDR(true);						
-    		}        	
         	//msg.setOriginalSenderAddr(msg.getSenderAddress());
 			String[] address = new String[] { msg.getSenderAddress(),
 					msg.getRecipientAddress() };
@@ -1230,9 +1222,6 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
         	gmmsUtility.getCdrManager().logInSubmit(msg);
         	return true;
         }
-        if (cst.isSmsOptionSendFakeDR() && msg.getDeliveryReport()) {
-    		msg.setFakeDR(true);
-    	}
         String[] address = new String[] { msg.getSenderAddress(), msg.getRecipientAddress() };
         this.handleCommonPrefix4MO(address, cst);
         if (address[0] == null || "".equalsIgnoreCase(address[0])) {
@@ -1349,9 +1338,6 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
         	gmmsUtility.getCdrManager().logInDelivery(msg);
         }
         A2PCustomerInfo cst = ctm.getCustomerBySSID(msg.getOSsID());
-        if (cst != null && cst.isSmsOptionSendFakeDR() && msg.getDeliveryReport()) {
-        	msg.setFakeDR(true);
-        }
         // 对 HTTP 协议保持发送错误 DR
         if (cst != null && !cst.getProtocol().startsWith("SMPP") && msg.getDeliveryReport()
                 && GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(msg.getMessageType())) {
@@ -1661,6 +1647,8 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 								message.getMsgID(), message.getOSsID());
 					}
 					mergeInboundDeliveryReport(message, finalMsg);
+					// way 4: a final vendor DR ends the timing; after a timeout DR it is only recorded
+					com.king.gmms.processor.FakeDr.onVendorDr(message);
 					boolean processed = processDeliveryReport(message, finalPdu);
 					if (processed && deleteLookup) {
 						final GmmsMessage dr = finalMsg;

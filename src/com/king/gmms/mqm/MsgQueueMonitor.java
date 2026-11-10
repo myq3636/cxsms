@@ -66,7 +66,6 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 		startDelayDRMessageSender();
 		startTaskTimers();
 		startRedisRetrieveThread();
-		startRedisSendDelayDRThread();
 		startDbHealthDetector();
 		log.info("Message monitor has started in asynchronous mode.");
 		return true;
@@ -163,14 +162,6 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 	private void startRedisRetrieveThread(){
 		if("True".equalsIgnoreCase(gmmsUtility.getCommonProperty("RedisEnable", "True"))){
 			RetrieveRedisDRThread redisRetrieve = new RetrieveRedisDRThread();
-			redisRetrieve.start();
-		}
-	}
-	
-	private void startRedisSendDelayDRThread(){
-		if("True".equalsIgnoreCase(gmmsUtility.getCommonProperty("RedisEnable", "True"))){
-			SendDelayRedisDRThread redisRetrieve = new SendDelayRedisDRThread();
-			redisRetrieve.setMessageSender(drSenders);
 			redisRetrieve.start();
 		}
 	}

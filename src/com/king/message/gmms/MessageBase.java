@@ -538,10 +538,6 @@ public abstract class MessageBase
 		this.setMilterActionCode(12, flag);
 	}
 	
-	public void setFakeDR(boolean flag) {
-		this.setMilterActionCode(13, flag);
-	}
-	
 	public void setRetryFlag(boolean flag) {
 		this.setMilterActionCode(14, flag);
 	}
@@ -594,9 +590,6 @@ public abstract class MessageBase
 		return this.getMilterActionCode(12);
 	}
 	
-	public boolean hasFakeSendDR() {
-		return this.getMilterActionCode(13);
-	}
 	
 	public boolean hasRetryFlag() {
 		return this.getMilterActionCode(14);

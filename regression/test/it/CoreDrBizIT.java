@@ -153,18 +153,22 @@ public class CoreDrBizIT extends CoreRetryIT {
 		cm.append(cust("V804", 804, ""));
 		cm.append(cust("V805", 805, ""));
 		cm.append(cust("V806", 806, ""));
-		cm.append(cust("R810", 810, "SMSOptionSendFakeDR: true\nSMSOptionDRSuccessRatio: 100\n"));
-		cm.append(cust("R811", 811, "SMSOptionSendFakeDR: true\n"));
-		cm.append(cust("R812", 812, "SMSOptionSendFakeDR: true\nSMSOptionDRSuccessRatio: 70\n"));
-		cm.append(cust("R813", 813, "SMSOptionSendFakeDR: true\nSMSOptionDRSuccessRatio: 100\n"));
-		cm.append(cust("R814", 814, "SMSOptionSendDRByInSubmitInCU: true\nSMSOptionDRSuccessRatio: 100\n"));
-		cm.append(cust("R815", 815, "SMSOptionSendFakeDRByInSubmitRecPrefixInCU: 8613\nSMSOptionDRSuccessRatio: 100\n"));
-		cm.append(cust("R816", 816, "SMSOptionSendFakeDR: true\nSMSOptionDRSuccessRatio: 100\nSMSOptionDRDelayTimeMinMaxInSec: 3,4\n"));
+		cm.append(cust("V807", 807, "SMSOptionSendDRByOutSubmit: true\n"));
+		cm.append(cust("V808", 808, "SMSOptionSendDRByOutSubmit: true\nSMSOptionDRDelayTimeMinMaxInSec: 3,4\n"));
+		cm.append(cust("R810", 810, ""));
+		cm.append(cust("R811", 811, "SMSOptionFakeDRSuccessRatio: 0\n"));
+		cm.append(cust("R812", 812, "SMSOptionFakeDRSuccessRatio: 70\n"));
+		cm.append(cust("R813", 813, "SMSOptionSendFakeDR: true\n"));
+		cm.append(cust("R814", 814, "SMSOptionSendDRByInSubmitInCU: true\n"));
+		cm.append(cust("R815", 815, "SMSOptionSendFakeDRByInSubmitRecPrefixInCU: 8613\n"));
+		cm.append(cust("R816", 816, ""));
 		cm.append(cust("R817", 817, ""));
 		cm.append(cust("R818", 818, ""));
 		cm.append(cust("R819", 819, ""));
 		appendCm(cm.toString());
-		for (int r : new int[] { 810, 811, 812, 814, 815, 816, 817 }) route("R" + r, r, "A2PRoutingRelay: (PhonePrefix=86;852,Relay=V801)");
+		for (int r : new int[] { 814, 815, 817 }) route("R" + r, r, "A2PRoutingRelay: (PhonePrefix=86;852,Relay=V801)");
+		for (int r : new int[] { 810, 811, 812 }) route("R" + r, r, "A2PRoutingRelay: (PhonePrefix=86;852,Relay=V807)");
+		route("R816", 816, "A2PRoutingRelay: (PhonePrefix=86,Relay=V808)");
 		route("R813", 813, "A2PRoutingRelay: (PhonePrefix=86,Relay=V802)");
 		route("R818", 818, "A2PRoutingRelay: (PhonePrefix=86,Relay=V803)", "A2PBackupRoutingRelay: (PhonePrefix=86,Relay=V804)");
 		route("R819", 819, "A2PRoutingRelay: (PhonePrefix=86,Relay=V805;V806)");
@@ -181,40 +185,41 @@ public class CoreDrBizIT extends CoreRetryIT {
 			Thread.sleep(800);
 
 			// ---- fake DR after the vendor accepted ----
-			GmmsMessage m = accept(first(810, "18667991226", 801));
+			GmmsMessage m = accept(first(810, "18667991226", 807));
 			GmmsMessage d = dr(810, m.getMsgID(), 5000);
-			check(d != null && d.getStatusCode() == GmmsStatus.DELIVERED.getCode(), "DR-07a SMSOptionSendFakeDR, ratio 100: DELIVERED after the vendor accepted: " + (d == null ? "none" : String.valueOf(d.getStatusCode())));
+			check(d != null && d.getStatusCode() == GmmsStatus.DELIVERED.getCode(), "DR-07a channel SMSOptionSendDRByOutSubmit, fake ratio not configured (100): DELIVERED after the vendor accepted: " + (d == null ? "none" : String.valueOf(d.getStatusCode())));
 			vendorDr(m, GmmsStatus.UNDELIVERABLE);
 			final String id1 = m.getMsgID();
 			waitFor(() -> cdrCount(id1, "OUT_DELI_REP") >= 1, 5000);
 			Thread.sleep(500);
 			check(drs(810, id1) == 1, "DR-07b the vendor's real DR is not sent to the customer again: " + drs(810, id1) + " DR");
 
-			m = first(810, "18667991226", 801);
+			m = first(810, "18667991226", 807);
 			fail(m, GmmsStatus.UNDELIVERABLE);
 			d = dr(810, m.getMsgID(), 5000);
 			check(d != null && d.getStatusCode() != GmmsStatus.DELIVERED.getCode(), "DR-07c the vendor refused the MT: failure DR, no fake success: " + (d == null ? "none" : String.valueOf(d.getStatusCode())));
 
-			m = accept(first(811, "18667991226", 801));
+			m = accept(first(811, "18667991226", 807));
 			d = dr(811, m.getMsgID(), 5000);
-			check(d != null && d.getStatusCode() != GmmsStatus.DELIVERED.getCode(), "DR-07d SMSOptionSendFakeDR, ratio not configured (0): the fake DR is a failure: " + (d == null ? "none" : String.valueOf(d.getStatusCode())));
+			check(d != null && d.getStatusCode() != GmmsStatus.DELIVERED.getCode(), "DR-07d SMSOptionFakeDRSuccessRatio 0: the fake DR is a failure: " + (d == null ? "none" : String.valueOf(d.getStatusCode())));
 
 			// ---- success ratio ----
 			int ok = 0, none = 0;
 			for (int i = 0; i < 100; i++) {
-				GmmsMessage x = accept(first(812, "18667991226", 801));
+				GmmsMessage x = accept(first(812, "18667991226", 807));
 				GmmsMessage y = dr(812, x.getMsgID(), 3000);
 				if (y == null) none++; else if (y.getStatusCode() == GmmsStatus.DELIVERED.getCode()) ok++;
 			}
-			check(none == 0 && ok >= 50 && ok <= 90, "DR-12 ratio 70 over 100 MTs: " + ok + " DELIVERED, " + none + " without DR");
+			check(none == 0 && ok >= 50 && ok <= 90, "DR-12 SMSOptionFakeDRSuccessRatio 70 over 100 MTs: " + ok + " DELIVERED, " + none + " without DR");
 
-			// ---- fake DR before the MT goes out ----
+			// ---- removed: fake DR before the MT goes out (channel), fake DR switched on by the customer ----
 			m = first(813, "18667991226", 802);
-			d = dr(813, m.getMsgID(), 5000);
-			check(m != null && d != null && d.getStatusCode() == GmmsStatus.DELIVERED.getCode(), "DR-08 SMSOptionSendDRBeforeOutSubmitInDC: DR with no answer from the vendor: " + (d == null ? "none" : String.valueOf(d.getStatusCode())));
+			check(m != null && dr(813, m.getMsgID(), 1500) == null, "DR-08 SMSOptionSendDRBeforeOutSubmitInDC no longer used: no DR before the vendor answers");
 			accept(m);
-			Thread.sleep(500);
-			check(drs(813, m.getMsgID()) == 1, "DR-08b the vendor's answer brings no second DR: " + drs(813, m.getMsgID()));
+			check(dr(813, m.getMsgID(), 1500) == null, "DR-08b customer SMSOptionSendFakeDR no longer used: no fake DR after the accept");
+			vendorDr(m, GmmsStatus.DELIVERED);
+			d = dr(813, m.getMsgID(), 5000);
+			check(d != null && d.getStatusCode() == GmmsStatus.DELIVERED.getCode() && drs(813, m.getMsgID()) == 1, "DR-08c the vendor's DR goes to the customer: " + drs(813, m.getMsgID()));
 
 			// ---- DR on receipt ----
 			m = first(814, "18667991226", 801);
@@ -234,7 +239,7 @@ public class CoreDrBizIT extends CoreRetryIT {
 
 			// ---- delayed DR ----
 			long t0 = System.currentTimeMillis();
-			m = accept(first(816, "18667991226", 801));
+			m = accept(first(816, "18667991226", 808));
 			final String idd = m.getMsgID();
 			Thread.sleep(1500);
 			check(drs(816, idd) == 0, "DR-10a delay 3 to 4 s: nothing yet after 1.5 s");
@@ -244,7 +249,7 @@ public class CoreDrBizIT extends CoreRetryIT {
 
 			DelayedInDRDispatcher.getInstance().stopDispatcher();
 			Thread.sleep(500);
-			m = accept(first(816, "18667991226", 801));
+			m = accept(first(816, "18667991226", 808));
 			final String ids = m.getMsgID();
 			Thread.sleep(6000);
 			check(drs(816, ids) == 0, "DR-11a dispatcher stopped (Core down): a due DR waits in Redis");

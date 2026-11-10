@@ -361,10 +361,8 @@ public class MessageProcessorThread extends RunnableMsgTask{
 			
 			// 6)	set DR status by dr success ratio
 			A2PCustomerInfo cst= ctm.getCustomerBySSID(message.getOSsID());
-			// 7) not need send indr as indr is fakedr
-			if(GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(message.getMessageType()) 
-					&& (cst.isSmsOptionSendDRByInSubmitInCU()||cst.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress()))
-					&& message.getRetriedNumber()<1) {
+			// 7) the customer had its fake DR (way 1) already
+			if (FakeDr.given(message)) {
 				return;
 			}
 			
@@ -718,38 +716,12 @@ public class MessageProcessorThread extends RunnableMsgTask{
 			return;
 		}
 		
-		//fake DR before outsubmit. 2021.01.22
-		A2PCustomerInfo oInfo = ctm.getCustomerBySSID(message.getOSsID());
-		A2PCustomerInfo rInfo = ctm.getCustomerBySSID(message.getRSsID());
-		boolean isFakeDR = false;
-		if (oInfo.isSmsOptionSendFakeDR() && rInfo.isSmsOptionSendDRBeforeOutSubmitInDC()
-				&& rInfo.isNeedFakeDRForRecPrefix(message.getRecipientAddress())
-				&& (!oInfo.isSmsOptionSendDRByInSubmitInCU()&&!oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress()))				
-				) {			
-				String delayTimeInterval = oInfo.getDrDelayTimeInSec();
-				int delayTime = GmmsUtility.getRandomValueByDelayTimeInterval(delayTimeInterval);
-				GmmsMessage drMsg = new GmmsMessage(message);
-				drMsg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
-				if (GmmsUtility.isModifySuccessDR(oInfo.getSSID(), oInfo.getDrSucRatio(), oInfo.getDrBiasRatio())) {
-					drMsg.setStatus(GmmsStatus.DELIVERED);
-				}else {
-					drMsg.setStatus(GmmsStatus.UNDELIVERABLE);
-				}
-				msm.insertMsgForDRDelay(drMsg, delayTime);
-				message.setFakeDR(false);
-				isFakeDR = true;
-			
-		}
-
 		// Select Queue
 		String queue = server.getChlQueue();
 		// V4.1 Stateless Routing: Session-based sticky routing is disabled.
 		// Core no longer tracks specific nodes for individual TCP connections.
 		
 		for (GmmsMessage msg : messageList) {			
-			if (isFakeDR) {
-				msg.setFakeDR(false);
-			}
 			
 			// V4.1 Decentralized HTTP Outbound: Dispatch via Redis Stream
 			if (server != null && "HTTP".equalsIgnoreCase(server.getProtocol())) {

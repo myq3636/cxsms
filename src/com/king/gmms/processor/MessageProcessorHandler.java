@@ -75,24 +75,7 @@ public class MessageProcessorHandler extends ProcessorHandler{
 			A2PCustomerInfo cst = gmmsUtility.getCustomerManager().getCustomerBySSID(message.getRSsID());
 			A2PCustomerInfo oInfo = gmmsUtility.getCustomerManager().getCustomerBySSID(message.getOSsID());
 			if (cst == null ) {				
-				if(GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(message.getMessageType()) 
-						&& oInfo != null && (oInfo.isSmsOptionSendDRByInSubmitInCU()||oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress()))
-						&& message.getRetriedNumber()<1	){	
-					//backup routing didn't need to send indr at 2024.09.14
-					boolean indrFlag = true;
-					String rssids = message.getRoutingSsIDs();
-					if(rssids!=null) {
-						int oldLen = rssids.length();
-						int newLen = rssids.replaceAll(",", "").length();
-						if(oldLen-newLen>2) {
-							indrFlag = false;
-						}
-					}
-					if(indrFlag) {
-						handlerThreadPool.execute(new AutoSendInDRProcessorThread(message));
-						message.setFakeDR(false);
-					}
-				}
+				FakeDr.onRouted(message);
 				handlerThreadPool.execute(new MessageProcessorThread(message));
 			}else{
 				Map map = cst.getPriorityPercentMap();
@@ -101,44 +84,11 @@ public class MessageProcessorHandler extends ProcessorHandler{
 						&& map!= null 
 						&& !map.isEmpty() 
 						&& ModuleManager.getInstance().getRouterModules().contains(moduleName) ) {
-					if(oInfo != null && (oInfo.isSmsOptionSendDRByInSubmitInCU()||oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress()))
-							&& message.getRetriedNumber()<1){
-						//backup routing didn't need to send indr at 2024.09.14
-						boolean indrFlag = true;
-						String rssids = message.getRoutingSsIDs();
-						if(rssids!=null) {
-							int oldLen = rssids.length();
-							int newLen = rssids.replaceAll(",", "").length();
-							if(oldLen-newLen>2) {
-								indrFlag = false;
-							}
-						}
-						if(indrFlag) {
-							handlerThreadPool.execute(new AutoSendInDRProcessorThread(message));
-							message.setFakeDR(false);
-						}
-					}					
+					FakeDr.onRouted(message);
 					handlerThreadPool.execute(new MessageProcessorThread(message));
 					log.debug(message, "core priority list bypassed, put message to MessageProcessorThread");
 				}else {
-					if(GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(message.getMessageType()) 
-							&& oInfo != null && (oInfo.isSmsOptionSendDRByInSubmitInCU()||oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress()))
-							&& message.getRetriedNumber()<1){	
-						//backup routing didn't need to send indr at 2024.09.14
-						boolean indrFlag = true;
-						String rssids = message.getRoutingSsIDs();
-						if(rssids!=null) {
-							int oldLen = rssids.length();
-							int newLen = rssids.replaceAll(",", "").length();
-							if(oldLen-newLen>2) {
-								indrFlag = false;
-							}
-						}
-						if(indrFlag) {
-							handlerThreadPool.execute(new AutoSendInDRProcessorThread(message));
-							message.setFakeDR(false);
-						}
-					}
+					FakeDr.onRouted(message);
 					handlerThreadPool.execute(new MessageProcessorThread(message));
 				}
 			}									

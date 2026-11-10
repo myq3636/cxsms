@@ -56,6 +56,7 @@ CoreCheckIT it.CoreCheckIT it
 CoreRouteIT it.CoreRouteIT it
 CoreRetryIT it.CoreRetryIT it-multi
 CoreDrBizIT it.CoreDrBizIT it-multi
+FakeDrIT it.FakeDrIT it
 CoreContentIT it.CoreContentIT it-multi
 CoreFailoverIT it.CoreFailoverIT it-multicore
 ShardZeroIT it.ShardZeroIT it-multicore

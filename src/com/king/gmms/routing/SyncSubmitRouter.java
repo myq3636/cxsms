@@ -4,7 +4,6 @@ import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PCustomerManager;
-import com.king.gmms.processor.AutoSendInDRProcessorThread;
 import com.king.gmms.processor.CsmStoreResult;
 import com.king.gmms.processor.DBBackupHandler;
 import com.king.gmms.processor.MessageProcessorThread;
@@ -30,7 +29,7 @@ import com.king.message.gmms.GmmsStatus;
  *   <li>租号分支 (needRentAddr/senderRentHandler) 在原 DeliveryRouterThread 中未初始化(注释掉、死代码)，
  *       此处走 DB 兜底，避免 NPE 且不丢消息。</li>
  *   <li>原 putMsg 的优先级/限流 bypass 在各支路最终都执行 MessageProcessorThread (no-op throttle)，此处直接同步执行。</li>
- *   <li>假 DR (AutoSendInDRProcessorThread) 谓词原样保留，改为内联 run() 顺序执行(消除原派生竞态)。</li>
+ *   <li>假 DR：路由成功后由 FakeDr.onRouted 决定（方式 1）。</li>
  * </ul>
  *
  * <p>仅用于 <b>非 CSM</b> 的 MT submit；CSM 路径 (csmHandler) 暂不在本步范围。
@@ -123,32 +122,9 @@ public class SyncSubmitRouter {
         return true;
     }
 
-    /** 复刻 MessageProcessorHandler.putMsg 的假 DR 谓词；改为内联 run() 顺序执行。 */
+    /** way 1 of the fake DR (customer SMSOptionSendDRByInSubmitInCU / ...RecPrefixInCU), before the MT goes out */
     private void spawnFakeDrIfNeeded(GmmsMessage message) {
-        try {
-            A2PCustomerInfo oInfo = gmmsUtility.getCustomerManager().getCustomerBySSID(message.getOSsID());
-            if (oInfo != null
-                    && GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(message.getMessageType())
-                    && (oInfo.isSmsOptionSendDRByInSubmitInCU()
-                            || oInfo.isNeedFakeDRByInSubmitRecPrefixInCU(message.getRecipientAddress()))
-                    && message.getRetriedNumber() < 1) {
-                boolean indrFlag = true;
-                String rssids = message.getRoutingSsIDs();
-                if (rssids != null) {
-                    int oldLen = rssids.length();
-                    int newLen = rssids.replaceAll(",", "").length();
-                    if (oldLen - newLen > 2) {
-                        indrFlag = false;
-                    }
-                }
-                if (indrFlag) {
-                    new AutoSendInDRProcessorThread(message).run(); // 内联(只 build 假 DR + 异步插库)
-                    message.setFakeDR(false);
-                }
-            }
-        } catch (Exception e) {
-            log.warn(message, "spawn fake-DR failed (ignored): {}", e.getMessage());
-        }
+        com.king.gmms.processor.FakeDr.onRouted(message);
     }
 
     /**
