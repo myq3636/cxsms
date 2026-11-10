@@ -5,6 +5,8 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import com.king.framework.SystemLogger;
@@ -13,6 +15,7 @@ import com.king.gmms.PhoneUtils;
 import com.king.gmms.connectionpool.BindMode;
 import com.king.gmms.connectionpool.ConnectionStatus;
 import com.king.gmms.connectionpool.TCPIPConnection;
+import com.king.gmms.connectionpool.connection.AbstractMultiConnection;
 import com.king.gmms.connectionpool.connection.Connection;
 import com.king.gmms.connectionpool.connection.MultiServerConnectionImpl;
 import com.king.gmms.connectionpool.connection.NodeConnectionManagerInterface;
@@ -22,6 +25,7 @@ import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.customerconnectionfactory.MultiSmppServerFactory;
 import com.king.gmms.messagequeue.StreamQueueManager;
 import com.king.gmms.routing.ADSServerMonitor;
+import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PCustomerManager;
 import com.king.gmms.domain.A2PMultiConnectionInfo;
 import com.king.gmms.domain.ConnectionInfo;
@@ -57,6 +61,7 @@ import com.king.gmms.protocol.smpp.util.Data;
 import com.king.gmms.protocol.smpp.util.Unprocessed;
 import com.king.gmms.protocol.smpp.version.SMPPVersion;
 import com.king.gmms.strategy.StrategyType;
+import com.king.gmms.throttle.BindRateLimiter;
 import com.king.gmms.throttle.ThrottlingControl;
 import com.king.gmms.util.SystemConstants;
 import com.king.gmms.smpp.pending.PendingDrTimeoutHandler;
@@ -102,6 +107,8 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
     protected MessageIdGenerator messageIdGenerator = MessageIdGenerator.getInstance();
     protected ExceptionMessageManager exMsgManager = ExceptionMessageManager.getInstance();
     protected volatile SmppPendingSubmitManager pendingSubmitManager = null;
+    /** SMSOptionOutgoingThrottlingNumPerBind; kept with the session across reconnects */
+    private final BindRateLimiter bindRate = new BindRateLimiter();
     // H-15: 每会话独立序列号(取代全局 PDU.sequenceNumber)，消除跨会话碰撞与提早绕回。
     private final java.util.concurrent.atomic.AtomicInteger seqGen =
             new java.util.concurrent.atomic.AtomicInteger(0);
@@ -1886,6 +1893,36 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
 
     public boolean hasClientSubmitWindow() {
         return pendingSubmitManager == null || pendingSubmitManager.hasCapacity();
+    }
+
+    /** the rate of this bind, SMSOptionOutgoingThrottlingNumPerBind */
+    public BindRateLimiter bindRate() {
+        return bindRate;
+    }
+
+    /** SMSOptionOutgoingThrottlingNumPerBind of the channel as configured now (follows a reload); 0: no limit */
+    public int bindTps() {
+        if (customerInfo == null) {
+            return 0;
+        }
+        try {
+            A2PCustomerInfo now = gmmsUtility.getCustomerManager().getCustomerBySSID(customerInfo.getSSID());
+            return now != null ? now.getOutgoingThrottlingNumPerBind() : customerInfo.getOutgoingThrottlingNumPerBind();
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /** the bound sessions of the connection this session belongs to, this one included */
+    public List<Session> connectionSessions() {
+        if (connectionManager == null || connectionInfo == null) {
+            return Collections.<Session>singletonList(this);
+        }
+        Connection conn = connectionManager.getConnection(connectionInfo.getConnectionName());
+        if (!(conn instanceof AbstractMultiConnection)) {
+            return Collections.<Session>singletonList(this);
+        }
+        return ((AbstractMultiConnection) conn).getConnectedSessionsSnapshot();
     }
 
     private boolean clientSubmit(GmmsMessage msg)throws IOException{

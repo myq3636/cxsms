@@ -37,6 +37,8 @@ final class FakeSmsc implements Runnable {
 		final Map<Link, AtomicInteger> perLink = new ConcurrentHashMap<>();
 		final Queue<Object[]> held = new ConcurrentLinkedQueue<>();
 		final AtomicInteger msgNo = new AtomicInteger();
+		/** submit_sm_resp of the bind with this number (0: the first bound) is sent this many ms late */
+		final Map<Integer, Long> respDelayMs = new ConcurrentHashMap<>();
 		Account(String s) { sys = s; }
 		List<Link> open() { List<Link> l = new ArrayList<>(); for (Link k : links) if (k.open) l.add(k); return l; }
 		int count(String text) { synchronized (texts) { return Collections.frequency(texts, text); } }
@@ -67,6 +69,7 @@ final class FakeSmsc implements Runnable {
 			k.pdu(0x80000004, submitStatus, seq, submitStatus == 0 ? (id + "\0").getBytes("US-ASCII") : new byte[] { 0 });
 		}
 	}
+	static final ScheduledExecutorService LATE = Executors.newScheduledThreadPool(2, r -> { Thread t = new Thread(r, "FakeSmsc-late"); t.setDaemon(true); return t; });
 	final Map<String, Account> accounts = new ConcurrentHashMap<>();
 	final ServerSocket server;
 	final int port;
@@ -135,10 +138,16 @@ final class FakeSmsc implements Runnable {
 				} else if (cmd == 4 && a != null && link != null) {
 					Submit parsed = parse(body);
 					parsed.link = link;
+					parsed.at = System.nanoTime();
 					a.submits.add(parsed);
 					a.texts.add(shortMessage(body));
 					a.perLink.get(link).incrementAndGet();
-					if (a.answerSubmit) a.respond(link, seq); else a.held.add(new Object[] { link, seq });
+					Long late = a.respDelayMs.get(a.links.indexOf(link));
+					if (!a.answerSubmit) a.held.add(new Object[] { link, seq });
+					else if (late != null && late > 0) {
+						final Account fa = a; final Link fl = link; final int fs = seq;
+						LATE.schedule(() -> { try { fa.respond(fl, fs); } catch (IOException e) { } }, late, TimeUnit.MILLISECONDS);
+					} else a.respond(link, seq);
 				}
 			}
 		} catch (Exception e) {
@@ -175,7 +184,7 @@ final class FakeSmsc implements Runnable {
 
 	/** every field of a submit_sm */
 	static final class Submit {
-		Link link; String service, source, dest, schedule, validity; int srcTon, srcNpi, dstTon, dstNpi, esm, protocol, priority, registered, replace, dcs;
+		Link link; long at; String service, source, dest, schedule, validity; int srcTon, srcNpi, dstTon, dstNpi, esm, protocol, priority, registered, replace, dcs;
 		byte[] sm; final Map<Integer, byte[]> tlvs = new HashMap<>();
 		String text() throws UnsupportedEncodingException { return new String(sm, "ISO-8859-1"); }
 	}

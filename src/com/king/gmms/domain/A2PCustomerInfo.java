@@ -182,6 +182,8 @@ public abstract class A2PCustomerInfo {
 	protected volatile boolean applyInThrottleFlag = true;
 	
 	protected int outgoingThrottlingNum = 0;
+	/** submit_sm per second of each bind of the channel (SMPP Client); 0: no limit */
+	protected int outgoingThrottlingNumPerBind = 0;
 	/** longest wait in the Core hold queue of this channel */
 	protected int coreHoldMaxSeconds = 21600;
 	/**
@@ -876,6 +878,10 @@ public abstract class A2PCustomerInfo {
 	public int getOutgoingThrottlingNum() {
 		return outgoingThrottlingNum;
 	}	
+
+	public int getOutgoingThrottlingNumPerBind() {
+		return outgoingThrottlingNumPerBind;
+	}
 
 	public int getCoreProcessorThrottlingNum() {
 		return coreProcessorThrottlingNum;
@@ -1824,6 +1830,7 @@ public abstract class A2PCustomerInfo {
 		incomingThrottlingNum = cfg.getInt("SMSOptionIncomingThrottlingNum", 0);
 
 		outgoingThrottlingNum = cfg.getInt("SMSOptionOutgoingThrottlingNum", 0);
+		outgoingThrottlingNumPerBind = cfg.getInt("SMSOptionOutgoingThrottlingNumPerBind", 0);
 		coreHoldMaxSeconds = cfg.getInt("CoreHoldMaxSeconds", 21600);
 		coreProcessorThrottlingNum = cfg.getInt("SMSOptionCoreProcessorThrottlingNum", 0);
 		httpConnectTimeoutSec = cfg.getInt("SMSOptionHttpConnectTimeout", 0);
@@ -2872,6 +2879,7 @@ public abstract class A2PCustomerInfo {
 		.append(prefix).append("SMSOptionOTTContentAddOaddr:").append(this.ottContentAddOaddr)
 		.append(prefix).append("OutClientPull:").append(this.outClientPull)
 		.append(prefix).append("SMSOptionOutgoingThrottlingNum:").append(this.outgoingThrottlingNum)
+		.append(prefix).append("SMSOptionOutgoingThrottlingNumPerBind:").append(this.outgoingThrottlingNumPerBind)
 		.append(prefix).append("SMSOptionCoreProcessorThrottlingNum:").append(this.coreProcessorThrottlingNum)
 		.append(prefix).append("CoreHoldMaxSeconds:").append(this.coreHoldMaxSeconds)
 		.append(prefix).append("SMSOptionHttpConnectTimeout:").append(this.httpConnectTimeoutSec)

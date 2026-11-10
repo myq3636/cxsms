@@ -30,6 +30,7 @@ ClientPendingIT it.ClientPendingIT it-server
 ClientConnectionIT it.ClientConnectionIT it-mod:MultiSmppClient1
 ClientResultIT it.ClientResultIT it-mod:MultiSmppClient1
 ClientPduIT it.ClientPduIT it-mod:MultiSmppClient1
+BindRateIT it.BindRateIT it-mod:MultiSmppClient1
 ClientLifecycleIT it.ClientLifecycleIT it-mod:MultiSmppClient1
 ClientTlsIT it.ClientTlsIT it-mod:MultiSmppClient1
 ClientHttpIT it.ClientHttpIT it

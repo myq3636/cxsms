@@ -24,6 +24,7 @@ import com.king.gmms.customerconnectionfactory.MultiSmppClientFactory;
 import com.king.gmms.metrics.MetricsCollector;
 import com.king.gmms.metrics.MetricsNames;
 import com.king.gmms.throttle.DistributedThrottlingManager;
+import com.king.gmms.util.LogRateLimiter;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
 
@@ -64,8 +65,13 @@ public class OutboundStreamConsumer {
     private enum ProcessResult {
         DONE,
         WINDOW_FULL,
-        THROTTLED
+        THROTTLED,
+        /** no bind of the connection due (SMSOptionOutgoingThrottlingNumPerBind) */
+        BIND_THROTTLED
     }
+
+    /** ms until a bind of the connection is due, set with BIND_THROTTLED on the worker thread */
+    private static final ThreadLocal<long[]> BIND_WAIT_MS = ThreadLocal.withInitial(() -> new long[1]);
 
     private OutboundStreamConsumer() {
         this.queueManager = StreamQueueManager.getInstance();
@@ -263,6 +269,9 @@ public class OutboundStreamConsumer {
     }
 
     private long retryDelayMs(ProcessResult r, GmmsMessage msg) {
+        if (r == ProcessResult.BIND_THROTTLED) {
+            return Math.max(1L, Math.min(1000L, BIND_WAIT_MS.get()[0]));
+        }
         return r == ProcessResult.THROTTLED
                 ? DistributedThrottlingManager.getInstance().retryAfterMs(msg.getRSsID())
                 : getWindowFullRetryMs();
@@ -346,13 +355,32 @@ public class OutboundStreamConsumer {
             }
             int ssid = msg.getRSsID();
             MultiSmppSession smppSession = session instanceof MultiSmppSession ? (MultiSmppSession) session : null;
-            if (smppSession != null && !smppSession.hasClientSubmitWindow()) {
+            int bindTps = smppSession != null ? smppSession.bindTps() : 0;
+            if (bindTps > 0) {
+                // the first bind of the connection, from the one picked, with room in its window and due
+                MultiSmppSession due = dueBind(smppSession, bindTps);
+                if (due == null) {
+                    if (BIND_WAIT_MS.get()[0] < 0) {
+                        recordWindowFull(msg);
+                        queueManager.logNack(streamKey, groupName, consumerName, msg, true, "client_submit_window_full");
+                        return ProcessResult.WINDOW_FULL;
+                    }
+                    return bindThrottled(msg, bindTps);
+                }
+                smppSession = due;
+                session = due;
+            } else if (smppSession != null && !smppSession.hasClientSubmitWindow()) {
                 recordWindowFull(msg);
                 queueManager.logNack(streamKey, groupName, consumerName, msg, true, "client_submit_window_full");
                 return ProcessResult.WINDOW_FULL;
             }
             if (!DistributedThrottlingManager.getInstance().tryAcquire(ssid)) {
                 return ProcessResult.THROTTLED;
+            }
+            if (bindTps > 0 && !smppSession.bindRate().take(bindTps, System.nanoTime())) {
+                // another worker took this bind's permit first: the account permit is lost, at most one
+                BIND_WAIT_MS.get()[0] = Math.max(1L, smppSession.bindRate().waitMs(bindTps, System.nanoTime()));
+                return bindThrottled(msg, bindTps);
             }
             if (useMarker) {
                 ClientSendMarker.Claim c = ClientSendMarker.claim(msg, ClientSendMarker.owner(consumerName), streamKey, sourceRedisId, mayBeClaimed);
@@ -420,6 +448,49 @@ public class OutboundStreamConsumer {
         } catch (Exception e) {
             return 100L;
         }
+    }
+
+    /**
+     * A bound session of the connection of picked, starting with picked, with room in its window and due by
+     * its bind rate; null: none, BIND_WAIT_MS then holds the ms until the first one with room is due, or -1
+     * when no window has room.
+     */
+    private MultiSmppSession dueBind(MultiSmppSession picked, int bindTps) {
+        long now = System.nanoTime();
+        long wait = -1L;
+        List<Session> all = picked.connectionSessions();
+        if (all.isEmpty()) {
+            all = java.util.Collections.<Session>singletonList(picked);
+        }
+        int start = Math.max(0, all.indexOf(picked));
+        for (int i = 0; i < all.size(); i++) {
+            Session s = all.get((start + i) % all.size());
+            if (!(s instanceof MultiSmppSession) || !isConnected(s)) {
+                continue;
+            }
+            MultiSmppSession m = (MultiSmppSession) s;
+            if (!m.hasClientSubmitWindow()) {
+                continue;
+            }
+            long w = m.bindRate().waitMs(bindTps, now);
+            if (w == 0L) {
+                return m;
+            }
+            wait = wait < 0 ? w : Math.min(wait, w);
+        }
+        BIND_WAIT_MS.get()[0] = wait;
+        return null;
+    }
+
+    private ProcessResult bindThrottled(GmmsMessage msg, int bindTps) {
+        MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_BIND_THROTTLED));
+        logger.debug(msg, "No bind due (SMSOptionOutgoingThrottlingNumPerBind {}), put off {} ms", bindTps, BIND_WAIT_MS.get()[0]);
+        long n = LogRateLimiter.allow("bind-rate:" + msg.getRSsID(), 600000L);
+        if (n > 0) {
+            logger.info("[BIND-RATE] rssid={} bind rate {} TPS, put off {} times in the last 10 min", msg.getRSsID(), bindTps, n);
+        }
+        return ProcessResult.BIND_THROTTLED;
     }
 
     private void recordWindowFull(GmmsMessage msg) {

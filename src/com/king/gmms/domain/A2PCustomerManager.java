@@ -3121,6 +3121,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			}
 		}
 		for (A2PCustomerInfo[] pair : changes.changed) {
+			A2PCustomerInfo oldCust = pair[0];
 			A2PCustomerInfo newCust = pair[1];
 			if (newCust != null) {
 				int ssid = newCust.getSSID();
@@ -3139,6 +3140,9 @@ public class A2PCustomerManager implements LifecycleListener {
 				try {
 					// customer reload runs asynchronously, so the rate is updated here once the new config is published
 					DistributedThrottlingManager.getInstance().updateRate(ssid, newCust.getOutgoingThrottlingNum());
+					if (oldCust == null || oldCust.getOutgoingThrottlingNumPerBind() != newCust.getOutgoingThrottlingNumPerBind()) {
+						log.info("[BIND-RATE] ssid={} SMSOptionOutgoingThrottlingNumPerBind now {} TPS per bind (0: no limit)", ssid, newCust.getOutgoingThrottlingNumPerBind());
+					}
 				} catch (Exception e) {
 					log.error("update dynamic throttling rate error, ssid={}", ssid, e);
 				}

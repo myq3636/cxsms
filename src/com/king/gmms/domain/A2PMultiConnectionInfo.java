@@ -111,6 +111,7 @@ public class A2PMultiConnectionInfo extends A2PCustomerInfo{
             this.incomingThrottlingNum = sc.getIncomingThrottlingNum();
             this.applyInThrottleFlag = sc.isApplyInThrottleFlag();
             this.outgoingThrottlingNum = sc.getOutgoingThrottlingNum();
+            this.outgoingThrottlingNumPerBind = sc.getOutgoingThrottlingNumPerBind();
 
             this.needAntiSpam = sc.isNeedAntiSpam(); // default
             this.checkAlphaWhenReplaceOAddr = sc.isCheckAlphaWhenReplaceOAddr();

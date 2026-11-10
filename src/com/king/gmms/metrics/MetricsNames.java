@@ -53,6 +53,7 @@ public class MetricsNames {
     public static final String ACTION_SENT_TO_CUSTOMER = "sent_to_customer";
     public static final String ACTION_FAILED_TO_CUSTOMER = "failed_to_customer";
     public static final String ACTION_WINDOW_FULL = "window_full";
+    public static final String ACTION_BIND_THROTTLED = "bind_throttled";
     public static final String ACTION_RETRY_CLAIM = "retry_claim";
     public static final String ACTION_TIMEOUT_PROCESSED = "timeout_processed";
     public static final String ACTION_TIMEOUT_SKIPPED = "timeout_skipped";
