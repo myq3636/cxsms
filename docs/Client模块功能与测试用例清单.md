@@ -507,7 +507,7 @@ flowchart LR
 
 线上通道都配了 1，**这次修改对线上没有变化**。新通道仍建议配 1（加 `SMSOptionConvert2GSM7bit: yes`），这样 GSM 7-bit 和 ASCII 都按 GSM 7-bit 发。
 
-**没做：** 非 7-bit 的 ISO 消息按通道的 `MsgSplitLen` 拆分，没配时用模块的 `ContentLength`（默认 160），超过 8 位编码单条的 140 字节。这和通道是不是 0 无关，客户用 `data_coding=3` 发的 ISO 长短信发往配了 1 的通道时同样如此。线上通道一般配了 `MsgSplitLen`，所以没有改默认值，需要时单独处理。
+**拆分上限（2026-11-10 已改）：** 非 7-bit 的 ISO 消息原来按通道的 `MsgSplitLen` 拆，没配时用模块的 `ContentLength`（默认 160），超过 8 位编码单条的 140 字节。现在没配 `MsgSplitLen` 时用 140（`Gsm7LengthIT` G7-13～16）；配了的通道照旧。
 
 ### 12.2 用例确认的其他行为
 

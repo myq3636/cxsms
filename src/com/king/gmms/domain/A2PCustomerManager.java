@@ -3669,6 +3669,8 @@ public class A2PCustomerManager implements LifecycleListener {
 
 	private static final int MSG_SPLIT_LENGTH_MIN = 20;
 	private static final int MSG_SPLIT_LENGTH_DEFAULT = 160;
+	/** one SMS of an 8-bit charset (data_coding 3, 6, 7): 140 octets */
+	private static final int MSG_SPLIT_LENGTH_8BIT = 140;
 
 	/**
 	 * this method is to get the length that Roperator support
@@ -3706,6 +3708,12 @@ public class A2PCustomerManager implements LifecycleListener {
 			return supportLength;
 		}
 
+		// nothing configured: ContentLength (160) is the GSM 7-bit length; an 8-bit ISO text (not 7-bit, which
+		// took the ASCII length above) holds 140 bytes in one SMS
+		if (GmmsMessage.AIC_CS_ISO8859_1.equalsIgnoreCase(contentType) || GmmsMessage.AIC_CS_ISO8859_5.equalsIgnoreCase(contentType)
+				|| GmmsMessage.AIC_CS_ISO8859_8.equalsIgnoreCase(contentType)) {
+			return Math.min(length, MSG_SPLIT_LENGTH_8BIT);
+		}
 		return length;
 	}
 

@@ -1,6 +1,6 @@
 # GSM 7-bit 消息长度计算优化设计
 
-> 日期：2026-11-09。状态：**3.1 已实现**（第 7 节）；**3.2 的 DEF-C6 已按做法 B 修复**（第 8 节）。第 2 节来自读当前 `main`（`2934318`）的代码，没有实测；第 5 节的用例实现时补上。
+> 日期：2026-11-09。状态：**3.1 已实现**（第 7 节）；**3.2 的 DEF-C6 已按做法 B 修复**（第 8 节）；**8 位 ISO 拆分上限 140**（第 9 节）。第 2 节来自读当前 `main`（`2934318`）的代码，没有实测；第 5 节的用例实现时补上。
 
 ## 1. 问题和结论
 
@@ -319,4 +319,32 @@ if (gsmBytes || (cst.getSmsOptionOutgoingGSM7bit() == 0 && ASCII.equalsIgnoreCas
 
 **用例（`ClientPduIT`，40 项全部通过）：** PD-02a（UCS2，默认通道）从已知缺陷变为通过，已从 `known-defects.txt` 删除；新增 PD-02f（ISO→3）、PD-02g（二进制→4）、PD-02h（带 `gsm7bit` 的 ISO 到默认通道→3）。
 
-**没做：** 3.2 原来写的“非 7-bit 的 ISO 拆分上限默认 140”。它和通道是不是 0 无关（客户 `data_coding=3` 的 ISO 长短信发往配了 1 的通道也会用到），线上通道一般配了 `MsgSplitLen`，改默认值会改变没配的通道的拆分，需要时单独确认。
+**拆分上限：** 3.2 原来写的“非 7-bit 的 ISO 拆分上限默认 140”当时没做，之后单独做了，见第 9 节。
+
+## 9. 8 位 ISO 文本的拆分上限
+
+`A2PCustomerManager.getRopSupportLength(msg)`：通道（rssid）和运营商（rop）都没配 `MsgSplitLen` 时，原来返回模块的 `ContentLength`（默认 160）。现在内容是 ISO-8859-1、-5、-8 且不是 7-bit（7-bit 在前面已改按 ASCII 取长度）时，返回 `min(ContentLength, 140)`。
+
+- 配了 `MsgSplitLen` 的通道照旧用配置值。
+- GSM 7-bit、ASCII 不受影响；UCS2、二进制不在这次范围。
+- 两种情况会用到：客户用 `data_coding=3` 发的 ISO 消息（任何通道）；GSM 7-bit 消息发往不支持 7-bit 的通道（Core 去掉 `gsm7bit` 后按 ISO 发，2.3）。
+
+**用例（`Gsm7LengthIT`，现共 26 项全部通过）：** 改前改后对照，变化的只有 G7-13a、G7-16（160 字节 ISO，原来 `[160]` 一条，现在 `[140, 20]`）。
+
+| 编号 | 场景 | 结果 |
+|---|---|---|
+| G7-13a | `data_coding=3`，160 字节，通道没配 `MsgSplitLen` | `[140, 20]`（改前 `[160]`） |
+| G7-13b | 同上，140 字节 | `[140]` |
+| G7-13c | ASCII，160 | `[160]`，不变 |
+| G7-14 | 通道配 `MsgSplitLen: 160` | `[160]`，按配置 |
+| G7-15 | 7-bit 带 é，160，通道配 7-bit | `[160]`，保持 7-bit |
+| G7-16 | 7-bit 带 é，160，通道没配 7-bit | `[140, 20]`，按 ISO 发（改前 `[160]`） |
+
+**`MsgSplitLen: 140` 时 ASCII 和 7-bit 怎么拆（原有行为，没改）：** ASCII 和 GSM 7-bit 先取通道的 `SMSOptionAsciiMsgSplitLen`，没配就用 `MsgSplitLen`。
+
+| 编号 | 通道 | ASCII 160 | 7-bit 带 é 160 | ISO 160 |
+|---|---|---|---|---|
+| G7-17 | 只配 `MsgSplitLen: 140` | `[140, 20]` | `[140, 20]` | — |
+| G7-18 | 再加 `SMSOptionAsciiMsgSplitLen: 160` | `[160]` | `[160]` | `[140, 20]` |
+
+所以配了 `MsgSplitLen: 140` 的通道要同时配 `SMSOptionAsciiMsgSplitLen: 160`，否则 160 字符的英文、7-bit 消息会多拆一条。
