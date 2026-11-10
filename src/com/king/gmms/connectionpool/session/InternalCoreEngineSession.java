@@ -1706,6 +1706,8 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 
 	private void mergeInboundDeliveryReport(GmmsMessage original, GmmsMessage dr) {
 		original.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
+		// a DR has its own path from the Client that received it, not the one of its MT
+		original.setModulePath(dr.getModulePath());
 		original.setStatusCode(dr.getStatusCode());
 		if (!GmmsStatus.RETRIEVED.getText().equalsIgnoreCase(original.getStatusText())) {
 			original.setStatusText(GmmsStatus.getStatus(dr.getStatusCode()).getText());

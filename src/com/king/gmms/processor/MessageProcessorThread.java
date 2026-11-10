@@ -763,7 +763,7 @@ public class MessageProcessorThread extends RunnableMsgTask{
 					MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
 							MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_ROUTED_TO_REDIS));
 					if (log.isInfoEnabled()) {
-						log.info(msg, "[MT-TO-CLIENT] rssid={} protocol=HTTP redisId={}", msg.getRSsID(), msg.getRedisStreamID());
+						log.info(msg, "[MT-TO-CLIENT] rssid={} protocol=HTTP redisId={} path={}", msg.getRSsID(), msg.getRedisStreamID(), com.king.gmms.util.ModulePath.withSelf(msg.getModulePath()));
 					}
 					continue;
 				} else {
@@ -810,7 +810,7 @@ public class MessageProcessorThread extends RunnableMsgTask{
 				if(log.isInfoEnabled()){
 					// held for a rate limited channel: [MT-HOLD] was logged instead, [MT-RELEASE] follows
 					if (!com.king.gmms.messagequeue.ChannelReleaseDispatcher.getInstance().holds(msg)) {
-						log.info(msg, "[MT-TO-CLIENT] rssid={} redisId={}", msg.getRSsID(), msg.getRedisStreamID());
+						log.info(msg, "[MT-TO-CLIENT] rssid={} redisId={} path={}", msg.getRSsID(), msg.getRedisStreamID(), com.king.gmms.util.ModulePath.withSelf(msg.getModulePath()));
 					}
 				}
 			} else {
@@ -966,11 +966,11 @@ public class MessageProcessorThread extends RunnableMsgTask{
 				}
 				if(log.isInfoEnabled()){
 			    	if (streamKey != null) {
-						log.info(message, "[DR-TO-SERVER] ossid={} status={} stream={} redisId={}", message.getOSsID(),
-								message.getStatusCode(), streamKey, message.getRedisStreamID());
+						log.info(message, "[DR-TO-SERVER] ossid={} status={} stream={} redisId={} path={}", message.getOSsID(),
+								message.getStatusCode(), streamKey, message.getRedisStreamID(), com.king.gmms.util.ModulePath.withSelf(message.getModulePath()));
 			    	} else {
-						log.info(message, "[DR-TO-HTTP] ossid={} status={} redisId={}", message.getOSsID(),
-								message.getStatusCode(), message.getRedisStreamID());
+						log.info(message, "[DR-TO-HTTP] ossid={} status={} redisId={} path={}", message.getOSsID(),
+								message.getStatusCode(), message.getRedisStreamID(), com.king.gmms.util.ModulePath.withSelf(message.getModulePath()));
 			    	}
 				}
 			}

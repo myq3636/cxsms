@@ -55,6 +55,11 @@ public class CDR
      */
     public CDR(GmmsMessage msg) {
         super(msg);
+        // DeliveryChannel column: the modules the message went through, ':' between them, the one writing the CDR last
+        if (msg.getModulePath() != null && !msg.getModulePath().isEmpty()) {
+            this.deliveryChannel = com.king.gmms.util.ModulePath.withSelf(msg.getModulePath())
+                    .replace(com.king.gmms.util.ModulePath.SEP, ":");
+        }
 		if (serviceTypeID == 0) {
 			try {
 				A2PCustomerInfo customerInfo = GmmsUtility.getInstance().getCustomerManager().getCustomerBySSID(this.oSsID);

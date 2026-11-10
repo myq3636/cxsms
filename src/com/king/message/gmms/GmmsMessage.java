@@ -67,6 +67,8 @@ public class GmmsMessage extends MessageBase {
 	protected int rSsID = -1;
 	
 	protected String deliveryChannel = null;
+	/** modules the message went through, for tracing only (ModulePath) */
+	protected String modulePath = null;
 	protected String routingSsIDs = null;
 	protected String redisStreamID = null; // V4.0 Redis Stream ID for ACK
 	protected long redisFence = -1L; // C-9: 该消息所属 MQM 任期纪元(来自 stream 字段, 非序列化); -1=缺失
@@ -258,6 +260,14 @@ public class GmmsMessage extends MessageBase {
 		return this.deliveryChannel;
 	}
 
+	public String getModulePath() {
+		return modulePath;
+	}
+
+	public void setModulePath(String modulePath) {
+		this.modulePath = modulePath;
+	}
+
 //	public boolean inClientPull() {
 //		return this.inClientPull;
 //	}
@@ -363,6 +373,7 @@ public class GmmsMessage extends MessageBase {
 		this.inClientPull = oneMsg.inClientPull;
 		this.outClientPull = oneMsg.outClientPull;
 		this.deliveryChannel = oneMsg.deliveryChannel;
+		this.modulePath = oneMsg.modulePath;
 		this.oOperator = oneMsg.oOperator;
 		this.rOperator = oneMsg.rOperator;
 		// this.localTimeStamp = oneMsg.localTimeStamp;

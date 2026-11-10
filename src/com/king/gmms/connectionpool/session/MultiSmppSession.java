@@ -63,6 +63,7 @@ import com.king.gmms.protocol.smpp.version.SMPPVersion;
 import com.king.gmms.strategy.StrategyType;
 import com.king.gmms.throttle.BindRateLimiter;
 import com.king.gmms.throttle.ThrottlingControl;
+import com.king.gmms.util.ModulePath;
 import com.king.gmms.util.SystemConstants;
 import com.king.gmms.smpp.pending.PendingDrTimeoutHandler;
 import com.king.gmms.smpp.pending.PendingSubmitEntry;
@@ -1974,8 +1975,8 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 connection.send(request.getData().getBuffer());
                 pduLogger.logSent(isServer ? "server" : "client", sessionName, request);
                 if(log.isInfoEnabled()){
-					log.info(msg, "[DR-OUT] ssid={} session={} seq={} status={}", msg.getOSsID(), sessionName, key,
-							msg.getStatusCode());
+					log.info(msg, "[DR-OUT] ssid={} session={} seq={} status={} path={}", msg.getOSsID(), sessionName, key,
+							msg.getStatusCode(), ModulePath.withSelf(msg.getModulePath()));
                 }
                 result = true;
             }
@@ -2113,8 +2114,8 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 pduLogger.logSent(isServer ? "server" : "client", sessionName, request);
                 msg.setOutTransID(key);
                 result = true;
-                log.info(msg, "[MT-OUT] rssid={} session={} seq={} split={}", msg.getRSsID(), sessionName, key,
-                        msg.getSarSegmentSeqNum());
+                log.info(msg, "[MT-OUT] rssid={} session={} seq={} split={} path={}", msg.getRSsID(), sessionName, key,
+                        msg.getSarSegmentSeqNum(), ModulePath.withSelf(msg.getModulePath()));
                 return SmppSubmitResult.SENT;
 
             }else{
@@ -2337,8 +2338,8 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 pduLogger.logSent(isServer ? "server" : "client", sessionName, delivSm);
                 deliverMsg.setInTransID(key);
                 if(log.isInfoEnabled()){
-					log.info(deliverMsg, "[DR-OUT] ssid={} session={} seq={} status={} redisId={}", deliverMsg.getOSsID(),
-							sessionName, key, deliverMsg.getStatusCode(), deliverMsg.getRedisStreamID());
+					log.info(deliverMsg, "[DR-OUT] ssid={} session={} seq={} status={} redisId={} path={}", deliverMsg.getOSsID(),
+							sessionName, key, deliverMsg.getStatusCode(), deliverMsg.getRedisStreamID(), ModulePath.withSelf(deliverMsg.getModulePath()));
                 }
                 deliverMsg.setActionCode( -1);
                 result = true;

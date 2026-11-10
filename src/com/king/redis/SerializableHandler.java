@@ -396,6 +396,9 @@ public class SerializableHandler {
 						    	case 56:
 						    		msg.setRowId(Integer.parseInt(parameters[56]));
 									break;
+						    	case 57:
+						    		msg.setModulePath(parameters[57]);
+									break;
 								default:
 									if(log.isInfoEnabled()){
 										log.info("Unknown parameter in Redis String, and Redis String is {}", message);
@@ -886,6 +889,9 @@ public class SerializableHandler {
 					}
 					sb.append(separator).append(msg.getOriginalQueue());
 					sb.append(separator).append(msg.getRowId());
+					// 57: the modules it went through, this one last (tracing only; older readers ignore it)
+					String path = com.king.gmms.util.ModulePath.withSelf(msg.getModulePath());
+					sb.append(separator).append(path == null ? "" : path.replaceAll(separator, repl_sep));
 					
 				} catch (Exception e) {
 					if(log.isInfoEnabled()){
