@@ -5,7 +5,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
-import org.json.JSONObject;
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONObject;
 
 import redis.clients.jedis.Jedis;
 
@@ -38,7 +39,7 @@ public final class MetricsView {
         }
         if (json) {
             for (Map<String, String> h : rows) {
-                JSONObject o = new JSONObject();
+                JSONObject o = new JSONObject(true);
                 o.put("module", h.get("module"));
                 o.put("node", h.get("node"));
                 o.put("ts", Long.parseLong(h.get("ts")));
@@ -46,7 +47,7 @@ public final class MetricsView {
                 o.put("tps", object(h.get("tps")));
                 o.put("gauge", object(h.get("gauge")));
                 o.put("timer", object(h.get("timer")));
-                System.out.println(o.toString());
+                System.out.println(o.toJSONString());
             }
             return 0;
         }
@@ -82,17 +83,17 @@ public final class MetricsView {
     }
 
     private static void section(String title, JSONObject o) {
-        if (o.length() == 0) {
+        if (o.isEmpty()) {
             return;
         }
         System.out.println("  " + title + ":");
-        for (String k : new TreeMap<String, Object>(o.toMap()).keySet()) {
+        for (String k : new TreeMap<String, Object>(o).keySet()) {
             Object v = o.get(k);
             if (v instanceof JSONObject) {
                 JSONObject t = (JSONObject) v;
                 System.out.println(String.format("    %-70s count=%d avg=%.2f p50=%.2f p95=%.2f p99=%.2f max=%.2f", k,
-                        t.optLong("count"), t.optDouble("avg"), t.optDouble("p50"), t.optDouble("p95"),
-                        t.optDouble("p99"), t.optDouble("max")));
+                        t.getLongValue("count"), t.getDoubleValue("avg"), t.getDoubleValue("p50"), t.getDoubleValue("p95"),
+                        t.getDoubleValue("p99"), t.getDoubleValue("max")));
             } else {
                 System.out.println(String.format("    %-70s %s", k, v));
             }
@@ -101,7 +102,8 @@ public final class MetricsView {
 
     private static JSONObject object(String s) {
         try {
-            return s == null || s.isEmpty() ? new JSONObject() : new JSONObject(s);
+            JSONObject o = s == null || s.isEmpty() ? null : JSON.parseObject(s);
+            return o == null ? new JSONObject() : o;
         } catch (Exception e) {
             return new JSONObject();
         }
@@ -128,7 +130,8 @@ public final class MetricsView {
             if (perChannel && k.indexOf('.', i + part.length()) >= 0) {
                 continue;
             }
-            max = Math.max(max, ((JSONObject) o.get(k)).optDouble("p95", -1));
+            JSONObject t = (JSONObject) o.get(k);
+            max = Math.max(max, t.containsKey("p95") ? t.getDoubleValue("p95") : -1);
         }
         return max;
     }

@@ -5,7 +5,8 @@ import java.io.PrintStream;
 import java.nio.file.*;
 import java.util.*;
 
-import org.json.JSONObject;
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONObject;
 
 import com.king.gmms.metrics.MetricsCollector;
 import com.king.gmms.metrics.MetricsNames;
@@ -33,17 +34,17 @@ public class MetricsIT extends ItSupport {
 	}
 	static JSONObject json(String line) {
 		int i = line.indexOf("] {");
-		return i < 0 ? null : new JSONObject(line.substring(i + 2));
+		return i < 0 ? null : JSON.parseObject(line.substring(i + 2));
 	}
 	/** the timers of a module's last window in Redis */
 	static JSONObject redisPart(String module, String part) {
 		Map<String, String> h = jedis.hgetAll("metrics:" + module.toLowerCase() + ":1");
-		return h == null || h.get(part) == null ? new JSONObject() : new JSONObject(h.get(part));
+		return h == null || h.get(part) == null ? new JSONObject() : JSON.parseObject(h.get(part));
 	}
 	static JSONObject timer(String module, String name) {
 		JSONObject t = redisPart(module, "timer");
 		String k = module.toLowerCase() + "." + name;
-		return t.has(k) ? t.getJSONObject(k) : null;
+		return t.containsKey(k) ? t.getJSONObject(k) : null;
 	}
 
 	public static void main(String[] a) throws Exception {
@@ -121,14 +122,14 @@ public class MetricsIT extends ItSupport {
 			MetricsReporter.getInstance().reportNow();
 			List<String> gl = lines(log, "[METRICS-GAUGE]");
 			boolean parsed = !gl.isEmpty(), part2 = false;
-			for (String l : gl) { JSONObject o = json(l); if (o == null || !o.has("gauge") || !o.has("module")) parsed = false; else if (o.optInt("part") == 2) part2 = true; }
+			for (String l : gl) { JSONObject o = json(l); if (o == null || !o.containsKey("gauge") || !o.containsKey("module")) parsed = false; else if (o.getIntValue("part") == 2) part2 = true; }
 			check(parsed, "MU-06a [METRICS-GAUGE] lines are JSON with module, gauge: " + gl.size());
 			check(part2, "MU-06b a line over 4 KB is split (part 2)");
 			check(gl.stream().allMatch(l -> l.length() < 4400), "MU-06c no line much longer than 4 KB");
 			List<String> al = lines(log, "[METRICS-ALERT]");
 			long dbAlerts = al.stream().filter(l -> l.contains("db_pool_waiting") && l.contains("itds")).count();
 			check(dbAlerts == 1, "MU-07 DB pool waiting 5 > Metrics.Alert.DbPoolWaiting 1: one alert in two windows (repeat after 300 s): " + al);
-			check(!al.isEmpty() && json(al.get(0)) != null && json(al.get(0)).getDouble("value") == 5.0, "MU-07b the alert line is JSON");
+			check(!al.isEmpty() && json(al.get(0)) != null && json(al.get(0)).getDoubleValue("value") == 5.0, "MU-07b the alert line is JSON");
 			MetricsReporter.getInstance().configureOutput("kv", false, new MetricsReporter.Alerts(0, 0, 0, 0, 300));
 			MetricsReporter.getInstance().reportNow();
 			List<String> kv = lines(log, "[METRICS-GAUGE] module=");
@@ -162,7 +163,7 @@ public class MetricsIT extends ItSupport {
 				// the windows keep moving: a timer is in the window of its events only, so look at the logs too
 				String clientLog = PathChainIT.h(K) + "log/it.log", coreLog = PathChainIT.h(C) + "log/it.log", serverLog = PathChainIT.h(S) + "log/it.log";
 				JSONObject rtt = lastTimer(clientLog, cl + ".client.vendor.submit_rtt.81");
-				check(rtt != null && rtt.getLong("count") >= 1 && rtt.getDouble("max") >= 190, "MI-06a Client: vendor submit_sm_resp 200 ms late: " + rtt);
+				check(rtt != null && rtt.getLongValue("count") >= 1 && rtt.getDoubleValue("max") >= 190, "MI-06a Client: vendor submit_sm_resp 200 ms late: " + rtt);
 				JSONObject bind = lastTimerPrefix(clientLog, cl + ".client.vendor.submit_rtt.81.");
 				check(bind != null, "MI-06b per bind (Metrics.Bind.Enable)");
 				check(lastTimer(clientLog, cl + ".e2e.submit") != null, "MI-06c Client: e2e.submit (Server in to submit_sm out)");
@@ -179,9 +180,9 @@ public class MetricsIT extends ItSupport {
 				List<String> alerts = lines(clientLog, "[METRICS-ALERT]");
 				check(alerts.stream().anyMatch(l -> l.contains("vendor_rtt") && l.contains("submit_rtt.81\"")), "MI-09 Client: [METRICS-ALERT] vendor_rtt p95 > 100 ms: " + alerts);
 				JSONObject g = redisPart(K, "gauge");
-				check(g.has(cl + ".redis.stream.core_to_client.xlen") && g.has(cl + ".consumer.clientoutboundsubmit.pool.active"),
+				check(g.containsKey(cl + ".redis.stream.core_to_client.xlen") && g.containsKey(cl + ".consumer.clientoutboundsubmit.pool.active"),
 						"MI-10 Client gauges: the stream monitor (on by default), the consumer pool");
-				check(redisPart(C, "gauge").has(co + ".redis.stream.server_to_core.streams"), "MI-10b Core: the stream monitor watches its streams");
+				check(redisPart(C, "gauge").containsKey(co + ".redis.stream.server_to_core.streams"), "MI-10b Core: the stream monitor watches its streams");
 
 				PrintStream so = System.out;
 				ByteArrayOutputStream buf = new ByteArrayOutputStream();
@@ -210,7 +211,7 @@ public class MetricsIT extends ItSupport {
 		JSONObject found = null;
 		for (String l : lines(log, "[METRICS-TIMER]")) {
 			JSONObject o = json(l);
-			if (o != null && o.getJSONObject("timer").has(name)) found = o.getJSONObject("timer").getJSONObject(name);
+			if (o != null && o.getJSONObject("timer").containsKey(name)) found = o.getJSONObject("timer").getJSONObject(name);
 		}
 		return found;
 	}
