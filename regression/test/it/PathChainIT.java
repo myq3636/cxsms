@@ -86,7 +86,7 @@ public class PathChainIT extends ItSupport {
 			String body = SerializableHandler.convertGmmsMessage2RedisMessage(m);
 			GmmsMessage back = SerializableHandler.convertRedisMssage2GmmsMessage(body);
 			check(back != null && (S + ">" + C).equals(back.getModulePath()), "PC-00a written with this module added, read back: " + (back == null ? "" : back.getModulePath()));
-			GmmsMessage old = SerializableHandler.convertRedisMssage2GmmsMessage(body.substring(0, body.lastIndexOf('`')));
+			GmmsMessage old = SerializableHandler.convertRedisMssage2GmmsMessage(String.join("`", java.util.Arrays.copyOf(body.split("`", -1), 57)));   // fields 0..56: the format before modulePath
 			check(old != null && old.getModulePath() == null && "8888_PC00".equals(old.getMsgID()), "PC-00b an entry written before (no field 57): read, no path");
 
 			jedis.set("thcon", "1");   // the Server takes submits only with this key (throttling control on)

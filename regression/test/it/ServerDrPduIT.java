@@ -38,11 +38,12 @@ public class ServerDrPduIT extends ItSupport {
 		return c.deliverByText.isEmpty() ? "none" : c.deliverByText.keySet().iterator().next();
 	}
 	static GmmsMessage fromRdq(GmmsMessage failed) throws Exception {
-		java.lang.reflect.Method m = MessageStoreManager.class.getDeclaredMethod("getCodeFromState", String.class);
+		// as getResendDR restores it: by the text, the DR error code (kept in RDQ) gives the detail
+		java.lang.reflect.Method m = MessageStoreManager.class.getDeclaredMethod("restoreResendDrStatus", GmmsMessage.class);
 		m.setAccessible(true);
 		GmmsMessage b = new GmmsMessage(failed);
 		b.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
-		b.setStatusCode((Integer) m.invoke(GmmsUtility.getInstance().getMessageStoreManager(), failed.getStatusText()));
+		b.setStatusCode((Integer) m.invoke(GmmsUtility.getInstance().getMessageStoreManager(), failed));
 		b.setOriginalQueue("RDQ");
 		b.setRowId(5);
 		return b;

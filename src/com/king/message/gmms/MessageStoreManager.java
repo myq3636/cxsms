@@ -29,6 +29,7 @@ import com.king.gmms.mqm.TaskConfiguration;
 import com.king.gmms.processor.CsmKeyInfo;
 import com.king.gmms.processor.CsmUtility;
 import com.king.gmms.processor.FakeDr;
+import com.king.gmms.domain.DrErrorConfig;
 import com.king.gmms.processor.CsmValueInfo;
 import com.king.gmms.processor.CsmValueInfoMark;
 import com.king.gmms.processor.DirectInDRDispatchService;
@@ -562,6 +563,8 @@ public class MessageStoreManager extends DataManager {
 	 */
 	public void handleOutSubmitRes(GmmsMessage message, boolean checkReroute) {
 		message.setActionCode(-1);
+		// a failed submit: the DR error code of its command_status (SubmitErr), carried to the failure DR
+		com.king.gmms.domain.DrErrorConfig.getInstance().applySubmitResult(message);
 		boolean supportDR = !gmmsUtility.getCustomerManager()
 				.isRssidNotSupportDR(message.getRSsID());
 		String messageType = message.getMessageType();	
@@ -2054,6 +2057,8 @@ public class MessageStoreManager extends DataManager {
 					.append("`R_A2P` int(11) default '0',")
 					.append("`MsgID` varchar(1024) default '',")
 					.append("`DeliveryChannel` varchar(100) default '0',")
+					.append("`VendorErrorCode` varchar(64) default NULL,")
+					.append("`DrErrorCode` varchar(3) default NULL,")
 					.append("`O_Operator` int(11) default '-1',")
 					.append("`R_Operator` int(11) default '-1',")
 					.append("`Split` int(11) default '0',")
@@ -2360,8 +2365,7 @@ public class MessageStoreManager extends DataManager {
 					newMsg.setActionCode(0);
 					newMsg.setOriginalQueue(RDQ);
 					newMsg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
-					newMsg.setStatusCode(getCodeFromState(newMsg
-							.getStatusText()));
+					newMsg.setStatusCode(restoreResendDrStatus(newMsg));
 					newMsg.setRowId(rs.getInt("ID"));
 					String deliveryChannel = newMsg.getDeliveryChannel();
 					if (deliveryChannel != null) {
@@ -3608,6 +3612,7 @@ public class MessageStoreManager extends DataManager {
 		sb.append("InCsm=").append((msg.isInCsm() ? "1" : "0"));
 		sb.append(",").append("ServiceTypeID=").append(msg.getServiceTypeID());
 		sb.append(",").append("ScheduleDeliveryTime=").append(formatMySqlDate(msg.getScheduleDeliveryTime()));
+		sb.append(drErrorSql(msg));
 		return sb.toString();
 	}
 
@@ -3648,7 +3653,7 @@ public class MessageStoreManager extends DataManager {
 				.append(makeSqlStrReplace(msg.getDeliveryChannel()))
 				.append(", ");
 		sb.append("DateIn=NOW() ");
-
+		sb.append(drErrorSql(msg));
 		return sb.toString();
 	}
 
@@ -3661,6 +3666,7 @@ public class MessageStoreManager extends DataManager {
 		msg.setTextContent(rs.getString("TextContent"));
 		msg.setDeliveryChannel(rs.getString("DeliveryChannel"));
 		msg.setDateIn(rs.getTimestamp("DateIn"));
+		readDrError(rs, msg);
 	}
 
 	/**
@@ -3738,6 +3744,103 @@ public class MessageStoreManager extends DataManager {
 		msg.setInCsm((rs.getInt("InCsm")) != 0);
 		msg.setServiceTypeID(rs.getInt("ServiceTypeID"));
 		msg.setScheduleDeliveryTime(rs.getTimestamp("ScheduleDeliveryTime"));
+		readDrError(rs, msg);
+	}
+
+	// ---- DR error code columns (docs/sql/2026-11-11_dr_error_code.sql) ----
+
+	/** the tables that keep messages; each gets VendorErrorCode and DrErrorCode */
+	public static final String[] DR_ERROR_TABLES = { "messagestore", PMQ, RMQ, SMQ, WDQ, QDQ, RDQ, SDQ, IDDQ, CSMQ };
+	/** null: not checked yet */
+	private static volatile Boolean drErrorColumnsFound = null;
+
+	/** GmmsConfig DB.DrErrorCodeColumns: true / false, or auto (default): whether the DB has the columns */
+	public boolean drErrorColumns() {
+		String mode = gmmsUtility.getCommonProperty("DB.DrErrorCodeColumns", "auto").trim();
+		if ("true".equalsIgnoreCase(mode)) {
+			return true;
+		}
+		if ("false".equalsIgnoreCase(mode)) {
+			return false;
+		}
+		Boolean found = drErrorColumnsFound;
+		if (found == null) {
+			found = detectDrErrorColumns();
+			drErrorColumnsFound = found;
+		}
+		return found;
+	}
+
+	/** checked again on the next use (RELOAD_DRERROR, after the SQL has been run) */
+	public static void recheckDrErrorColumns() {
+		drErrorColumnsFound = null;
+	}
+
+	private boolean detectDrErrorColumns() {
+		List<String> missing = new ArrayList<String>();
+		int seen = 0;
+		for (String table : DR_ERROR_TABLES) {
+			ResultSet rs = null;
+			try {
+				rs = doSelect("SELECT VendorErrorCode, DrErrorCode FROM " + table + " WHERE 1=0");
+				seen++;
+			} catch (Exception e) {
+				String m = e.getMessage() == null ? "" : e.getMessage();
+				if (m.contains("Unknown column")) {
+					missing.add(table);
+					seen++;
+				}
+				// a table that does not exist in this DB is not used here
+			} finally {
+				if (rs != null) {
+					try { rs.close(); } catch (Exception e) { }
+				}
+				super.closeSession();
+			}
+		}
+		if (seen == 0) {
+			log.warn("[DR-ERR] DB not reachable: DR error code columns not used (DB.DrErrorCodeColumns=auto); checked again on RELOAD_DRERROR");
+			return false;
+		}
+		if (!missing.isEmpty()) {
+			log.error("[DR-ERR] DB tables without VendorErrorCode / DrErrorCode: {}. The columns are not written; run docs/sql/2026-11-11_dr_error_code.sql, then RELOAD_DRERROR", missing);
+			return false;
+		}
+		log.info("[DR-ERR] DB has the DR error code columns: written and read");
+		return true;
+	}
+
+	/** ", VendorErrorCode=..., DrErrorCode=..." when the DB has the columns, else "" */
+	public String drErrorSql(GmmsMessage msg) {
+		if (!drErrorColumns()) {
+			return "";
+		}
+		return ", VendorErrorCode=" + makeSqlStrReplace(msg.getVendorErrorCode()) + ", DrErrorCode=" + makeSqlStrReplace(msg.getDrErrorCode());
+	}
+
+	private void readDrError(ResultSet rs, GmmsMessage msg) {
+		if (!drErrorColumns()) {
+			return;
+		}
+		try {
+			msg.setVendorErrorCode(rs.getString("VendorErrorCode"));
+			msg.setDrErrorCode(rs.getString("DrErrorCode"));
+		} catch (SQLException e) {
+			log.debug(msg, "no DR error code columns in this result: {}", e.getMessage());
+		}
+	}
+
+	/**
+	 * The status of a DR sent again from RDQ: by its text; its DR error code gives the detail when the code's
+	 * status is of the same kind, or the text is not a DR state (DEF-C5: 10405 sent again as UNKNOWN).
+	 */
+	int restoreResendDrStatus(GmmsMessage msg) {
+		int byText = getCodeFromState(msg.getStatusText());
+		DrErrorConfig.Code c = DrErrorConfig.getInstance().code(msg.getDrErrorCode());
+		if (c != null && (byText == GmmsStatus.UNKNOWN.getCode() || c.status / 100 == byText / 100)) {
+			return c.status;
+		}
+		return byText;
 	}
 
 	public String makeSqlStrReplace(String strSQL) {

@@ -68,6 +68,7 @@ public final class FakeDr {
 		dr.setMilterActionCode(TIMER_BIT, false);
 		dr.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 		dr.setStatus(status);
+		dr.setDrErrorCode(com.king.gmms.domain.DrErrorConfig.getInstance().exactCode(status.getCode()));
 		dr.setRetriedNumber(0);
 		dr.setNextRetryTime(null);
 		dr.setDateIn(new Date());
@@ -163,6 +164,7 @@ public final class FakeDr {
 		if (hit) {
 			log.info(dr, "[DR-REWRITE] ossid={} from={} to={}", dr.getOSsID(), dr.getStatusCode(), GmmsStatus.DELIVERED.getCode());
 			dr.setStatus(GmmsStatus.DELIVERED);
+			dr.setDrErrorCode("000");
 		}
 	}
 }

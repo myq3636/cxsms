@@ -1007,14 +1007,10 @@ public class Smpp {
 		return createSmppSubmitSM4dr(gmmsMsg, cst, null);
 	}
 
-	private String mappingErrorCode4DR(int statusCode, A2PCustomerInfo cst) {
-		String errcod = "000";
-		if (!cst.isSmppMapErrCod4DR()) {
-			return errcod;
-		}
-		errcod = getErrCodFromStatusCode(statusCode);
-
-		return errcod;
+	/** the receipt err for the customer: its DR error code mapping (DrErrorConfig), 3 characters */
+	private String customerErr4DR(GmmsMessage gmmsMsg, A2PCustomerInfo cst) {
+		String err = com.king.gmms.domain.DrErrorConfig.getInstance().customerErr(cst.getShortName(), gmmsMsg);
+		return err.length() > 3 ? err.substring(0, 3) : err;
 	}
 
 	/**
@@ -1105,8 +1101,7 @@ public class Smpp {
 				sb.append(" stat:");
 				sb.append(state);
 				sb.append(" err:");
-				sb.append(this
-						.mappingErrorCode4DR(gmmsMsg.getStatusCode(), cst));
+				sb.append(this.customerErr4DR(gmmsMsg, cst));
 
 				sb.append(" text:");
 				try {
@@ -1288,8 +1283,7 @@ public class Smpp {
 						String msgId = parseHexMsgId(gmmsMsg.getInMsgID(), cst);
 						sb.append(msgId);
 					}
-					String errorcode = this.mappingErrorCode4DR(gmmsMsg.getStatusCode(),
-							cst);
+					String errorcode = this.customerErr4DR(gmmsMsg, cst);
 					if(cst.isNotSupportUnknowDRStatus()) {
 						if("UNDELIV".equalsIgnoreCase(state) &&
 								(errorcode.equalsIgnoreCase("004")|| errorcode.equalsIgnoreCase("002"))) {
@@ -1363,6 +1357,15 @@ public class Smpp {
 			request.setPriorityFlag(Byte.parseByte(String.valueOf(gmmsMsg
 					.getPriority())));
 			request.setRegisteredDelivery(Byte.parseByte("0"));
+			if (com.king.gmms.domain.DrErrorConfig.getInstance().customerTlv(cstNameShort)) {
+				// network_error_code: type 3 (GSM), the customer's err as a 2-byte value
+				try {
+					int v = Integer.parseInt(customerErr4DR(gmmsMsg, cst));
+					request.setNetworkErrorCode(new SmppByteBuffer(new byte[] { 3, (byte) (v >> 8), (byte) v }));
+				} catch (NumberFormatException e) {
+					log.warn(gmmsMsg, "DR network_error_code not set: the customer's err is not a number");
+				}
+			}
 			request.setDataCoding(Byte.parseByte("0"));
 		} catch (Exception e) {
 			log.error(
@@ -1798,9 +1801,12 @@ public class Smpp {
 						if (tlv != null) {
 							String netErrorcode = bytesToHexString(tlv.getBuffer());
 							log.info(msg, "get the network error code is:{}", netErrorcode);
-							if(cst.getSmsOptionDRNoCreditCode().contains(netErrorcode)){
-								msg.setStatus(GmmsStatus.REJECTED_BYNC);
-							}							
+							if (netErrorcode.length() >= 6) {
+								// type:value, kept for Core with stat and err
+								String nec = Integer.parseInt(netErrorcode.substring(0, 2), 16) + ":" + netErrorcode.substring(2, 6);
+								String raw = msg.getVendorErrorCode();
+								msg.setVendorErrorCode(raw == null ? "nec=" + nec : raw + ";nec=" + nec);
+							}
 						}
 					} catch (Exception e) {
 						//log.info(msg, "Parse NetworkErrorCode error", e);
@@ -2090,54 +2096,6 @@ public class Smpp {
 		case 10900:
 		default:
 			return "UNKNOWN";
-		}
-	}
-
-	private String getErrCodFromStatusCode(int code) {
-		switch (code) {
-		case 10000:
-			return "000";
-		case 10105:
-			return "000";
-		case 10200:
-			return "001";
-		case 10300:
-			return "002";
-		case 10400:
-			return "003";
-		case 10401:
-			return "011";
-		case 10402:
-			return "012";
-		case 10403:
-			return "013";
-		case 10404:
-			return "014";
-		case 10405:
-			return "016";
-		case 10406:
-			return "017";
-		case 10500:
-			return "005";
-		case 10501:
-			return "006";
-		case 10502:
-			return "020";
-		case 10503:
-			return "011";
-		case 10800:
-			return "008";
-		case 10801:
-			return "014";
-		case 10802:
-			return "014";
-		case 10803:
-			return "019";
-		case 10804:
-			return "019";
-		case 10900:
-		default:
-			return "004";
 		}
 	}
 
@@ -3046,15 +3004,14 @@ public class Smpp {
 			msg.setStatusText(GmmsStatus.getStatus(code).getText());
 			log.trace(msg, "messageId and status is:{} {}" , msgId , state);
 		}
-		//add error code mapping for Ammex stc
+		// stat and err as the channel sent them; Core maps them to a DR error code (DrErrorConfig)
+		String err = null;
 		beginindex = shortMsg.indexOf("err:");
-		if((!cst.getSmsOptionDRNoCreditCode().isEmpty()) 
-				&& beginindex>= 0 && beginindex + 7 <= length) {
-			String netErrorcode = shortMsg.substring(beginindex + 4, beginindex + 7);
-			if(cst.getSmsOptionDRNoCreditCode().contains(netErrorcode)){
-				msg.setStatus(GmmsStatus.REJECTED_BYNC);
-			}
+		if (beginindex >= 0) {
+			int end = shortMsg.indexOf(' ', beginindex + 4);
+			err = shortMsg.substring(beginindex + 4, end < 0 ? length : end).trim();
 		}
+		msg.setVendorErrorCode(com.king.gmms.domain.DrErrorConfig.drRaw(state == null ? null : state.trim(), err, null));
 	}
 
 	public void initSmppPara(A2PCustomerInfo server) {

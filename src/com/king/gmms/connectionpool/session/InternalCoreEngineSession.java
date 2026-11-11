@@ -1647,6 +1647,8 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 								message.getMsgID(), message.getOSsID());
 					}
 					mergeInboundDeliveryReport(message, finalMsg);
+					// the channel's error code -> the internal DR error code (and its status)
+					com.king.gmms.domain.DrErrorConfig.getInstance().applyVendorDr(message, finalMsg.getVendorErrorCode());
 					// way 4: a final vendor DR ends the timing; after a timeout DR it is only recorded
 					com.king.gmms.processor.FakeDr.onVendorDr(message);
 					boolean processed = processDeliveryReport(message, finalPdu);

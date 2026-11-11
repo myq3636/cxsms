@@ -69,6 +69,10 @@ public class GmmsMessage extends MessageBase {
 	protected String deliveryChannel = null;
 	/** modules the message went through, for tracing only (ModulePath) */
 	protected String modulePath = null;
+	/** a vendor DR or failed submit as the channel sent it (DrErrorConfig.drRaw / submitRaw) */
+	protected String vendorErrorCode = null;
+	/** the internal DR error code, 3 digits (conf/drErrorCode.cfg) */
+	protected String drErrorCode = null;
 	protected String routingSsIDs = null;
 	protected String redisStreamID = null; // V4.0 Redis Stream ID for ACK
 	protected long redisFence = -1L; // C-9: 该消息所属 MQM 任期纪元(来自 stream 字段, 非序列化); -1=缺失
@@ -268,6 +272,22 @@ public class GmmsMessage extends MessageBase {
 		this.modulePath = modulePath;
 	}
 
+	public String getVendorErrorCode() {
+		return vendorErrorCode;
+	}
+
+	public void setVendorErrorCode(String vendorErrorCode) {
+		this.vendorErrorCode = vendorErrorCode;
+	}
+
+	public String getDrErrorCode() {
+		return drErrorCode;
+	}
+
+	public void setDrErrorCode(String drErrorCode) {
+		this.drErrorCode = drErrorCode;
+	}
+
 //	public boolean inClientPull() {
 //		return this.inClientPull;
 //	}
@@ -374,6 +394,8 @@ public class GmmsMessage extends MessageBase {
 		this.outClientPull = oneMsg.outClientPull;
 		this.deliveryChannel = oneMsg.deliveryChannel;
 		this.modulePath = oneMsg.modulePath;
+		this.vendorErrorCode = oneMsg.vendorErrorCode;
+		this.drErrorCode = oneMsg.drErrorCode;
 		this.oOperator = oneMsg.oOperator;
 		this.rOperator = oneMsg.rOperator;
 		// this.localTimeStamp = oneMsg.localTimeStamp;

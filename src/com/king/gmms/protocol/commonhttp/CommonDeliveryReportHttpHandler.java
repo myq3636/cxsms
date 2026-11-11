@@ -51,6 +51,10 @@ public class CommonDeliveryReportHttpHandler extends HttpHandler {
 			} else if ("statusCode".equalsIgnoreCase(pval)) {
 				postData.append("&").append(param.getOppsiteParam())
 						.append("=").append(del_statucode);
+			} else if ("errorCode".equalsIgnoreCase(pval)) {
+				// the DR error code for this customer (conf/drErrorMapping.cfg)
+				postData.append("&").append(param.getOppsiteParam()).append("=").append(urlEncode(
+						com.king.gmms.domain.DrErrorConfig.getInstance().customerErr(cst == null ? null : cst.getShortName(), message), urlEncoding));
 			} else if ("dateIn".equalsIgnoreCase(pval)) {
 				String dateIn = parseHttpDateIn(param);
 				postData.append("&").append(param.getOppsiteParam())
@@ -171,6 +175,7 @@ public class CommonDeliveryReportHttpHandler extends HttpHandler {
 
 			String statusCode = null;
 			String statusText = null;
+			String errorCode = null;
 			for (HttpParam hp : hi.getMtDRRequest().getParamList()) {
 				String param = hp.getParam();
 				String value = request.getParameter(hp.getOppsiteParam()) != null ? request
@@ -188,12 +193,16 @@ public class CommonDeliveryReportHttpHandler extends HttpHandler {
 					statusText = value;
 				} else if ("statusCode".equalsIgnoreCase(param)) {
 					statusCode = value;
+				} else if ("errorCode".equalsIgnoreCase(param)) {
+					errorCode = value;
 				} else {
 					message.setProperty(hp.getParam(), value);
 				}
 			}
 			GmmsStatus gs = processStatus(statusCode, statusText);
 			message.setStatus(gs);
+			// the channel's error code, mapped by Core (DrErrorConfig)
+			message.setVendorErrorCode(com.king.gmms.domain.DrErrorConfig.drRaw(null, errorCode, null));
 			log.debug("outmsgid:{}", message.getOutMsgID());
 			if (message.getOutMsgID() == null) {
 				message

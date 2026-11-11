@@ -150,7 +150,6 @@ public class A2PMultiConnectionInfo extends A2PCustomerInfo{
 
             this.removeRecPrefix = sc.getRemoveRecPrefix();
             this.bSmppIsPutMsgId4DSR = sc.getSMPPIsPutMsgId4DSR();
-            this.isSmppMapErrCod4DR = sc.isSmppMapErrCod4DR();
             this.bSmppIsGenHexMsgId = sc.getSMPPIsGenHexMsgId();
             this.chlSMPPMsgIDParse = sc.isChlSMPPMsgIDParse();
             this.bSmppIsPadZero4SR = sc.getSMPPIsPadZero4SR();

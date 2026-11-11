@@ -399,6 +399,12 @@ public class SerializableHandler {
 						    	case 57:
 						    		msg.setModulePath(parameters[57]);
 									break;
+						    	case 58:
+						    		msg.setVendorErrorCode(parameters[58].replaceAll(repl_sep, separator));
+									break;
+						    	case 59:
+						    		msg.setDrErrorCode(parameters[59]);
+									break;
 								default:
 									if(log.isInfoEnabled()){
 										log.info("Unknown parameter in Redis String, and Redis String is {}", message);
@@ -892,6 +898,9 @@ public class SerializableHandler {
 					// 57: the modules it went through, this one last (tracing only; older readers ignore it)
 					String path = com.king.gmms.util.ModulePath.withSelf(msg.getModulePath());
 					sb.append(separator).append(path == null ? "" : path.replaceAll(separator, repl_sep));
+					// 58, 59: the DR error code as the channel sent it, the internal one
+					sb.append(separator).append(msg.getVendorErrorCode() == null ? "" : msg.getVendorErrorCode().replaceAll(separator, repl_sep));
+					sb.append(separator).append(msg.getDrErrorCode() == null ? "" : msg.getDrErrorCode());
 					
 				} catch (Exception e) {
 					if(log.isInfoEnabled()){

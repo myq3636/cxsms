@@ -215,6 +215,9 @@ public class MultiSmppPduProcessor {
 			// set state after submiting
 			setCommandState(msg, resp, submitNotPaidStatus);
 			msg.setAttachment(resp.getCommandStatus());
+			if (resp.getCommandStatus() != 0) {
+				msg.setVendorErrorCode(com.king.gmms.domain.DrErrorConfig.submitRaw(resp.getCommandStatus()));
+			}
 		}
 		if(log.isInfoEnabled()){
 			log.info(msg, "[SUBMIT-RESP] seq={} pduStatus={} status={} outMsgId={}",

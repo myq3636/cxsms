@@ -299,6 +299,7 @@ public class MessageBackupWriter {
 		sb.append(",").append("InCsm=").append((msg.isInCsm() ? "1" : "0"));
 		sb.append(",").append("ServiceTypeID=").append(msg.getServiceTypeID());
 		sb.append(",").append("ScheduleDeliveryTime=").append(formatMySqlDate(msg.getScheduleDeliveryTime()));
+		sb.append(com.king.gmms.GmmsUtility.getInstance().getMessageStoreManager().drErrorSql(msg));
 		
 		return sb.toString();
 	}

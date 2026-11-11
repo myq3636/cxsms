@@ -32,6 +32,8 @@ public class SmppTestClient {
 	/** a slow customer: wait this long before answering each deliver_sm */
 	volatile long deliverDelayMs = 0;
 	final Map<String, AtomicInteger> deliverByText = new ConcurrentHashMap<String, AtomicInteger>();
+	/** body of the last deliver_sm */
+	volatile byte[] lastDeliverBody;
 	final AtomicLong delivers = new AtomicLong();
 	volatile long enquireRespAt = 0;
 	final AtomicLong enquiresFromServer = new AtomicLong();
@@ -118,6 +120,7 @@ public class SmppTestClient {
 					if (status == 0) okResp.incrementAndGet(); else errResp.incrementAndGet();
 				} else if (cmd == DELIVER) {
 					delivers.incrementAndGet();
+					lastDeliverBody = body;
 					String text = shortMessage(body);
 					deliverByText.computeIfAbsent(text, k -> new AtomicInteger()).incrementAndGet();
 					if (deliverDelayMs > 0) Thread.sleep(deliverDelayMs);

@@ -76,13 +76,13 @@ public class ClientResultIT extends ItSupport {
 		cm.append(vendor("RV404", 404, "u404", "ChlSMPPMsgIDParse: true\n"));
 		cm.append(vendor("RV405", 405, "u405", "ChlSMPPMsgIDParse: true\nSMSOptionSMPPIsPadZero4SR: false\n"));
 		cm.append(vendor("RV406", 406, "u406", "SMSOptionDRStatusIsOptionPara: true\n"));
-		cm.append(vendor("RV407", 407, "u407", "SMSOptionDRNotPaidCode: 088,030001\n"));
+		cm.append(vendor("RV407", 407, "u407", ""));
 		cm.append(vendor("RV408", 408, "u408", "DrSwapAddr: false\n"));
 		cm.append(vendor("RV409", 409, "u409", "SMSOptionRemoveUdh: true\n"));
 		cm.append("\n[RC410]\nCCBSSID: 410\nA2PPlayerType: operator\nProtocol: SMPP\nSMSOptionDRStatusMapping: DELIVRD:ACCEPTD\n");
 		cm.append("\n[RC411]\nCCBSSID: 411\nA2PPlayerType: operator\nProtocol: SMPP\nSMSOptionIsNotSupportUnknowDRStatus: true\n");
 		cm.append("\n[RC412]\nCCBSSID: 412\nA2PPlayerType: operator\nProtocol: SMPP\n");
-		cm.append("\n[RC413]\nCCBSSID: 413\nA2PPlayerType: operator\nProtocol: SMPP\nSMSOptionSmppMapErrCod4DR: true\n");
+		cm.append("\n[RC413]\nCCBSSID: 413\nA2PPlayerType: operator\nProtocol: SMPP\n");
 		Path p = Paths.get(home + "conf/cm.cfg");
 		Files.write(p, (new String(Files.readAllBytes(p), "UTF-8") + cm).getBytes("UTF-8"));
 		FakeSmsc smsc = new FakeSmsc(PORT);
@@ -164,13 +164,11 @@ public class ClientResultIT extends ItSupport {
 			v = dr(a402, 402, new byte[0], t.toByteArray());
 			check(v != null && "TLV1".equals(v.getOutMsgID()) && v.getStatusCode() == GmmsStatus.UNDELIVERABLE.getCode(), "VD-04d no option, empty text: read from the TLVs too: " + show(v));
 
-			// ---- not paid ----
+			// ---- the vendor's error code, kept for Core (DR error codes, DrErrorIT maps them) ----
 			v = dr(a407, 407, receipt("NP1", "UNDELIV", "088"), null);
-			check(v != null && v.getStatusCode() == GmmsStatus.REJECTED_BYNC.getCode(), "VD-08a SMSOptionDRNotPaidCode, err:088: REJECTED_BYNC: " + show(v));
-			v = dr(a407, 407, receipt("NP2", "UNDELIV", "001"), null);
-			check(v != null && v.getStatusCode() == 10400, "VD-08b other err: stays UNDELIV: " + show(v));
-			v = dr(a407, 407, receipt("NP3", "UNDELIV", "001"), FakeSmsc.tlv(0x0423, new byte[] { 3, 0, 1 }));
-			check(v != null && v.getStatusCode() == GmmsStatus.REJECTED_BYNC.getCode(), "VD-08c network_error_code 030001 on the list: REJECTED_BYNC: " + show(v));
+			check(v != null && v.getStatusCode() == 10400 && "stat=UNDELIV;err=088".equals(v.getVendorErrorCode()), "VD-08a stat and err kept as sent: " + (v == null ? "none" : v.getVendorErrorCode()));
+			v = dr(a407, 407, receipt("NP3", "UNDELIV", "001"), FakeSmsc.tlv(0x0423, new byte[] { 3, 0, 0x1B }));
+			check(v != null && "stat=UNDELIV;err=001;nec=3:001B".equals(v.getVendorErrorCode()), "VD-08c network_error_code kept as type:value: " + (v == null ? "none" : v.getVendorErrorCode()));
 
 			// ---- a receipt that cannot be parsed ----
 			int before = drs(402);
@@ -238,11 +236,11 @@ public class ClientResultIT extends ItSupport {
 			text = customerDr(smpp, 412, GmmsStatus.UNKNOWN);
 			check(text.contains("stat:UNKNOWN"), "VD-07c customer without the option: UNKNOWN: " + text);
 			text = customerDr(smpp, 413, GmmsStatus.UNDELIVERABLE);
-			check(text.contains("err:003"), "VD-09d SMSOptionSmppMapErrCod4DR: 10400 shown as err:003: " + text);
+			check(text.contains("err:003"), "VD-09d no DR error mapping: the default table, 10400 shown as err:003: " + text);
 			text = customerDr(smpp, 413, GmmsStatus.EXPIRED);
 			check(text.contains("err:001"), "VD-09e 10200 shown as err:001: " + text);
 			text = customerDr(smpp, 412, GmmsStatus.UNDELIVERABLE);
-			check(text.contains("err:000"), "VD-09f customer without the option: err:000: " + text);
+			check(text.contains("err:003"), "VD-09f a customer that had no SMSOptionSmppMapErrCod4DR (err:000 before): the default table too, err:003: " + text);
 		} catch (Throwable t) { t.printStackTrace(System.out); failures++; }
 		exit();
 	}

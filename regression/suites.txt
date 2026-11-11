@@ -23,6 +23,7 @@ ServerBatch1IT it.ServerBatch1IT it-server
 ServerBatch2IT it.ServerBatch2IT it-server
 ServerBatch3IT it.ServerBatch3IT it-server
 ServerDrPduIT it.ServerDrPduIT it-server
+DrErrorIT it.DrErrorIT it-server
 ShardGroupIT it.ShardGroupIT it
 LogChainCoreIT it.LogChainCoreIT it
 LogChainClientIT it.LogChainClientIT it-server

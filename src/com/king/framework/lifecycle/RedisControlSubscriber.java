@@ -62,6 +62,12 @@ public class RedisControlSubscriber extends JedisPubSub implements Runnable {
 				log.info("Reloaded core shard assignment by redis control command. args={}", args);
 				return;
 			}
+			if ("RELOAD_DRERROR".equalsIgnoreCase(cmd)) {
+				com.king.message.gmms.MessageStoreManager.recheckDrErrorColumns();
+				boolean ok = com.king.gmms.domain.DrErrorConfig.getInstance().reload();
+				log.info("RELOAD_DRERROR: conf/drErrorCode.cfg and conf/drErrorMapping.cfg {}", ok ? "loaded" : "not loaded, the tables in use are kept");
+				return;
+			}
 			if ("RELOAD_CLIENT_SHARDS".equalsIgnoreCase(cmd)) {
 				GmmsUtility.getInstance().initClientShardAssignment();
 				ModuleStatusReporter.publishShardsNow();

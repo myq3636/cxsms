@@ -171,7 +171,6 @@ public abstract class A2PCustomerInfo {
 	protected boolean supportOutgoingBinary = false;
 	protected boolean supportIncomingA2P = false;
 	protected boolean supportOutgoingA2P = false;
-	protected boolean isSmppMapErrCod4DR = false;
 
 	protected int incomingThrottlingNum = 0;
 	
@@ -360,6 +359,8 @@ public abstract class A2PCustomerInfo {
     protected boolean smsOptionSendDRByInSubmitInCU = false;
 	/** customer: fake DR status, percent DELIVERED (the rest UNDELIVERABLE); 100 = always DELIVERED */
 	protected int fakeDrSuccessRatio = 100;
+	/** channel: DR err (receipt err:, or network_error_code as 6 hex digits) meaning no credit: REJECTED_BYNC */
+	protected List<String> smsOptionDRNoCreditCode = new ArrayList<String>();
 	/** customer: no fake DR from a channel (SMSOptionSendDRByOutSubmit) */
 	protected boolean fakeDrDisable = false;
 	/** customer: recipients whose real DR may be rewritten by SMSOptionDRSuccessRatio; empty = all */
@@ -377,7 +378,6 @@ public abstract class A2PCustomerInfo {
 	//disable system auto adjust the throttling number
 	protected boolean smsOptionDisableAutoAdjustThrottlingNumFlag = false; 	
 	protected List<Integer> smsOptionSubmitRetryCode= new ArrayList<Integer>();
-    protected List<String> smsOptionDRNoCreditCode= new ArrayList<String>();
     protected List<Integer> smsOptionDRRerouteCode= new ArrayList<Integer>();
 	protected List<Integer> smsOptionSubmitErrorCodesForFakeDR= new ArrayList<Integer>();
 	protected List<String> smsOptionRejectRegions= new ArrayList<String>();
@@ -553,13 +553,6 @@ public abstract class A2PCustomerInfo {
 		this.pendingAliveCount = pendingAliveCount;
 	}
 
-	public void setSmppMapErrCod4DR(boolean value) {
-		isSmppMapErrCod4DR = value;
-	}
-
-	public boolean isSmppMapErrCod4DR() {
-		return isSmppMapErrCod4DR;
-	}
 
 	public String getExtProperty(String attributeName) {
 		return extProperties.getProperty(attributeName);
@@ -1545,16 +1538,13 @@ public abstract class A2PCustomerInfo {
 			}
 		}
 		
+        smsOptionDRNoCreditCode.clear();
         String tempSmsOptionDRNoCreditCode = cfg.getString("SMSOptionDRNotPaidCode");
-        if (tempSmsOptionDRNoCreditCode != null
-                && !"".equals(tempSmsOptionDRNoCreditCode)) {
-            try {
-                String [] tempSmsOptionSubmitRetryCodeList = tempSmsOptionDRNoCreditCode.split(",");
-                for (int i = 0; i < tempSmsOptionSubmitRetryCodeList.length; i++) {
-                    smsOptionDRNoCreditCode.add(tempSmsOptionSubmitRetryCodeList[i]);
+        if (tempSmsOptionDRNoCreditCode != null && !"".equals(tempSmsOptionDRNoCreditCode.trim())) {
+            for (String c : tempSmsOptionDRNoCreditCode.split(",")) {
+                if (c.trim().length() > 0) {
+                    smsOptionDRNoCreditCode.add(c.trim());
                 }
-            } catch (Exception e) {
-                log.error("load SMSOptionDRNotPaidCode parameter failed, SMSOptionDRNotPaidCode={}", tempSmsOptionDRNoCreditCode);
             }
         }
         
@@ -1846,7 +1836,9 @@ public abstract class A2PCustomerInfo {
 		supportOutgoingAntiSpam = cfg.getBool(
 				"SMSOptionSupportOutgoingAntiSpam", false);
 
-		isSmppMapErrCod4DR = cfg.getBool("SMSOptionSmppMapErrCod4DR", false);
+		if (cfg.getString("SMSOptionSmppMapErrCod4DR") != null) {
+			log.warn("{}: SMSOptionSmppMapErrCod4DR is no longer used; DR err codes come from conf/drErrorMapping.cfg (default: the same table)", shortName);
+		}
 
 		incomingThrottlingNum = cfg.getInt("SMSOptionIncomingThrottlingNum", 0);
 
@@ -2805,6 +2797,10 @@ public abstract class A2PCustomerInfo {
 		return smsOptionSendDRByInSubmitInCU || isNeedFakeDRByInSubmitRecPrefixInCU(recipient);
 	}
 
+	public List<String> getSmsOptionDRNoCreditCode() {
+		return smsOptionDRNoCreditCode;
+	}
+
 	public int getFakeDrSuccessRatio() {
 		return fakeDrSuccessRatio;
 	}
@@ -2929,7 +2925,6 @@ public abstract class A2PCustomerInfo {
 		.append(prefix).append("SMSOptionDRStatusIsOptionPara:").append(this.isDRStatusInOptionPara)
 		.append(prefix).append("EnquireLink:").append(this.isEnquireLink)
 		.append(prefix).append("ServerEnquireLink:").append(this.isServerEnquireLink)
-		.append(prefix).append("SMSOptionSmppMapErrCod4DR:").append(this.isSmppMapErrCod4DR)
 		.append(prefix).append("SMSOptionHttpUrlEncodingTwice:").append(this.isUrlEncodingTwice)
 		.append(prefix).append("LastHopSplitSuffixFormat:").append(this.lastHopSplitSuffixFormat)
 		.append(prefix).append("SMSOptionMatchFullWhenRouteReplaceOAddr:").append(this.matchFullWhenRouteReplaceOAddr)
@@ -3538,14 +3533,6 @@ public abstract class A2PCustomerInfo {
 
 	public void setBlackholeDRSucRatio(int blackholeDRSucRatio) {
 		this.blackholeDRSucRatio = blackholeDRSucRatio;
-	}
-
-	public List<String> getSmsOptionDRNoCreditCode() {
-		return smsOptionDRNoCreditCode;
-	}
-
-	public void setSmsOptionDRNoCreditCode(List<String> smsOptionDRNoCreditCode) {
-		this.smsOptionDRNoCreditCode = smsOptionDRNoCreditCode;
 	}
 
 	public List<Integer> getSmsOptionDRRerouteCode() {

@@ -210,6 +210,7 @@ public class SdqMessageWriter {
 				.append(", ");
 		sb.append("DeliveryChannel=").append(makeSqlStrReplace(msg.getDeliveryChannel())).append(", ");
 		sb.append("DateIn=NOW() ");
+		sb.append(com.king.gmms.GmmsUtility.getInstance().getMessageStoreManager().drErrorSql(msg));
 		return sb.toString();
 	}
 
