@@ -22,7 +22,6 @@ import com.king.framework.lifecycle.LifecycleListener;
 import com.king.framework.lifecycle.LifecycleSupport;
 import com.king.framework.lifecycle.event.Event;
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.MailSender;
 import com.king.gmms.connectionpool.systemmanagement.ConnectionManagementForMGT;
 import com.king.gmms.domain.ModuleConnectionInfo;
 import com.king.gmms.domain.ModuleManager;
@@ -294,8 +293,7 @@ public class SystemManager implements A2PService, Runnable, Observer,LifecycleLi
 				}
 				this.dbStatus4Slave = status;
 				HATools.updateDBStatus2File(status);
-				MailSender.getInstance().sendAlertMail("A2P alert mail from SMG",
-						"The Slave DB is DOWN!", null);
+				log.error("[ALERT] the slave DB is down");
 				break;
 			case MASTER_USED: // switch DB by event from UI
 				this.switch2Master();

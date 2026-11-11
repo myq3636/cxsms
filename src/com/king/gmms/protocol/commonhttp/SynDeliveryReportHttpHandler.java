@@ -30,7 +30,6 @@ import com.king.db.DBLockConnection;
 import com.king.db.DataControl;
 import com.king.db.DataControlException;
 import com.king.framework.SystemLogger;
-import com.king.gmms.MailSender;
 import com.king.gmms.customerconnectionfactory.CommonHttpClientFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PSingleConnectionInfo;

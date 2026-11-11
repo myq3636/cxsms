@@ -10,7 +10,6 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.MailSender;
 import com.king.gmms.connectionpool.session.CommonHttpSession;
 import com.king.gmms.connectionpool.session.Session;
 import com.king.gmms.connectionpool.session.WebServiceSession;
@@ -244,14 +243,10 @@ public class QueryHttpMessageThread extends Thread {
 			fileWriter.write(nextId);
 			fileWriter.flush();
 		} catch (IOException e) {
-			String mailSubject = "A2P alert mail for"+ path +"interface";
-			String mailText = "IOException nextId can not write to file"
-					+ e.getMessage();
 			log
 					.error(
 							"IOException nextId can not write to file and Exception is {}",
 							e.getMessage());
-			MailSender.getInstance().sendAlertMail(mailSubject, mailText, null);
 			return false;
 		} finally {
 			if (fileWriter != null) {

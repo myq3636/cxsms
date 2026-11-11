@@ -1525,6 +1525,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 log.warn(bufferedMsg, "DR_RESP lost produce-claim race (handled by timeout). sequence={}", sequenceKey);
                 return;
             }
+            com.king.gmms.metrics.LatencyMetrics.e2eDr(bufferedMsg);
             processor.handleDeliver_SM_Resp( (DeliverSMResp) response,
                                             bufferedMsg);
             // V5.0: DR Response 通过 Redis Stream 回传 Core，完成解耦闭环（并确认消费这条 DR 的 stream 记录）
@@ -1599,6 +1600,15 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             if (pendingEntry != null && !pendingEntry.tryClaimProduce()) {
                 log.warn(bufferedMsg, "SUBMIT_RESP lost produce-claim race (handled by timeout). sequence={}", sequenceKey);
                 return;
+            }
+            long respAt = System.currentTimeMillis();
+            if (pendingEntry != null && pendingEntry.isPermitHeld()) {
+                // an entry restored from Redis has no send time of this process
+                com.king.gmms.metrics.LatencyMetrics.vendorSubmitRtt(bufferedMsg.getRSsID(), getSessionName(),
+                        respAt - pendingEntry.getCreateTime());
+            }
+            if (response.getCommandStatus() == 0) {
+                bufferedMsg.setOutTimeMs(respAt);
             }
             processor.handleSubmit_SM_Resp( (SubmitSMResp) response,
                                            bufferedMsg);
@@ -2042,6 +2052,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             	connection.send(request.getData().getBuffer());
             	pduLogger.logSent(isServer ? "server" : "client", sessionName, request);
                 msg.setOutTransID(key);
+                com.king.gmms.metrics.LatencyMetrics.e2eSubmit(msg);
                 result = true;
 
             }else{
@@ -2113,6 +2124,7 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                 connection.send(request.getData().getBuffer());
                 pduLogger.logSent(isServer ? "server" : "client", sessionName, request);
                 msg.setOutTransID(key);
+                com.king.gmms.metrics.LatencyMetrics.e2eSubmit(msg);
                 result = true;
                 log.info(msg, "[MT-OUT] rssid={} session={} seq={} split={} path={}", msg.getRSsID(), sessionName, key,
                         msg.getSarSegmentSeqNum(), ModulePath.withSelf(msg.getModulePath()));

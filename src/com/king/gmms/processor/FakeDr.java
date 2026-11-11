@@ -72,6 +72,8 @@ public final class FakeDr {
 		dr.setRetriedNumber(0);
 		dr.setNextRetryTime(null);
 		dr.setDateIn(new Date());
+		dr.setInTimeMs(System.currentTimeMillis());
+		dr.setOutTimeMs(0L);
 		dr.setDeliveryChannel(System.getProperty("module"));
 		return dr;
 	}

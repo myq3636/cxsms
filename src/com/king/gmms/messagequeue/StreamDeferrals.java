@@ -7,6 +7,8 @@ import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import com.king.gmms.metrics.MetricsCollector;
+import com.king.gmms.metrics.MetricsNames;
 import com.king.message.gmms.GmmsMessage;
 
 /**
@@ -21,6 +23,11 @@ final class StreamDeferrals {
 	}
 
 	private final Map<String, List<GmmsMessage>> deferred = new HashMap<String, List<GmmsMessage>>();
+	/** when the entries of a stream were put off, and why: for the defer.wait timer */
+	private final Map<String, long[]> since = new HashMap<String, long[]>();
+	private final Map<String, String> reasons = new HashMap<String, String>();
+	/** {module}.defer.wait.{consumer}.{reason}; null: not measured */
+	private volatile String waitMetric;
 
 	/** Entries read and put off, not sent yet. */
 	public int size() {
@@ -40,6 +47,11 @@ final class StreamDeferrals {
 		this.resume = resume;
 	}
 
+	/** measure how long entries stay put off, as defer.wait.{consumer}.{reason} */
+	void measureWait(String consumer) {
+		this.waitMetric = MetricsNames.TIMER_DEFER_WAIT + "." + consumer;
+	}
+
 	boolean isDeferred(String streamKey) {
 		synchronized (deferred) {
 			return deferred.containsKey(streamKey);
@@ -48,6 +60,11 @@ final class StreamDeferrals {
 
 	/** Put entries of a stream off for delayMs, merged with any already put off. */
 	void defer(String streamKey, List<GmmsMessage> messages, long delayMs) {
+		defer(streamKey, messages, delayMs, "other");
+	}
+
+	/** the same, with why (window_full, throttled, bind_throttled, ...) for the wait timer */
+	void defer(String streamKey, List<GmmsMessage> messages, long delayMs, String reason) {
 		boolean schedule;
 		synchronized (deferred) {
 			List<GmmsMessage> list = deferred.get(streamKey);
@@ -55,6 +72,10 @@ final class StreamDeferrals {
 			if (schedule) {
 				list = new ArrayList<GmmsMessage>();
 				deferred.put(streamKey, list);
+				if (waitMetric != null) {
+					since.put(streamKey, new long[] { System.currentTimeMillis() });
+					reasons.put(streamKey, reason == null ? "other" : reason);
+				}
 			}
 			list.addAll(messages);
 		}
@@ -77,8 +98,18 @@ final class StreamDeferrals {
 
 	/** The entries put off for the stream, removed; null if none. */
 	List<GmmsMessage> take(String streamKey) {
+		long[] at;
+		String reason;
+		List<GmmsMessage> list;
 		synchronized (deferred) {
-			return deferred.remove(streamKey);
+			list = deferred.remove(streamKey);
+			at = since.remove(streamKey);
+			reason = reasons.remove(streamKey);
 		}
+		String metric = waitMetric;
+		if (list != null && at != null && metric != null) {
+			MetricsCollector.getInstance().recordMillis(MetricsNames.metric(metric, reason), System.currentTimeMillis() - at[0]);
+		}
+		return list;
 	}
 }

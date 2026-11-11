@@ -89,6 +89,7 @@ public class OutboundStreamConsumer {
         running = true;
 
         workerPool = consumerConfig.newElasticWorkerPool();
+        consumerConfig.registerPoolGauges(workerPool);
 
         dispatcherThread = Executors.newSingleThreadExecutor();
         dispatcherThread.execute(this::dispatcherLoop);
@@ -98,6 +99,7 @@ public class OutboundStreamConsumer {
                 resumeDeferred(streamKey);
             }
         });
+        deferrals.measureWait(MetricsNames.CONSUMER_CLIENT_OUT);
         recoveryThread = Executors.newSingleThreadExecutor();
         recoveryThread.execute(new RedisStreamAutoClaimRunner("Client outbound-submit",
                 StreamQueueManager.STR_MT_ROUTED_PREFIX + "*", groupName, consumerName, true, queueManager,
@@ -105,7 +107,7 @@ public class OutboundStreamConsumer {
                     public void process(String streamKey, GmmsMessage msg) {
                         ProcessResult r = processMessage(streamKey, msg, true);
                         if (r != ProcessResult.DONE) {
-                            defer(streamKey, java.util.Collections.singletonList(msg), retryDelayMs(r, msg));
+                            defer(streamKey, java.util.Collections.singletonList(msg), retryDelayMs(r, msg), r);
                         }
                     }
                 }));
@@ -243,7 +245,7 @@ public class OutboundStreamConsumer {
                 ProcessResult r = processMessage(streamKey, msg, System.currentTimeMillis() - readAt >= claimIdleMs);
                 if (r != ProcessResult.DONE) {
                     defer(streamKey, new ArrayList<GmmsMessage>(messages.subList(i, messages.size())),
-                            retryDelayMs(r, msg));
+                            retryDelayMs(r, msg), r);
                     return false;
                 }
             }
@@ -283,6 +285,10 @@ public class OutboundStreamConsumer {
 
     private void defer(String streamKey, List<GmmsMessage> messages, long delayMs) {
         deferrals.defer(streamKey, messages, delayMs);
+    }
+
+    private void defer(String streamKey, List<GmmsMessage> messages, long delayMs, ProcessResult why) {
+        deferrals.defer(streamKey, messages, delayMs, why.name().toLowerCase());
     }
 
     /** Delay over: a task processes the put-off entries, then goes on reading the stream. */
@@ -329,8 +335,7 @@ public class OutboundStreamConsumer {
                     MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
             return handleMessageSending(msg, streamKey, mayBeClaimed);
         } finally {
-            MetricsCollector.getInstance().recordTime(MetricsNames.timer(MetricsNames.COMPONENT_CONSUMER,
-                    MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_LATENCY),
+            MetricsCollector.getInstance().recordTime(MetricsNames.consumer(MetricsNames.CONSUMER_CLIENT_OUT),
                     System.nanoTime() - start);
         }
     }

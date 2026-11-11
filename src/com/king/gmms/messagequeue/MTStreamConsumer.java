@@ -65,6 +65,7 @@ public class MTStreamConsumer {
             new ThreadPoolExecutor.AbortPolicy()
         );
 
+        consumerConfig.registerPoolGauges(workerPool);
         dispatcherThread = Executors.newSingleThreadExecutor();
         dispatcherThread.execute(this::dispatcherLoop);
         recoveryThread = Executors.newSingleThreadExecutor();
@@ -247,8 +248,7 @@ public class MTStreamConsumer {
                     MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_ROUTING_FAILED));
             logger.error(msg, "Failed to process MT from stream {}", streamKey, e);
         } finally {
-            MetricsCollector.getInstance().recordTime(MetricsNames.timer(MetricsNames.COMPONENT_CONSUMER,
-                    MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_LATENCY),
+            MetricsCollector.getInstance().recordTime(MetricsNames.consumer(MetricsNames.CONSUMER_MT),
                     System.nanoTime() - start);
         }
     }

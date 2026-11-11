@@ -73,6 +73,10 @@ public class GmmsMessage extends MessageBase {
 	protected String vendorErrorCode = null;
 	/** the internal DR error code, 3 digits (conf/drErrorCode.cfg) */
 	protected String drErrorCode = null;
+	/** epoch ms the message entered the gateway: an MT at the Server, a vendor DR at the Client (latency metrics only) */
+	protected long inTimeMs = 0L;
+	/** epoch ms the vendor accepted the MT (submit_sm_resp OK), for the vendor DR latency */
+	protected long outTimeMs = 0L;
 	protected String routingSsIDs = null;
 	protected String redisStreamID = null; // V4.0 Redis Stream ID for ACK
 	protected long redisFence = -1L; // C-9: 该消息所属 MQM 任期纪元(来自 stream 字段, 非序列化); -1=缺失
@@ -288,6 +292,22 @@ public class GmmsMessage extends MessageBase {
 		this.drErrorCode = drErrorCode;
 	}
 
+	public long getInTimeMs() {
+		return inTimeMs;
+	}
+
+	public void setInTimeMs(long inTimeMs) {
+		this.inTimeMs = inTimeMs;
+	}
+
+	public long getOutTimeMs() {
+		return outTimeMs;
+	}
+
+	public void setOutTimeMs(long outTimeMs) {
+		this.outTimeMs = outTimeMs;
+	}
+
 //	public boolean inClientPull() {
 //		return this.inClientPull;
 //	}
@@ -396,6 +416,8 @@ public class GmmsMessage extends MessageBase {
 		this.modulePath = oneMsg.modulePath;
 		this.vendorErrorCode = oneMsg.vendorErrorCode;
 		this.drErrorCode = oneMsg.drErrorCode;
+		this.inTimeMs = oneMsg.inTimeMs;
+		this.outTimeMs = oneMsg.outTimeMs;
 		this.oOperator = oneMsg.oOperator;
 		this.rOperator = oneMsg.rOperator;
 		// this.localTimeStamp = oneMsg.localTimeStamp;

@@ -101,12 +101,14 @@ public class HttpClientStreamConsumer {
 			}
 			running = true;
 			workerPool = consumerConfig.newElasticWorkerPool();
+			consumerConfig.registerPoolGauges(workerPool);
 			deferThread = Executors.newSingleThreadScheduledExecutor();
 			deferrals = new StreamDeferrals(deferThread, new StreamDeferrals.Resume() {
 				public void resume(String streamKey) {
 					resumeDeferred(streamKey);
 				}
 			});
+			deferrals.measureWait(submitMq ? MetricsNames.CONSUMER_HTTP_SUBMIT : "http_dr");
 			dispatcherThread = Executors.newSingleThreadExecutor();
 			dispatcherThread.execute(new Runnable() {
 				public void run() {
@@ -329,7 +331,6 @@ public class HttpClientStreamConsumer {
 
 		private boolean processMessage(String streamKey, GmmsMessage msg, boolean mayBeClaimed) {
 			long start = System.nanoTime();
-			String processMessageType = submitMq ? "submit" : "dr";
 			int targetSsid = -1;
 			String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
 			// vendor submits are sent at most once (ClientSendMarker); DRs pushed to HTTP customers are not
@@ -399,8 +400,7 @@ public class HttpClientStreamConsumer {
 				}
 				failToCoreAndAck(streamKey, msg, targetSsid, "exception:" + e.getClass().getSimpleName(), markerHeld);
 			} finally {
-				MetricsCollector.getInstance().recordTime(MetricsNames.build(MetricsNames.COMPONENT_CONSUMER,
-						MetricsNames.FLOW_PROCESS, processMessageType, MetricsNames.ACTION_LATENCY),
+				MetricsCollector.getInstance().recordTime(MetricsNames.consumer(submitMq ? MetricsNames.CONSUMER_HTTP_SUBMIT : "http_dr"),
 						System.nanoTime() - start);
 			}
 			return true;

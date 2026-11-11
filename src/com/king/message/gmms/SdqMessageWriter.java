@@ -8,7 +8,6 @@ import java.util.Date;
 import com.king.framework.A2PThreadGroup;
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.MailSender;
 import com.king.gmms.ha.ModuleURI;
 import com.king.gmms.protocol.MessageToolkit;
 
@@ -88,10 +87,6 @@ public class SdqMessageWriter {
 		if (d.exists() == false) {
 			if (d.mkdirs() == false) {
 				log.error("Error create folder: {}", folderName);
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for error message backup create folder",
-						"", null);
 				return false;
 			}
 		}
@@ -116,9 +111,6 @@ public class SdqMessageWriter {
 			result = true;
 		} catch (Exception ex) {
 			log.error("Error open new SDQ file: " + fileName, ex);
-			MailSender.getInstance().sendAlertMail(
-					"A2P alert mail from " + ModuleURI.self().getAddress()
-							+ " for open SDQ file Exception", ex);
 		}
 		return result;
 	}

@@ -4,23 +4,26 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
+import java.util.function.LongSupplier;
 
 /**
  * Lightweight, lock-free metrics collector for A2P gateway monitoring.
- * 
+ *
  * Provides three types of metrics:
  * <ul>
  *   <li><b>Counters</b> – monotonically increasing values (e.g., total messages processed)</li>
- *   <li><b>Gauges</b> – point-in-time values (e.g., current buffer size)</li>
- *   <li><b>Timers</b> – cumulative time + invocation count for latency analysis</li>
+ *   <li><b>Gauges</b> – point-in-time values, set by events or read by a registered supplier at report time</li>
+ *   <li><b>Timers</b> – count, total time, buckets and the largest value of the window, for latencies</li>
  * </ul>
- * 
- * All operations are thread-safe and lock-free via {@link AtomicLong}.
- * 
+ *
+ * Counters and timers use {@link LongAdder}: many threads adding to one name do not wait on each other.
+ *
  * <p>Usage:</p>
  * <pre>
  *   MetricsCollector.getInstance().incrementCounter("msg.submit.in");
  *   MetricsCollector.getInstance().setGauge("buffer.out.size", outBuffer.size());
+ *   MetricsCollector.getInstance().registerGauge("queue.size", () -&gt; queue.size());
  *   long start = System.nanoTime();
  *   // ... do work ...
  *   MetricsCollector.getInstance().recordTime("session.sendNewMessage", System.nanoTime() - start);
@@ -31,26 +34,55 @@ public class MetricsCollector {
     private static final MetricsCollector INSTANCE = new MetricsCollector();
 
     // ---- Counters: monotonically increasing ----
-    private final ConcurrentHashMap<String, AtomicLong> counters = new ConcurrentHashMap<String, AtomicLong>();
+    private final ConcurrentHashMap<String, LongAdder> counters = new ConcurrentHashMap<String, LongAdder>();
 
     // ---- Gauges: current snapshot values ----
     private final ConcurrentHashMap<String, AtomicLong> gauges = new ConcurrentHashMap<String, AtomicLong>();
+    private final ConcurrentHashMap<String, LongSupplier> gaugeSuppliers = new ConcurrentHashMap<String, LongSupplier>();
 
-    // ---- Timers: cumulative nanos + invocation count ----
-    private final ConcurrentHashMap<String, AtomicLong> timerTotalNanos = new ConcurrentHashMap<String, AtomicLong>();
-    private final ConcurrentHashMap<String, AtomicLong> timerCounts = new ConcurrentHashMap<String, AtomicLong>();
-    private final ConcurrentHashMap<String, AtomicLong> timerBuckets = new ConcurrentHashMap<String, AtomicLong>();
-    private static final String[] TIMER_BUCKET_NAMES = new String[] {
-        "le_10ms", "le_50ms", "le_100ms", "le_500ms", "le_1000ms", "gt_1000ms"
-    };
-    private static final long[] TIMER_BUCKET_LIMIT_NANOS = new long[] {
-        10L * 1000L * 1000L,
-        50L * 1000L * 1000L,
-        100L * 1000L * 1000L,
-        500L * 1000L * 1000L,
-        1000L * 1000L * 1000L
-    };
+    // ---- Timers ----
+    private final ConcurrentHashMap<String, Timer> timers = new ConcurrentHashMap<String, Timer>();
+    /** upper limits of the buckets in ms; one more bucket for anything longer */
+    private static final long[] BUCKET_LIMIT_MS = new long[] { 1, 5, 10, 25, 50, 100, 250, 500, 1000, 5000 };
+    private static final long[] BUCKET_LIMIT_NANOS = new long[BUCKET_LIMIT_MS.length];
+    private static final String[] TIMER_BUCKET_NAMES = new String[BUCKET_LIMIT_MS.length + 1];
+    static {
+        for (int i = 0; i < BUCKET_LIMIT_MS.length; i++) {
+            BUCKET_LIMIT_NANOS[i] = BUCKET_LIMIT_MS[i] * 1000000L;
+            TIMER_BUCKET_NAMES[i] = "le_" + BUCKET_LIMIT_MS[i] + "ms";
+        }
+        TIMER_BUCKET_NAMES[BUCKET_LIMIT_MS.length] = "gt_" + BUCKET_LIMIT_MS[BUCKET_LIMIT_MS.length - 1] + "ms";
+    }
     private volatile boolean enabled = false;
+
+    private static final class Timer {
+        final LongAdder count = new LongAdder();
+        final LongAdder nanos = new LongAdder();
+        final LongAdder[] buckets = new LongAdder[TIMER_BUCKET_NAMES.length];
+        /** largest value since the last snapshot */
+        final AtomicLong windowMax = new AtomicLong();
+
+        Timer() {
+            for (int i = 0; i < buckets.length; i++) {
+                buckets[i] = new LongAdder();
+            }
+        }
+    }
+
+    /** a timer at one moment: totals since start, and the largest value since the previous snapshot */
+    public static final class TimerSnapshot {
+        public final long count;
+        public final long nanos;
+        public final long[] buckets;
+        public final long windowMaxNanos;
+
+        TimerSnapshot(long count, long nanos, long[] buckets, long windowMaxNanos) {
+            this.count = count;
+            this.nanos = nanos;
+            this.buckets = buckets;
+            this.windowMaxNanos = windowMaxNanos;
+        }
+    }
 
     private MetricsCollector() {
     }
@@ -75,7 +107,7 @@ public class MetricsCollector {
     public void incrementCounter(String name) {
         if (!enabled) return;
         if (name == null || name.length() == 0) return;
-        getOrCreateCounter(name).incrementAndGet();
+        getOrCreateCounter(name).increment();
     }
 
     /**
@@ -84,22 +116,21 @@ public class MetricsCollector {
     public void incrementCounter(String name, long delta) {
         if (!enabled) return;
         if (name == null || name.length() == 0) return;
-        getOrCreateCounter(name).addAndGet(delta);
+        getOrCreateCounter(name).add(delta);
     }
 
     /**
      * Get the current value of a counter.
      */
     public long getCounter(String name) {
-        AtomicLong counter = counters.get(name);
-        return counter != null ? counter.get() : 0;
+        LongAdder counter = counters.get(name);
+        return counter != null ? counter.sum() : 0;
     }
 
-    private AtomicLong getOrCreateCounter(String name) {
-        AtomicLong counter = counters.get(name);
+    private LongAdder getOrCreateCounter(String name) {
+        LongAdder counter = counters.get(name);
         if (counter == null) {
-            counters.putIfAbsent(name, new AtomicLong(0));
-            counter = counters.get(name);
+            counter = counters.computeIfAbsent(name, k -> new LongAdder());
         }
         return counter;
     }
@@ -121,9 +152,33 @@ public class MetricsCollector {
     }
 
     /**
+     * A gauge read when the metrics are reported, so it never stays at the value of the last event.
+     * Registering a name again replaces its supplier.
+     */
+    public void registerGauge(String name, LongSupplier supplier) {
+        if (name == null || name.length() == 0 || supplier == null) return;
+        gaugeSuppliers.put(name, supplier);
+    }
+
+    public void unregisterGauge(String name) {
+        if (name != null) {
+            gaugeSuppliers.remove(name);
+            gauges.remove(name);
+        }
+    }
+
+    /**
      * Get the current gauge value.
      */
     public long getGauge(String name) {
+        LongSupplier supplier = gaugeSuppliers.get(name);
+        if (supplier != null) {
+            try {
+                return supplier.getAsLong();
+            } catch (Exception e) {
+                return 0;
+            }
+        }
         AtomicLong gauge = gauges.get(name);
         return gauge != null ? gauge.get() : 0;
     }
@@ -139,81 +194,86 @@ public class MetricsCollector {
         if (nanos < 0) {
             nanos = 0;
         }
-        getOrCreateTimerNanos(name).addAndGet(nanos);
-        getOrCreateTimerCount(name).incrementAndGet();
-        getOrCreateTimerBucket(name, timerBucketName(nanos)).incrementAndGet();
+        Timer t = timers.get(name);
+        if (t == null) {
+            t = timers.computeIfAbsent(name, k -> new Timer());
+        }
+        t.count.increment();
+        t.nanos.add(nanos);
+        t.buckets[bucketIndex(nanos)].increment();
+        long max = t.windowMax.get();
+        while (nanos > max && !t.windowMax.compareAndSet(max, nanos)) {
+            max = t.windowMax.get();
+        }
     }
 
     /**
-     * Get the total accumulated time in nanoseconds.
+     * Record a timing measurement in milliseconds (a difference of two System.currentTimeMillis values).
      */
-    public long getTimerTotalNanos(String name) {
-        AtomicLong t = timerTotalNanos.get(name);
-        return t != null ? t.get() : 0;
+    public void recordMillis(String name, long millis) {
+        if (!enabled) return;
+        recordTime(name, millis < 0 ? 0 : millis * 1000000L);
     }
 
     /**
      * Get the invocation count for a timer.
      */
     public long getTimerCount(String name) {
-        AtomicLong c = timerCounts.get(name);
-        return c != null ? c.get() : 0;
+        Timer t = timers.get(name);
+        return t != null ? t.count.sum() : 0;
     }
 
     /**
-     * Get the average time in milliseconds for a timer.
+     * Get the total accumulated time in nanoseconds.
      */
-    public double getTimerAvgMs(String name) {
-        long count = getTimerCount(name);
-        if (count == 0) return 0.0;
-        return (double) getTimerTotalNanos(name) / count / 1_000_000.0;
+    public long getTimerTotalNanos(String name) {
+        Timer t = timers.get(name);
+        return t != null ? t.nanos.sum() : 0;
     }
 
-    private AtomicLong getOrCreateTimerNanos(String name) {
-        AtomicLong t = timerTotalNanos.get(name);
-        if (t == null) {
-            timerTotalNanos.putIfAbsent(name, new AtomicLong(0));
-            t = timerTotalNanos.get(name);
-        }
-        return t;
-    }
-
-    private AtomicLong getOrCreateTimerCount(String name) {
-        AtomicLong c = timerCounts.get(name);
-        if (c == null) {
-            timerCounts.putIfAbsent(name, new AtomicLong(0));
-            c = timerCounts.get(name);
-        }
-        return c;
-    }
-
-    private AtomicLong getOrCreateTimerBucket(String name, String bucket) {
-        String key = timerBucketKey(name, bucket);
-        AtomicLong c = timerBuckets.get(key);
-        if (c == null) {
-            timerBuckets.putIfAbsent(key, new AtomicLong(0));
-            c = timerBuckets.get(key);
-        }
-        return c;
-    }
-
-    private String timerBucketName(long nanos) {
-        for (int i = 0; i < TIMER_BUCKET_LIMIT_NANOS.length; i++) {
-            if (nanos <= TIMER_BUCKET_LIMIT_NANOS[i]) {
-                return TIMER_BUCKET_NAMES[i];
+    private static int bucketIndex(long nanos) {
+        for (int i = 0; i < BUCKET_LIMIT_NANOS.length; i++) {
+            if (nanos <= BUCKET_LIMIT_NANOS[i]) {
+                return i;
             }
         }
-        return TIMER_BUCKET_NAMES[TIMER_BUCKET_NAMES.length - 1];
+        return BUCKET_LIMIT_NANOS.length;
     }
 
     public static String[] timerBucketNames() {
-        String[] copy = new String[TIMER_BUCKET_NAMES.length];
-        System.arraycopy(TIMER_BUCKET_NAMES, 0, copy, 0, TIMER_BUCKET_NAMES.length);
-        return copy;
+        return TIMER_BUCKET_NAMES.clone();
     }
 
-    public static String timerBucketKey(String name, String bucket) {
-        return name + "." + bucket;
+    /**
+     * A percentile in ms from the bucket counts of a window, by linear interpolation inside its bucket;
+     * the last bucket ends at maxMs. Close enough to follow trends, not exact.
+     */
+    public static double percentileMs(long[] buckets, double q, double maxMs) {
+        long total = 0;
+        for (long b : buckets) {
+            total += b;
+        }
+        if (total <= 0) {
+            return 0.0;
+        }
+        double rank = q * total;
+        long seen = 0;
+        for (int i = 0; i < buckets.length; i++) {
+            if (buckets[i] <= 0) {
+                continue;
+            }
+            if (seen + buckets[i] >= rank) {
+                double lower = i == 0 ? 0.0 : BUCKET_LIMIT_MS[i - 1];
+                double upper = i < BUCKET_LIMIT_MS.length ? BUCKET_LIMIT_MS[i] : Math.max(maxMs, lower);
+                if (maxMs > 0 && upper > maxMs) {
+                    upper = Math.max(lower, maxMs);
+                }
+                double v = lower + (upper - lower) * ((rank - seen) / buckets[i]);
+                return maxMs > 0 ? Math.min(v, maxMs) : v;
+            }
+            seen += buckets[i];
+        }
+        return maxMs;
     }
 
     // ==================== Snapshot ====================
@@ -223,54 +283,40 @@ public class MetricsCollector {
      */
     public Map<String, Long> snapshotCounters() {
         TreeMap<String, Long> snapshot = new TreeMap<String, Long>();
-        for (Map.Entry<String, AtomicLong> entry : counters.entrySet()) {
-            snapshot.put(entry.getKey(), entry.getValue().get());
+        for (Map.Entry<String, LongAdder> entry : counters.entrySet()) {
+            snapshot.put(entry.getKey(), entry.getValue().sum());
         }
         return snapshot;
     }
 
+    /** set gauges and supplier gauges (a supplier wins over a set value of the same name) */
     public Map<String, Long> snapshotGauges() {
         TreeMap<String, Long> snapshot = new TreeMap<String, Long>();
         for (Map.Entry<String, AtomicLong> entry : gauges.entrySet()) {
             snapshot.put(entry.getKey(), entry.getValue().get());
         }
+        for (Map.Entry<String, LongSupplier> entry : gaugeSuppliers.entrySet()) {
+            try {
+                snapshot.put(entry.getKey(), entry.getValue().getAsLong());
+            } catch (Exception e) {
+                // a gauge that cannot be read now is left out of this window
+            }
+        }
         return snapshot;
     }
 
     /**
-     * Returns a snapshot of timer data: count and average latency in ms.
+     * The timers; the largest value of each is reset, so this is for the one reporter, once per window.
      */
-    public Map<String, String> snapshotTimers() {
-        TreeMap<String, String> snapshot = new TreeMap<String, String>();
-        for (Map.Entry<String, AtomicLong> entry : timerCounts.entrySet()) {
-            String name = entry.getKey();
-            long count = entry.getValue().get();
-            double avgMs = getTimerAvgMs(name);
-            snapshot.put(name, String.format("count=%d, avgMs=%.2f", count, avgMs));
-        }
-        return snapshot;
-    }
-
-    public Map<String, Long> snapshotTimerCounts() {
-        TreeMap<String, Long> snapshot = new TreeMap<String, Long>();
-        for (Map.Entry<String, AtomicLong> entry : timerCounts.entrySet()) {
-            snapshot.put(entry.getKey(), entry.getValue().get());
-        }
-        return snapshot;
-    }
-
-    public Map<String, Long> snapshotTimerTotalNanos() {
-        TreeMap<String, Long> snapshot = new TreeMap<String, Long>();
-        for (Map.Entry<String, AtomicLong> entry : timerTotalNanos.entrySet()) {
-            snapshot.put(entry.getKey(), entry.getValue().get());
-        }
-        return snapshot;
-    }
-
-    public Map<String, Long> snapshotTimerBuckets() {
-        TreeMap<String, Long> snapshot = new TreeMap<String, Long>();
-        for (Map.Entry<String, AtomicLong> entry : timerBuckets.entrySet()) {
-            snapshot.put(entry.getKey(), entry.getValue().get());
+    public Map<String, TimerSnapshot> snapshotTimers() {
+        TreeMap<String, TimerSnapshot> snapshot = new TreeMap<String, TimerSnapshot>();
+        for (Map.Entry<String, Timer> entry : timers.entrySet()) {
+            Timer t = entry.getValue();
+            long[] b = new long[t.buckets.length];
+            for (int i = 0; i < b.length; i++) {
+                b[i] = t.buckets[i].sum();
+            }
+            snapshot.put(entry.getKey(), new TimerSnapshot(t.count.sum(), t.nanos.sum(), b, t.windowMax.getAndSet(0)));
         }
         return snapshot;
     }

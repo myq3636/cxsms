@@ -168,7 +168,7 @@ public class ThrottlingControl {
 				currentCount = gmmsUtility.getRedisClient().getStateRedis().incrWithExpire(limitKey, 2);
 			}
 
-			// not pass throttling control, process alert mail
+			// not pass throttling control
 			if (currentCount != null && currentCount > throttlingNum) {
 				return false;
 			}
@@ -194,7 +194,7 @@ public class ThrottlingControl {
 				currentCount = gmmsUtility.getRedisClient().getStateRedis().incrWithExpire(limitKey, 2);
 			}
 
-			// not pass throttling control, process alert mail
+			// not pass throttling control
 			if (currentCount != null && currentCount > throttlingNum) {
 				return false;
 			}

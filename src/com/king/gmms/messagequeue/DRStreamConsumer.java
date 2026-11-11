@@ -79,6 +79,7 @@ public class DRStreamConsumer {
         running = true;
         
         workerPool = consumerConfig.newElasticWorkerPool();
+        consumerConfig.registerPoolGauges(workerPool);
 
         windowRetryThread = Executors.newSingleThreadScheduledExecutor();
         deferrals = new StreamDeferrals(windowRetryThread, new StreamDeferrals.Resume() {
@@ -86,6 +87,7 @@ public class DRStreamConsumer {
                 resumeDeferred(streamKey);
             }
         });
+        deferrals.measureWait(MetricsNames.CONSUMER_SERVER_DR);
         dispatcherThread = Executors.newSingleThreadExecutor();
         dispatcherThread.execute(this::dispatcherLoop);
         recoveryThread = Executors.newSingleThreadExecutor();
@@ -360,8 +362,7 @@ public class DRStreamConsumer {
             logger.error(msg, "Failed to send DR through MultiSmppSession", e);
             failToCoreAndAck(streamKey, msg, "exception: " + e.getClass().getSimpleName());
         } finally {
-            MetricsCollector.getInstance().recordTime(MetricsNames.timer(MetricsNames.COMPONENT_CONSUMER,
-                    MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_LATENCY),
+            MetricsCollector.getInstance().recordTime(MetricsNames.consumer(MetricsNames.CONSUMER_SERVER_DR),
                     System.nanoTime() - start);
         }
         return ProcessResult.DONE;

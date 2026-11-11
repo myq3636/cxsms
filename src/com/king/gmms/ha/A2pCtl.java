@@ -23,6 +23,7 @@ import com.king.redis.RedisClient;
  *                      REMOVED once stopped (resume)
  * resume [--force]     go on with the operation that stopped; cancel [NAME] without NAME: cancel it
  * drain-dr NAME [--dry-run] [--force]  a Server that is gone: move the DRs left in its streams
+ * metrics [NAME] [--json] the last metrics window of every module (or every metric of NAME) from Redis
  */
 public final class A2pCtl {
 	private A2pCtl() {
@@ -43,7 +44,7 @@ public final class A2pCtl {
 		if (args.length == 0) {
 			System.out.println("Usage: A2pCtl init [--from-file] | status | add NAME --node-id N [--shards S] [--dry-run] [--force]"
 					+ " | remove NAME [--shards-to OTHER] [--dry-run] [--force] | resume [--force] | cancel [NAME] | drain NAME [--wait]"
-					+ " | drain-dr NAME [--dry-run] [--force]");
+					+ " | drain-dr NAME [--dry-run] [--force] | metrics [NAME] [--json]");
 			return 1;
 		}
 		String home = System.getProperty("a2p_home", "/usr/local/a2p/");
@@ -60,6 +61,13 @@ public final class A2pCtl {
 		}
 		if ("status".equals(args[0])) {
 			return status();
+		}
+		if ("metrics".equals(args[0])) {
+			List<String> rest = new ArrayList<String>(java.util.Arrays.asList(args).subList(1, args.length));
+			boolean json = rest.remove("--json");
+			try (redis.clients.jedis.Jedis j = RedisClient.getInstance().getStateRedis().getJedis()) {
+				return com.king.gmms.metrics.MetricsView.print(j, rest.isEmpty() ? null : rest.get(0), json);
+			}
 		}
 		List<String> flags = java.util.Arrays.asList(args).subList(Math.min(args.length, 2), args.length);
 		if (args.length > 1 && "drain".equals(args[0])) {

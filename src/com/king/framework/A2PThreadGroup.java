@@ -4,7 +4,6 @@ package com.king.framework;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import com.king.gmms.MailSender;
 import com.king.gmms.ha.ModuleURI;
 
 public class A2PThreadGroup extends ThreadGroup{
@@ -28,10 +27,5 @@ public class A2PThreadGroup extends ThreadGroup{
         String cls = (st != null && st.length > 0) ? st[0].getClassName() : A2PThreadGroup.class.getName();
         Logger log = LogManager.getLogger(cls);
         log.fatal("Uncaught exception thrown from thread {}",t.getName(), e);
-        MailSender.getInstance().sendAlertMail("A2P alert mail from " +
-                                               ModuleURI.self().getModule() + " in " +
-                                               ModuleURI.self().getAddress() +
-                                               " For ThreadGroup Uncaught Exception: " +
-                                               t.getName(), e);
     }
 }

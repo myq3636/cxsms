@@ -63,6 +63,7 @@ public class ResultStreamConsumer {
             new ThreadPoolExecutor.AbortPolicy()
         );
 
+        consumerConfig.registerPoolGauges(workerPool);
         dispatcherThread = Executors.newSingleThreadExecutor();
         dispatcherThread.execute(new Runnable() {
             public void run() {
@@ -282,8 +283,7 @@ public class ResultStreamConsumer {
             if (attempt && !processed) {
                 StreamAttempt.abandon();   // no-op once finish() ran
             }
-            MetricsCollector.getInstance().recordTime(MetricsNames.timer(MetricsNames.COMPONENT_CONSUMER,
-                    MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_LATENCY),
+            MetricsCollector.getInstance().recordTime(MetricsNames.consumer(MetricsNames.CONSUMER_RESULT),
                     System.nanoTime() - start);
         }
     }

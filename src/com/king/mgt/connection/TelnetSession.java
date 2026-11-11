@@ -10,7 +10,6 @@ import com.king.mgt.cmd.user.UserCommand;
 import com.king.mgt.context.ContextManager;
 import com.king.mgt.connection.FTP4Client;
 import com.king.mgt.util.InfoTable;
-import com.king.mgt.util.MailSender;
 import com.king.redis.RedisClient;
 
 /**
@@ -36,7 +35,6 @@ public class TelnetSession extends UserSession{
     }
 
     public void service() {
-    	MailSender mailSender=util.getMailSender();
         sendResponse("Welcome! Connection from "+context.getCurUserIP()+".\n"+context.getPrompt());
 //        sendResponse("If want to start modules,please start in such order:\n1.SystemManager,2.DeliveryRouter,3.Servers,4.Clients,5.MsgQueueMonitor.\n"+context.getPrompt());
         while(connected){
@@ -67,7 +65,7 @@ public class TelnetSession extends UserSession{
                 success = cmd.process();
             }
             if (!success) {
-                mailSender.sendAlertMail(cmd, InfoTable.SYSTEM_RESPONSE_ERROR);                
+                log.warn("[MGT-ALERT] user={} command={}: {}", cmd.getContext() == null ? null : cmd.getContext().getCurUser(), cmd.getCmdLine(), info.get(InfoTable.SYSTEM_RESPONSE_ERROR));                
             }
             sendResponse(cmd.getResp());
 

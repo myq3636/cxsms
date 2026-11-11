@@ -20,7 +20,6 @@ import com.king.framework.lifecycle.LifecycleSupport;
 import com.king.framework.lifecycle.event.Event;
 import com.king.framework.lifecycle.event.SwitchDNSEvent;
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.MailSender;
 import com.king.gmms.ha.ModuleURI;
 import com.king.mgt.cmd.user.UserCommandSwitchDNS;
 
@@ -277,7 +276,7 @@ public class ADSServerMonitor implements LifecycleListener,Runnable {
 			} else if (failedCount == FAILED_MAX_COUNT) {
 				usingSlave = !usingSlave;
 				switchResolver();
-				sendAlertMail();
+				alertSwitched();
 				failedCount = 0;
 				this.writeStatus();// write dns status to file
 			}
@@ -287,16 +286,14 @@ public class ADSServerMonitor implements LifecycleListener,Runnable {
 	}
 	
 	/**
-	 * send Alert Mail when switch dns
+	 * alert log when switch dns
 	 */
-	private void sendAlertMail(){
+	private void alertSwitched(){
 		int dnsIdx = 0;
 		if (usingSlave) {
 			dnsIdx = 1;
 		}
-		MailSender.getInstance().sendAlertMail("A2P alert mail from " +
-                ModuleURI.self().getModule() + " in " +
-                ModuleURI.self().getAddress(), "Switch DNS query to ADS server with IP: "+dnsAddresses[dnsIdx]+" ,port: "+dnsPortes[dnsIdx],null);
+		log.warn("[ALERT] DNS query switched to the ADS server {}:{}", dnsAddresses[dnsIdx], dnsPortes[dnsIdx]);
 	}
 	
 	/**

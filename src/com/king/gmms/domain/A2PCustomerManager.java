@@ -53,7 +53,6 @@ import com.king.gmms.ContentScan;
 import com.king.gmms.ContentTemplate;
 import com.king.gmms.DuplicateMessageCheck;
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.MailSender;
 import com.king.gmms.RetryPolicyInfo;
 import com.king.gmms.RetryPolicyManager;
 import com.king.gmms.WhiteList;

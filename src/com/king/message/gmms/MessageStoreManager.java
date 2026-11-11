@@ -20,7 +20,6 @@ import com.king.db.DbObject;
 import com.king.framework.A2PThreadGroup;
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.MailSender;
 import com.king.gmms.RetryPolicyManager;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PCustomerManager;
@@ -173,6 +172,11 @@ public class MessageStoreManager extends DataManager {
 				new AsyncSqlWriterThread(i + 1).start();
 			}
 			asyncSqlWriterStarted = true;
+			com.king.gmms.metrics.MetricsCollector.getInstance().registerGauge(
+					com.king.gmms.metrics.MetricsNames.gauge("db.async_sql", "queued"), () -> {
+						java.util.concurrent.BlockingQueue<String> q = asyncSqlQueue;
+						return q == null ? 0 : q.size();
+					});
 			com.king.framework.GracefulStop.register("SQL queue", new Runnable() {
 				public void run() {
 					stopAsyncSqlWriters();
@@ -481,9 +485,6 @@ public class MessageStoreManager extends DataManager {
 					try { conn.rollback(); } catch (java.sql.SQLException ex) {}
 				}
 				log.error("Error executing batch update of size " + batch.size(), e);
-				if (!isBenignSqlError(e)) {
-					MailSender.getInstance().sendAlertMail("A2P DB Batch Exception", e);
-				}
 				// H-14: 整批失败时降级逐行执行，只丢真正报错的那条，其余正常落库，
 				// 避免一条毒丸 SQL 拖垮整批(~数百条)好消息。
 				retryBatchRowByRow(conn, batch);
@@ -1930,11 +1931,6 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception e) {
 			log.error(message, "Error in executing:" + strSQL, e);
-			if (!isBenignSqlError(e)) {
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", e);
-			}
 			throw new DataManagerException(e);
 		} finally {
 			super.closeSession();// add by Levens in Jan.20 2006
@@ -1951,11 +1947,6 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception e) {
 			log.error(message, "Error in executing:" + strSQL, e);
-			if (!isBenignSqlError(e)) {
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", e);
-			}
 		} finally {
 			super.closeSession();
 		}
@@ -1994,9 +1985,6 @@ public class MessageStoreManager extends DataManager {
 		} catch (Exception e) {
 			log.error(message, "Error in executing:" + strSQL, e);
 			if (!isBenignSqlError(e)) {
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", e);
 				// a retry may succeed: let the redelivery insert it again
 				StreamAttempt.forget("dbq:" + table);
 				dbWriteFailed();
@@ -2084,13 +2072,6 @@ public class MessageStoreManager extends DataManager {
 			try {
 				doUpdate(sqlStr);
 			} catch (Exception e) {
-				if (!isBenignSqlError(e)) {
-
-					MailSender.getInstance().sendAlertMail(
-							"A2P alert mail from "
-									+ ModuleURI.self().getAddress()
-									+ " for DB Exception", e);
-				}
 				throw new DataManagerException(e);
 			} finally {
 				super.closeSession();
@@ -2169,11 +2150,6 @@ public class MessageStoreManager extends DataManager {
 			doDelete(sqlStr);
 		} catch (Exception e) {
 			log.error(message, e, e);
-			if (!isBenignSqlError(e)) {
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", e);
-			}
 		} finally {
 			super.closeSession();
 		}
@@ -2221,12 +2197,6 @@ public class MessageStoreManager extends DataManager {
 			doDelete(sqlStr);
 		} catch (Exception e) {
 			log.error("Error occur when clearing messages." + sqlStr, e);
-			if (!isBenignSqlError(e)) {
-
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", e);
-			}
 		} finally {
 			super.closeSession();
 		}
@@ -2257,12 +2227,6 @@ public class MessageStoreManager extends DataManager {
 			doDelete(sqlStr);
 		} catch (Exception e) {
 			log.error("Error occur when clearing messages." + sqlStr, e);
-			if (!isBenignSqlError(e)) {
-
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", e);
-			}
 		} finally {
 			super.closeSession();
 		}
@@ -2305,11 +2269,6 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error("Error in executing:" + sqlStr, ex);
-			if (!isBenignSqlError(ex)) {
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", ex);
-			}
 		} finally {
 			if (rs != null) {
 				try {
@@ -2381,11 +2340,6 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error("Error in executing:" + sqlStr, ex);
-			if (!isBenignSqlError(ex)) {
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", ex);
-			}
 		} finally {
 			if (rs != null) {
 				try {
@@ -2431,11 +2385,6 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error("Error in executing:" + sqlStr, ex);
-			if (!isBenignSqlError(ex)) {
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", ex);
-			}
 		} finally {
 			if (rs != null) {
 				try {
@@ -2607,11 +2556,6 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error("Error in executing:" + sqlStr, ex);
-			if (!isBenignSqlError(ex)) {
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", ex);
-			}
 		} finally {
 			if (rs != null) {
 				try {
@@ -2675,11 +2619,6 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error("Error in executing:" + sqlStr, ex);
-			if (!isBenignSqlError(ex)) {
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", ex);
-			}
 		} finally {
 			if (rs != null) {
 				try {
@@ -2750,11 +2689,6 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error("Error in executing:" + sqlStr, ex);
-			if (!isBenignSqlError(ex)) {
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", ex);
-			}
 		} finally {
 			if (rs != null) {
 				try {
@@ -2917,11 +2851,6 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error("Error in executing:" + sqlStr, ex);
-			if (!isBenignSqlError(ex)) {
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", ex);
-			}
 		} finally {
 			if (rs != null) {
 				try {
@@ -2951,12 +2880,6 @@ public class MessageStoreManager extends DataManager {
 			doUpdate(updateStr);
 		} catch (Exception e) {
 			log.error("Error in executing:" + updateStr, e);
-			if (!isBenignSqlError(e)) {
-
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", e);
-			}
 		} finally {
 			super.closeSession();
 		}
@@ -2976,12 +2899,6 @@ public class MessageStoreManager extends DataManager {
 			doUpdate(updateStr);
 		} catch (Exception e) {
 			log.error("Error in executing:" + updateStr, e);
-			if (!isBenignSqlError(e)) {
-
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", e);
-			}
 		} finally {
 			super.closeSession();
 		}
@@ -3001,12 +2918,6 @@ public class MessageStoreManager extends DataManager {
 			doUpdate(updateStr);
 		} catch (Exception e) {
 			log.error("Error in executing:" + updateStr, e);
-			if (!isBenignSqlError(e)) {
-
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", e);
-			}
 		} finally {
 			super.closeSession();
 		}
@@ -3136,12 +3047,6 @@ public class MessageStoreManager extends DataManager {
 			// rs.close(); //add by Sam 2005-06-24
 		} catch (Exception e) {
 			log.error("Error in executing:" + sqlStr, e);
-			if (!isBenignSqlError(e)) {
-
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", e);
-			}
 			throw new DataManagerException(e);
 		}
 		// add by Levens in Jan.20 2006
@@ -3151,13 +3056,6 @@ public class MessageStoreManager extends DataManager {
 					rs.close();
 				} catch (Exception ex) {
 					log.error(ex, ex);
-					if (!isBenignSqlError(ex)) {
-
-						MailSender.getInstance().sendAlertMail(
-								"A2P alert mail from "
-										+ ModuleURI.self().getAddress()
-										+ " for DB Exception", ex);
-					}
 				}
 			}
 			super.closeSession();// add by Levens in Jan.20 2006
@@ -3201,12 +3099,6 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception e) {
 			log.error("Error when get GmmsMessage by outmsgid:" + outMsgID, e);
-			if (!isBenignSqlError(e)) {
-
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", e);
-			}
 			throw new DataManagerException(e);
 		}
 		// add by Levens in Jan.20 2006
@@ -3216,13 +3108,6 @@ public class MessageStoreManager extends DataManager {
 					rs.close();
 				} catch (Exception ex) {
 					log.error(ex, ex);
-					if (!isBenignSqlError(ex)) {
-
-						MailSender.getInstance().sendAlertMail(
-								"A2P alert mail from "
-										+ ModuleURI.self().getAddress()
-										+ " for DB Exception", ex);
-					}
 				}
 			}
 			super.closeSession();// add by Levens in Jan.20 2006
@@ -3268,12 +3153,6 @@ public class MessageStoreManager extends DataManager {
 			// rs.close(); //add by Sam 2005-06-24
 		} catch (Exception e) {
 			log.error("Error in executing:" + sqlStr, e);
-			if (!isBenignSqlError(e)) {
-
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", e);
-			}
 			throw new DataManagerException(e);
 		}
 		// add by Levens in Jan.20 2006
@@ -3283,13 +3162,6 @@ public class MessageStoreManager extends DataManager {
 					rs.close();
 				} catch (Exception ex) {
 					log.error(ex, ex);
-					if (!isBenignSqlError(ex)) {
-
-						MailSender.getInstance().sendAlertMail(
-								"A2P alert mail from "
-										+ ModuleURI.self().getAddress()
-										+ " for DB Exception", ex);
-					}
 				}
 			}
 			super.closeSession();// add by Levens in Jan.20 2006
@@ -3323,9 +3195,6 @@ public class MessageStoreManager extends DataManager {
 			log.error(message, "Error in executing:" + sqlStr, ex);
 			if (!isBenignSqlError(ex)) {
 
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", ex);
 				dbWriteFailed();
 			}
 		} finally {
@@ -3356,12 +3225,6 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception ex) {
 			log.error(message, "Error in executing:" + sqlStr, ex);
-			if (!isBenignSqlError(ex)) {
-
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", ex);
-			}
 		} finally {
 			message.setContentIsChanged(false);
 			super.closeSession();
@@ -4061,25 +3924,12 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception e) {
 			log.error("Error in executing:" + sqlStr, e);
-			if (!isBenignSqlError(e)) {
-
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", e);
-			}
 		} finally {
 			if (rs != null) {
 				try {
 					rs.close();
 				} catch (Exception ex) {
 					log.error(ex, ex);
-					if (!isBenignSqlError(ex)) {
-
-						MailSender.getInstance().sendAlertMail(
-								"A2P alert mail from "
-										+ ModuleURI.self().getAddress()
-										+ " for DB Exception", ex);
-					}
 				}
 			}
 			super.closeSession();// add by Levens in Jan.20 2006
@@ -4125,11 +3975,6 @@ public class MessageStoreManager extends DataManager {
 			}
 		} catch (Exception e) {
 			log.error(" " + csmKeyInfo.toString() + " " + e, e);
-			if (!isBenignSqlError(e)) {
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for DB Exception", e);
-			}
 		} finally {
 			super.closeSession();
 		}

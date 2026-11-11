@@ -89,6 +89,7 @@ public class SmppPendingSubmitManager {
         startRedisScanner();
         startGlobalTimeoutWorkers();
         LIVE.add(this);
+        registerGlobalGauges();
         log.info("SMPP pending submit manager started. sessionKey={}, windowSize={}, timeoutMs={}",
                 this.sessionKey, this.windowSize, this.timeoutMs);
     }
@@ -658,6 +659,14 @@ public class SmppPendingSubmitManager {
                 log.warn("Global SMPP pending submit timeout worker failed.", e);
             }
         }
+    }
+
+    /** read when the metrics are reported: no value left over from the last event */
+    private static void registerGlobalGauges() {
+        MetricsCollector m = MetricsCollector.getInstance();
+        m.registerGauge(MetricsNames.gauge("smpp.pending.submit", "pending"), () -> totalPending());
+        m.registerGauge(MetricsNames.gauge("smpp.pending.submit", "timeout_queue_size"), () -> GLOBAL_TIMEOUT_QUEUE.size());
+        m.registerGauge(MetricsNames.gauge("smpp.pending.submit", "timeout_worker_count"), () -> GLOBAL_TIMEOUT_WORKER_COUNT.get());
     }
 
     private static void recordGlobalTimeoutGauges() {

@@ -1695,6 +1695,12 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 	}
 
 	private void mergeInboundDeliveryReport(GmmsMessage original, GmmsMessage dr) {
+		int code = dr.getStatusCode();
+		if (code != GmmsStatus.ACCEPT.getCode() && code != GmmsStatus.ENROUTE.getCode()) {
+			com.king.gmms.metrics.LatencyMetrics.vendorDr(original);
+		}
+		// from here on the DR's own times: e2e.dr counts from when the Client received it
+		original.setInTimeMs(dr.getInTimeMs());
 		original.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 		// a DR has its own path from the Client that received it, not the one of its MT
 		original.setModulePath(dr.getModulePath());

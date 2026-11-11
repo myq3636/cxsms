@@ -18,7 +18,6 @@ import java.text.*;
 
 import com.king.framework.A2PThreadGroup;
 import com.king.framework.SystemLogger;
-import com.king.gmms.MailSender;
 import com.king.gmms.ha.ModuleURI;
 
 public class CDRWriter {
@@ -96,9 +95,6 @@ public class CDRWriter {
 		if (d.exists() == false) {
 			if (d.mkdirs() == false) {
 				log.error("Error create folder: {}", folderName);
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for error create folder", "", null);
 				return false;
 			}
 		}
@@ -121,9 +117,6 @@ public class CDRWriter {
 			result = true;
 		} catch (Exception ex) {
 			log.error("Error open new CDR file: " + fileName, ex);
-			MailSender.getInstance().sendAlertMail(
-					"A2P alert mail from " + ModuleURI.self().getAddress()
-							+ " for open CDR file Exception", ex);
 		}
 		return result;
 	}
@@ -150,9 +143,6 @@ public class CDRWriter {
 					reOpen();
 					Exception exception = new Exception("Error occur in the cdr file:"
 							+ currentFile.getName());
-					MailSender.getInstance().sendAlertMail(
-							"A2P alert mail from " + ModuleURI.self().getAddress()
-									+ " for CDR writer Exception", exception);
 					throw exception;
 				}
 			}
@@ -198,9 +188,7 @@ public class CDRWriter {
 				}
 			}
 		} catch (Exception ex) {
-			MailSender.getInstance().sendAlertMail(
-					"A2P alert mail from " + ModuleURI.self().getAddress()
-							+ " for open CDR file Exception", ex);
+			log.error("[ALERT] CDR file not switched", ex);
 		}
 	}
 

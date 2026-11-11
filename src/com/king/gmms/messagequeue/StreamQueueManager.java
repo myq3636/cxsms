@@ -80,6 +80,7 @@ public class StreamQueueManager {
 	 * 【生产】Server 收到请求后路由到分片队列
 	 */
 	public boolean produceSubmitMessage(GmmsMessage msg) {
+		stampIn(msg);
 		int shardId = calculateShardId(msg);
 		String key = STR_MT_PENDING_PREFIX + msg.getOSsID() + ":" + shardId;
 		boolean produced = produce(key, msg, true);
@@ -241,8 +242,49 @@ public class StreamQueueManager {
 	}
 
 	public boolean produceInboundDeliveryReport(GmmsMessage msg) {
+		stampIn(msg);
 		String key = getInboundDrQueue(msg);
 		return produce(key, msg, false);
+	}
+
+	/** the time the message entered the gateway (an MT at the Server, a vendor DR at the Client), for e2e latencies */
+	private static void stampIn(GmmsMessage msg) {
+		if (msg != null && msg.getInTimeMs() <= 0) {
+			msg.setInTimeMs(System.currentTimeMillis());
+		}
+	}
+
+	/** the flow of a stream for its metrics, null for one not measured (hold) */
+	static String metricFlow(String streamKey) {
+		if (streamKey == null) {
+			return null;
+		}
+		if (streamKey.startsWith(STR_MT_PENDING_PREFIX)) {
+			return "server_to_core";
+		} else if (streamKey.startsWith(STR_MT_ROUTED_PREFIX)) {
+			return "core_to_client";
+		} else if (streamKey.startsWith(STR_HTTP_SUBMIT_PREFIX)) {
+			return "core_to_http_submit";
+		} else if (streamKey.startsWith(STR_HTTP_DR_PREFIX)) {
+			return "core_to_http_dr";
+		} else if (streamKey.startsWith(STR_MQM_SUBMIT_PREFIX)) {
+			return "mqm_to_core_submit";
+		} else if (streamKey.startsWith(STR_MQM_REPORT_PREFIX)) {
+			return "mqm_to_core_report";
+		} else if (streamKey.startsWith(STR_DR_PENDING_PREFIX)) {
+			return "core_to_server";
+		} else if (streamKey.startsWith(STR_INBOUND_DR_PREFIX)) {
+			return "client_to_core";
+		} else if (isResultStream(streamKey)) {
+			return "result_to_core";
+		} else if (STR_OUTBOUND_HTTP.equals(streamKey)) {
+			return "outbound_http";
+		}
+		return null;
+	}
+
+	private static void recordRedisOp(String op, long startNanos) {
+		MetricsCollector.getInstance().recordTime(MetricsNames.metric(MetricsNames.TIMER_REDIS_OP, op), System.nanoTime() - startNanos);
 	}
 
 	/**
@@ -275,6 +317,7 @@ public class StreamQueueManager {
 
 			String zsetKey = getDoorbellZSet(key);
 			String msgId;
+			long opStart = System.nanoTime();
 			if (zsetKey != null) {
 				// 阶段1: XADD+ZADD(doorbell) 合并为单段 Lua 原子写 —— 降一次 RTT，
 				// 且根本不会产生"已写流未响铃"的孤儿(强化 C-4，无需写后回滚)。
@@ -292,6 +335,7 @@ public class StreamQueueManager {
 					? redisClient.xaddToSubmitMq(key, body, getStreamMaxLen(), isApproximateTrimming())
 					: redisClient.xaddToReportMq(key, body, getStreamMaxLen(), isApproximateTrimming());
 			}
+			recordRedisOp("xadd", opStart);
 
 			if (msgId != null) {
 				msg.setRedisStreamID(msgId);
@@ -343,11 +387,13 @@ public class StreamQueueManager {
 				ackById(drStream, group, drRedisId, msg, false);
 				return true;
 			}
+			long opStart = System.nanoTime();
 			List<?> r = (List<?>) redisClient.getReportMqRedis().evalScript(RESULT_AND_ACK_LUA,
 					Arrays.asList(key, zsetKey, drStream),
 					Arrays.asList(String.valueOf(getStreamMaxLen()), isApproximateTrimming() ? "~" : "",
 							String.valueOf(System.currentTimeMillis()),
 							SerializableHandler.convertGmmsMessage2RedisMessage(msg), group, drRedisId));
+			recordRedisOp("lua", opStart);
 			String id = String.valueOf(r.get(0));
 			msg.setRedisStreamID(id);
 			incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_OK);
@@ -452,7 +498,9 @@ public class StreamQueueManager {
 			args.add(String.valueOf(outbox == null ? 0 : outbox.firstCheckAt));
 			args.add(String.valueOf(flags.size() / 2));
 			args.addAll(flags);
+			long opStart = System.nanoTime();
 			List<?> r = (List<?>) target.evalScript(PRODUCE_ONCE_LUA, keys, args);
+			recordRedisOp("xadd", opStart);
 			String id = String.valueOf(r.get(1));
 			msg.setRedisStreamID(id);
 			if (marker != null) {
@@ -804,7 +852,9 @@ public class StreamQueueManager {
 	public List<GmmsMessage> consumeBatch(String groupName, String consumerName, int count, 
 			Map<String, StreamEntryID> streamsMap, boolean isSubmitMq) {
 		
+		long opStart = System.nanoTime();
 		List<Map.Entry<String, List<StreamEntry>>> results = readGroup(groupName, consumerName, count, streamsMap, isSubmitMq);
+		recordRedisOp("read", opStart);
 		if (results == null && recoverGroups(streamsMap, groupName, isSubmitMq)) {
 			results = readGroup(groupName, consumerName, count, streamsMap, isSubmitMq);
 		}
@@ -812,8 +862,16 @@ public class StreamQueueManager {
 		List<GmmsMessage> messages = new ArrayList<>();
 		if (results == null) return messages;
 
+		long now = System.currentTimeMillis();
+		MetricsCollector metrics = MetricsCollector.getInstance();
 		for (Map.Entry<String, List<StreamEntry>> entry : results) {
+			// how long the entries waited in the stream: now - the time in their XADD id
+			String flow = metrics.isEnabled() ? metricFlow(entry.getKey()) : null;
+			String lagName = flow == null ? null : MetricsNames.metric(MetricsNames.TIMER_STREAM_LAG, flow);
 			for (StreamEntry se : entry.getValue()) {
+				if (lagName != null) {
+					metrics.recordMillis(lagName, now - se.getID().getTime());
+				}
 				String body = se.getFields().get("body");
 				GmmsMessage msg = SerializableHandler.convertRedisMssage2GmmsMessage(body);
 				if (msg != null) {
@@ -1348,7 +1406,7 @@ public class StreamQueueManager {
 				while (backlogMonitorRunning) {
 					try {
 						if (isBacklogMonitorEnabled()) {
-							scanBacklogByModuleRole();
+							scanBacklogByModuleRoleCycle();
 						}
 						Thread.sleep(getBacklogMonitorIntervalSeconds() * 1000L);
 					} catch (InterruptedException e) {
@@ -1369,12 +1427,12 @@ public class StreamQueueManager {
 	}
 
 	private boolean isBacklogMonitorEnabled() {
-		return Boolean.parseBoolean(GmmsUtility.getInstance().getCommonProperty("RedisStreamMonitor.Enable", "false"));
+		return Boolean.parseBoolean(GmmsUtility.getInstance().getCommonProperty("RedisStreamMonitor.Enable", "true").trim());
 	}
 
 	private int getBacklogMonitorIntervalSeconds() {
-		int interval = intProperty("RedisStreamMonitor.IntervalSeconds", 30);
-		return interval <= 0 ? 30 : interval;
+		int interval = intProperty("RedisStreamMonitor.IntervalSeconds", 60);
+		return interval <= 0 ? 60 : interval;
 	}
 
 	private void scanBacklogByModuleRole() {
@@ -1398,28 +1456,84 @@ public class StreamQueueManager {
 		}
 	}
 
+	/** per flow, the streams seen with entries: watched until they are empty, also while their doorbell is taken */
+	private final Map<String, Set<String>> backlogStreams = new java.util.concurrent.ConcurrentHashMap<String, Set<String>>();
+	private volatile int backlogCycle = 0;
+
+	private void scanBacklogByModuleRoleCycle() {
+		scanBacklogByModuleRole();
+		backlogCycle++;
+	}
+
+	/**
+	 * The streams of a flow: its doorbell members (streams with entries waiting) and the ones seen before;
+	 * the whole keyspace is scanned only every RedisStreamMonitor.FullScanEveryCycles cycles, to find a
+	 * stream with entries that lost its doorbell. XLEN, XPENDING and ZSCORE of all go in one pipeline;
+	 * a stream without the group counts no pending entries (the group is not created here).
+	 */
 	private void scanBacklogPattern(String pattern, String groupName, String doorbellKey,
 			boolean isSubmitMq, String flow) {
-		Set<String> streams = isSubmitMq ? redisClient.keysSubmitMq(pattern) : redisClient.keysReportMq(pattern);
+		Set<String> known = backlogStreams.get(flow);
+		if (known == null) {
+			known = backlogStreams.computeIfAbsent(flow, k -> java.util.concurrent.ConcurrentHashMap.newKeySet());
+		}
+		Set<String> streams = new java.util.TreeSet<String>(known);
+		Set<String> rung = isSubmitMq ? redisClient.zrangeSubmitMq(doorbellKey, 0, -1) : redisClient.zrangeReportMq(doorbellKey, 0, -1);
+		if (rung != null) {
+			streams.addAll(rung);
+		}
+		int every = Math.max(1, intProperty("RedisStreamMonitor.FullScanEveryCycles", 10));
+		if (backlogCycle % every == 0) {
+			Set<String> all = isSubmitMq ? redisClient.keysSubmitMq(pattern) : redisClient.keysReportMq(pattern);
+			if (all != null) {
+				streams.addAll(all);
+			}
+		}
+		final List<String> keys = new ArrayList<String>();
+		for (String streamKey : streams) {
+			if (streamKey.startsWith(pattern.substring(0, pattern.length() - 1)) && isResponsibleForStream(streamKey)) {
+				keys.add(streamKey);
+			}
+		}
 		long totalXlen = 0L;
 		long totalPending = 0L;
 		long doorbellMissing = 0L;
-		if (streams != null) {
-			for (String streamKey : streams) {
-				if (!isResponsibleForStream(streamKey)) {
-					continue;
+		if (!keys.isEmpty()) {
+			final List<redis.clients.jedis.Response<Long>> xlens = new ArrayList<redis.clients.jedis.Response<Long>>();
+			final List<redis.clients.jedis.Response<StreamPendingSummary>> pendings = new ArrayList<redis.clients.jedis.Response<StreamPendingSummary>>();
+			final List<redis.clients.jedis.Response<Double>> scores = new ArrayList<redis.clients.jedis.Response<Double>>();
+			com.king.redis.RedisConnection c = isSubmitMq ? redisClient.getSubmitMqRedis() : redisClient.getReportMqRedis();
+			c.runPipeline(pl -> {
+				for (String k : keys) {
+					xlens.add(pl.xlen(k));
+					pendings.add(pl.xpending(k, groupName));
+					scores.add(pl.zscore(doorbellKey, k));
 				}
-				long xlen = streamLength(streamKey, isSubmitMq);
+			});
+			for (int i = 0; i < keys.size(); i++) {
+				String streamKey = keys.get(i);
+				long xlen = responseLong(xlens.get(i));
 				if (xlen <= 0) {
+					known.remove(streamKey);
 					continue;
 				}
+				known.add(streamKey);
 				totalXlen += xlen;
-				createGroup(streamKey, groupName, isSubmitMq);
-				long pending = pendingCount(streamKey, groupName, isSubmitMq);
-				if (pending > 0) {
-					totalPending += pending;
+				long pending = 0L;
+				try {
+					StreamPendingSummary sum = pendings.get(i).get();
+					pending = sum == null ? 0L : sum.getTotal();
+				} catch (Exception e) {
+					// NOGROUP: no consumer read this stream yet
 				}
-				boolean missingDoorbell = !hasDoorbell(doorbellKey, streamKey, isSubmitMq);
+				totalPending += pending;
+				Double score = null;
+				try {
+					score = scores.get(i).get();
+				} catch (Exception e) {
+					// counted as missing
+				}
+				boolean missingDoorbell = score == null;
 				if (missingDoorbell) {
 					doorbellMissing++;
 				}
@@ -1429,23 +1543,16 @@ public class StreamQueueManager {
 		MetricsCollector.getInstance().setGauge(MetricsNames.gauge("redis.stream." + flow, "xlen"), totalXlen);
 		MetricsCollector.getInstance().setGauge(MetricsNames.gauge("redis.stream." + flow, "pending"), totalPending);
 		MetricsCollector.getInstance().setGauge(MetricsNames.gauge("redis.stream." + flow, "doorbell_missing"), doorbellMissing);
+		MetricsCollector.getInstance().setGauge(MetricsNames.gauge("redis.stream." + flow, "streams"), known.size());
 	}
 
-	private long pendingCount(String streamKey, String groupName, boolean isSubmitMq) {
-		List<StreamPendingSummary> summaries = isSubmitMq
-				? redisClient.xpendingSubmitMq(streamKey, groupName)
-				: redisClient.xpendingReportMq(streamKey, groupName);
-		if (summaries == null || summaries.isEmpty() || summaries.get(0) == null) {
+	private static long responseLong(redis.clients.jedis.Response<Long> r) {
+		try {
+			Long v = r.get();
+			return v == null ? 0L : v;
+		} catch (Exception e) {
 			return 0L;
 		}
-		return summaries.get(0).getTotal();
-	}
-
-	private boolean hasDoorbell(String doorbellKey, String streamKey, boolean isSubmitMq) {
-		Double score = isSubmitMq
-				? redisClient.zscoreSubmitMq(doorbellKey, streamKey)
-				: redisClient.zscoreReportMq(doorbellKey, streamKey);
-		return score != null;
 	}
 
 	private void logBacklogIfNeeded(String flow, String streamKey, String groupName, long xlen,

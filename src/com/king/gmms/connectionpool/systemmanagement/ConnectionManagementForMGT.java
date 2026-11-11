@@ -26,7 +26,6 @@ import com.king.db.DataControlException;
 import com.king.db.DatabaseStatus;
 import com.king.framework.A2PThreadGroup;
 import com.king.framework.SystemLogger;
-import com.king.gmms.MailSender;
 import com.king.gmms.connectionpool.connection.Connection;
 import com.king.gmms.connectionpool.connection.ConnectionManager;
 import com.king.gmms.connectionpool.node.Node;
@@ -642,18 +641,9 @@ public class ConnectionManagementForMGT extends ConnectionManagement implements
 						.getConnectionInfoOfMasterMGT();
 				if (moduleName.equals(connectionInfo4Master.getModuleName())) {// master down
 					moduleManager.updateModuleStatus2Down(moduleName);
-					MailSender.getInstance().sendAlertMail(
-							"A2P alert mail from "
-									+ ModuleURI.self().getAddress()
-									+ " for master SystemManager Down!",
-							"Master SystemManager Down!", null);
+					log.error("[ALERT] master SystemManager {} down", moduleName);
 				} else {// slave down
-					// send alert mail
-					MailSender.getInstance().sendAlertMail(
-							"A2P alert mail from "
-									+ ModuleURI.self().getAddress()
-									+ " for slave SystemManager Down!",
-							"Slave SystemManager Down!", null);
+					log.error("[ALERT] slave SystemManager {} down", moduleName);
 				}
 			} else if (SystemConstants.ROUTER_MODULE_TYPE
 					.equalsIgnoreCase(moduleType)) {// router stop
@@ -686,10 +676,7 @@ public class ConnectionManagementForMGT extends ConnectionManagement implements
 			} else if (SystemConstants.MGT_MODULE_TYPE
 					.equalsIgnoreCase(downModuleType)) {
 				this.moduleManager.updateModuleStatus2Down(downModule);
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for SystemManager Down!",
-						"SystemManager Down!", null);
+				log.error("[ALERT] SystemManager {} down", downModule);
 			} else {// protocol module down
 				String lastStatus = moduleManager.getModuleStatusMap().get(
 						downModule).get(0);

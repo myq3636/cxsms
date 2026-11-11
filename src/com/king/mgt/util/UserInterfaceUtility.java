@@ -37,7 +37,6 @@ public class UserInterfaceUtility {
     private Properties prop=null;
     private SessionFactory sessionFactory=null;
     private UserCommandSet commandSet = null;
-    private MailSender mailSender=null;
     private InfoTable infoTable;
     private boolean enableNotification=true;
     private boolean isHa=false;
@@ -124,7 +123,6 @@ public class UserInterfaceUtility {
         sessionFactory.init();
         commandSet=new UserCommandSet();
         commandSet.init();
-        mailSender=MailSender.getInstance();
         log.info("SmsUI core utilities init done. elapsedMs={}", System.currentTimeMillis() - start);
     }
 
@@ -263,9 +261,6 @@ public class UserInterfaceUtility {
         return instance;
     }
 
-    public MailSender getMailSender() {
-        return mailSender;
-    }
 
     public InfoTable getInfoTable() {
         return infoTable;
@@ -275,9 +270,6 @@ public class UserInterfaceUtility {
         return enableNotification;
     }
 
-    public void setMailSender(MailSender mailSender) {
-        this.mailSender = mailSender;
-    }
 
     public void setInfoTable(InfoTable infoTable) {
         this.infoTable = infoTable;

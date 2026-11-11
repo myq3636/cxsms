@@ -6,7 +6,6 @@ import com.king.framework.SystemLogger;
 import com.king.mgt.cmd.user.UserCommand;
 import com.king.mgt.context.ContextManager;
 import com.king.mgt.util.InfoTable;
-import com.king.mgt.util.MailSender;
 
 /**
  * <p>Title: </p>
@@ -27,7 +26,6 @@ public class CMToolsSession extends UserSession{
     }
 
     public void service() {
-        MailSender mailSender=util.getMailSender();
         UserCommand cmd=null;
         try {
             char[] buf=new char[1024];
@@ -60,7 +58,7 @@ public class CMToolsSession extends UserSession{
             closeConnection();
 
             if (!cmd.process()) {
-                mailSender.sendAlertMail(cmd, InfoTable.SYSTEM_RESPONSE_ERROR);
+                log.warn("[MGT-ALERT] user={} command={}: {}", cmd.getContext() == null ? null : cmd.getContext().getCurUser(), cmd.getCmdLine(), info.get(InfoTable.SYSTEM_RESPONSE_ERROR));
                 return;
             }
             // Dispatch and notify modules.
@@ -68,13 +66,13 @@ public class CMToolsSession extends UserSession{
                 cmd.getNotifyType() != UserCommand.Notify_None) {
                 // We need to notify.
                 if (!dispatcher.dispatch(cmd, context)) {
-                    mailSender.sendAlertMail(cmd, InfoTable.INTERNAL_ERROR);
+                    log.warn("[MGT-ALERT] user={} command={}: {}", cmd.getContext() == null ? null : cmd.getContext().getCurUser(), cmd.getCmdLine(), info.get(InfoTable.INTERNAL_ERROR));
                     return;
                 }
                 SystemCommandSender sender = new SystemCommandSender();
                 sender.send(cmd.getSystemCommands());
                 if (!cmd.isSuccess()) {
-                    mailSender.sendAlertMailByResponse(cmd);
+                    log.warn("[MGT-ALERT] command={}: failed on some modules", cmd.getCmdLine());
                     return;
                 }
             }*/
@@ -84,7 +82,7 @@ public class CMToolsSession extends UserSession{
         catch(Exception ex)
         {
             log.error(ex,ex);
-            mailSender.sendAlertMail(cmd, InfoTable.INTERNAL_ERROR);
+            log.warn("[MGT-ALERT] user={} command={}: {}", cmd.getContext() == null ? null : cmd.getContext().getCurUser(), cmd.getCmdLine(), info.get(InfoTable.INTERNAL_ERROR));
             return;
         }
     }

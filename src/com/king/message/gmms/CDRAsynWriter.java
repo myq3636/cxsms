@@ -19,7 +19,6 @@ import com.king.framework.lifecycle.LifecycleListener;
 import com.king.framework.lifecycle.LifecycleSupport;
 import com.king.framework.lifecycle.event.Event;
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.MailSender;
 import com.king.gmms.ha.ModuleURI;
 import com.king.gmms.util.SolarisSignal;
 
@@ -147,9 +146,6 @@ public class CDRAsynWriter implements LifecycleListener, SignalHandler {
 		if (d.exists() == false) {
 			if (d.mkdirs() == false) {
 				log.error("Error create folder: {}", folderName);
-				MailSender.getInstance().sendAlertMail(
-						"A2P alert mail from " + ModuleURI.self().getAddress()
-								+ " for error create folder", "", null);
 				return false;
 			}
 		}
@@ -171,9 +167,6 @@ public class CDRAsynWriter implements LifecycleListener, SignalHandler {
 			result = true;
 		} catch (Exception ex) {
 			log.error("Error open new CDR file: " + fileName, ex);
-			MailSender.getInstance().sendAlertMail(
-					"A2P alert mail from " + ModuleURI.self().getAddress()
-							+ " for open CDR file Exception", ex);
 		}
 		return result;
 	}
@@ -200,9 +193,6 @@ public class CDRAsynWriter implements LifecycleListener, SignalHandler {
 					reOpen();
 					Exception exception = new Exception("Error occur in the cdr file:"
 							+ currentFile.getName());
-					MailSender.getInstance().sendAlertMail(
-							"A2P alert mail from " + ModuleURI.self().getAddress()
-									+ " for CDR Asny writer Exception", exception);
 					throw exception;
 				}
 			}
@@ -241,9 +231,7 @@ public class CDRAsynWriter implements LifecycleListener, SignalHandler {
 				}
 			}
 		} catch (Exception ex) {
-			MailSender.getInstance().sendAlertMail(
-					"A2P alert mail from " + ModuleURI.self().getAddress()
-							+ " for open CDR file Exception", ex);
+			log.error("[ALERT] CDR file not switched", ex);
 		}
 	}
 	

@@ -95,6 +95,7 @@ public class SmppPendingDrManager {
         startRedisScanner();
         startGlobalTimeoutWorkers();
         LIVE.add(this);
+        registerGlobalGauges();
         log.info("SMPP pending DR manager started. sessionKey={}, windowSize={}, timeoutMs={}",
                 this.sessionKey, this.windowSize, this.timeoutMs);
     }
@@ -619,6 +620,14 @@ public class SmppPendingDrManager {
                 log.warn("Global SMPP pending DR timeout worker failed.", e);
             }
         }
+    }
+
+    /** read when the metrics are reported: no value left over from the last event */
+    private static void registerGlobalGauges() {
+        MetricsCollector m = MetricsCollector.getInstance();
+        m.registerGauge(MetricsNames.gauge("smpp.pending.dr", "pending"), () -> totalPending());
+        m.registerGauge(MetricsNames.gauge("smpp.pending.dr", "timeout_queue_size"), () -> GLOBAL_TIMEOUT_QUEUE.size());
+        m.registerGauge(MetricsNames.gauge("smpp.pending.dr", "timeout_worker_count"), () -> GLOBAL_TIMEOUT_WORKER_COUNT.get());
     }
 
     private static void recordGlobalTimeoutGauges() {

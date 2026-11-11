@@ -207,11 +207,13 @@ public abstract class DataManager {
      */
     protected int doUpdate(String strSQL) throws DataControlException {
         Statement stmt = null;
+        long start = System.nanoTime();
         try {
             Connection conn = currentConnection();
             stmt = conn.createStatement();
             int line = stmt.executeUpdate(strSQL);
 //            zeroFailureCount();
+            recordDbOp(sqlVerb(strSQL), start);
             return line;
         } catch (Exception e) {
             logger.trace("SQL Statement that cause error: {}", strSQL);
@@ -223,6 +225,33 @@ public abstract class DataManager {
                 try { stmt.close(); } catch (SQLException ex) {}
             }
         }
+    }
+
+    /** db.op.{insert|update|delete|select|batch|other}: the connection and the statement, in ms buckets */
+    protected static void recordDbOp(String op, long startNanos) {
+        com.king.gmms.metrics.MetricsCollector.getInstance().recordTime(
+                com.king.gmms.metrics.MetricsNames.metric(com.king.gmms.metrics.MetricsNames.TIMER_DB_OP, op),
+                System.nanoTime() - startNanos);
+    }
+
+    static String sqlVerb(String sql) {
+        if (sql == null) {
+            return "other";
+        }
+        int i = 0;
+        while (i < sql.length() && Character.isWhitespace(sql.charAt(i))) {
+            i++;
+        }
+        if (sql.regionMatches(true, i, "insert", 0, 6) || sql.regionMatches(true, i, "replace", 0, 7)) {
+            return "insert";
+        }
+        if (sql.regionMatches(true, i, "update", 0, 6)) {
+            return "update";
+        }
+        if (sql.regionMatches(true, i, "delete", 0, 6)) {
+            return "delete";
+        }
+        return "other";
     }
 
     /** Excutes an Delete statement
@@ -271,7 +300,10 @@ public abstract class DataManager {
 
     protected int[] doBatchUpdate() throws DataControlException {
         try {
-            return stmt.executeBatch();
+            long start = System.nanoTime();
+            int[] r = stmt.executeBatch();
+            recordDbOp("batch", start);
+            return r;
         } catch (SQLException e) {
 //            exceptionHandler(e);
             throw new DataControlException("Database query error: " +
@@ -281,7 +313,10 @@ public abstract class DataManager {
 
     protected int[] batchUpdate() throws DataControlException {
         try {
-            return stmt.executeBatch();
+            long start = System.nanoTime();
+            int[] r = stmt.executeBatch();
+            recordDbOp("batch", start);
+            return r;
         } catch (SQLException e) {
 //            exceptionHandler(e);
             throw new DataControlException("Database query error: " +
@@ -300,9 +335,11 @@ public abstract class DataManager {
         ResultSet rs = null;
 
         try {
+            long start = System.nanoTime();
             Connection conn = currentConnection();
             stmt = conn.createStatement();
             rs = stmt.executeQuery(strSQL);
+            recordDbOp("select", start);
 //            zeroFailureCount();
         } catch (Exception e) {
             logger.trace("SQL Statement that cause error: {}", strSQL);

@@ -61,7 +61,36 @@ public class MetricsNames {
     public static final String ACTION_REGISTRY_NO_SERVER_MODULE = "registry_no_server_module";
     public static final String ACTION_RDQ_RETRY_POLICY = "rdq_retry_policy";
 
+    // latency timers (docs/性能监控埋点评估与设计.md 3.3), each under {module}.
+    public static final String TIMER_STREAM_LAG = "stream.lag";
+    public static final String TIMER_VENDOR_SUBMIT_RTT = "client.vendor.submit_rtt";
+    public static final String TIMER_VENDOR_DR_LATENCY = "core.vendor.dr_latency";
+    public static final String TIMER_E2E_SUBMIT = "e2e.submit";
+    public static final String TIMER_E2E_DR = "e2e.dr";
+    public static final String TIMER_REDIS_OP = "redis.op";
+    public static final String TIMER_DB_OP = "db.op";
+    public static final String TIMER_DEFER_WAIT = "defer.wait";
+    /** consumer processing time per consumer: {module}.consumer.{name} */
+    public static final String CONSUMER_MT = "mt";
+    public static final String CONSUMER_MQM = "mqm";
+    public static final String CONSUMER_RESULT = "result";
+    public static final String CONSUMER_INBOUND_DR = "inbound_dr";
+    public static final String CONSUMER_SERVER_DR = "server_dr";
+    public static final String CONSUMER_HTTP_SUBMIT = "http_submit";
+    public static final String CONSUMER_CLIENT_OUT = "client_out";
+
     private static volatile boolean ssidMetricsEnabled = false;
+    private static volatile boolean bindMetricsEnabled = false;
+
+    /** build(component, flow, type, action) by its four parts, so a name is concatenated once */
+    private static final ConcurrentHashMap<String, ConcurrentHashMap<String, ConcurrentHashMap<String, ConcurrentHashMap<String, String>>>> BUILD_CACHE =
+            new ConcurrentHashMap<String, ConcurrentHashMap<String, ConcurrentHashMap<String, ConcurrentHashMap<String, String>>>>();
+    /** metric(base) and metric(base, part) */
+    private static final ConcurrentHashMap<String, String> METRIC_CACHE = new ConcurrentHashMap<String, String>();
+    private static final ConcurrentHashMap<String, ConcurrentHashMap<Object, String>> PART_CACHE =
+            new ConcurrentHashMap<String, ConcurrentHashMap<Object, String>>();
+    /** a bound on the cached names: ssids, binds and streams are many but not unbounded; past it names are built each time */
+    private static final int MAX_CACHED = 50000;
 
     public static String counter(String flow, GmmsMessage msg, String metric) {
         return build(flow, FLOW_IN, msgType(msg), metric);
@@ -118,8 +147,82 @@ public class MetricsNames {
     }
 
     public static String build(String component, String flow, String messageType, String action) {
+        if (cachedModule == null || component == null || flow == null || messageType == null || action == null) {
+            return buildNow(component, flow, messageType, action);
+        }
+        ConcurrentHashMap<String, ConcurrentHashMap<String, ConcurrentHashMap<String, String>>> byFlow = BUILD_CACHE.get(component);
+        if (byFlow == null) {
+            byFlow = BUILD_CACHE.computeIfAbsent(component, k -> new ConcurrentHashMap<String, ConcurrentHashMap<String, ConcurrentHashMap<String, String>>>());
+        }
+        ConcurrentHashMap<String, ConcurrentHashMap<String, String>> byType = byFlow.get(flow);
+        if (byType == null) {
+            byType = byFlow.computeIfAbsent(flow, k -> new ConcurrentHashMap<String, ConcurrentHashMap<String, String>>());
+        }
+        ConcurrentHashMap<String, String> byAction = byType.get(messageType);
+        if (byAction == null) {
+            byAction = byType.computeIfAbsent(messageType, k -> new ConcurrentHashMap<String, String>());
+        }
+        String name = byAction.get(action);
+        if (name == null) {
+            name = buildNow(component, flow, messageType, action);
+            byAction.putIfAbsent(action, name);
+        }
+        return name;
+    }
+
+    private static String buildNow(String component, String flow, String messageType, String action) {
         return module() + "." + normalize(component) + "." + normalize(flow)
                 + "." + normalize(messageType) + "." + normalize(action);
+    }
+
+    /** {module}.{base} */
+    public static String metric(String base) {
+        if (cachedModule == null) {
+            return module() + "." + base;
+        }
+        String name = METRIC_CACHE.get(base);
+        if (name == null) {
+            name = module() + "." + base;
+            if (METRIC_CACHE.size() < MAX_CACHED) {
+                METRIC_CACHE.putIfAbsent(base, name);
+            }
+        }
+        return name;
+    }
+
+    /** {module}.{base}.{part}, e.g. the timer of one channel: part is the ssid, a bind or a stream flow */
+    public static String metric(String base, Object part) {
+        if (part == null) {
+            return metric(base);
+        }
+        if (cachedModule == null) {
+            return module() + "." + base + "." + normalize(String.valueOf(part));
+        }
+        ConcurrentHashMap<Object, String> byPart = PART_CACHE.get(base);
+        if (byPart == null) {
+            byPart = PART_CACHE.computeIfAbsent(base, k -> new ConcurrentHashMap<Object, String>());
+        }
+        String name = byPart.get(part);
+        if (name == null) {
+            name = module() + "." + base + "." + normalize(String.valueOf(part));
+            if (byPart.size() < MAX_CACHED) {
+                byPart.putIfAbsent(part, name);
+            }
+        }
+        return name;
+    }
+
+    /** the processing time of one consumer: {module}.consumer.{consumer} */
+    public static String consumer(String consumer) {
+        return metric(COMPONENT_CONSUMER, consumer);
+    }
+
+    public static void configureBindMetrics(boolean enabled) {
+        bindMetricsEnabled = enabled;
+    }
+
+    public static boolean isBindMetricsEnabled() {
+        return bindMetricsEnabled;
     }
 
     public static String module() {
@@ -177,7 +280,9 @@ public class MetricsNames {
             return cached;
         }
         cached = value.trim().replace(' ', '_').replace('-', '_').toLowerCase();
-        NORMALIZE_CACHE.put(value, cached);
+        if (NORMALIZE_CACHE.size() < MAX_CACHED) {
+            NORMALIZE_CACHE.put(value, cached);
+        }
         return cached;
     }
 }

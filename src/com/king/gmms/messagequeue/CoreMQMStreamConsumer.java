@@ -107,6 +107,7 @@ public class CoreMQMStreamConsumer {
                     new LinkedBlockingQueue<Runnable>(consumerConfig.workerQueueSize()),
                     new ThreadPoolExecutor.AbortPolicy());
 
+            consumerConfig.registerPoolGauges(workerPool);
             dispatcherThread = Executors.newSingleThreadExecutor();
             dispatcherThread.execute(new Runnable() {
                 public void run() {
@@ -294,8 +295,7 @@ public class CoreMQMStreamConsumer {
                         MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_FAIL));
                 logger.error(msg, "Failed to process MQM message from stream {}", streamKey, e);
             } finally {
-                MetricsCollector.getInstance().recordTime(MetricsNames.timer(MetricsNames.COMPONENT_CONSUMER,
-                        MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_LATENCY),
+                MetricsCollector.getInstance().recordTime(MetricsNames.consumer(MetricsNames.CONSUMER_MQM),
                         System.nanoTime() - start);
             }
         }

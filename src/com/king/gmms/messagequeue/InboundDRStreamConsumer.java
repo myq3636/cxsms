@@ -65,6 +65,7 @@ public class InboundDRStreamConsumer {
             new ThreadPoolExecutor.AbortPolicy()
         );
 
+        consumerConfig.registerPoolGauges(workerPool);
         dispatcherThread = Executors.newSingleThreadExecutor();
         dispatcherThread.execute(new Runnable() {
             public void run() {
@@ -258,8 +259,7 @@ public class InboundDRStreamConsumer {
                     MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_FAIL));
             logger.error(msg, "Failed to process DR from stream {}", streamKey, e);
         } finally {
-            MetricsCollector.getInstance().recordTime(MetricsNames.timer(MetricsNames.COMPONENT_CONSUMER,
-                    MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_LATENCY),
+            MetricsCollector.getInstance().recordTime(MetricsNames.consumer(MetricsNames.CONSUMER_INBOUND_DR),
                     System.nanoTime() - start);
         }
     }

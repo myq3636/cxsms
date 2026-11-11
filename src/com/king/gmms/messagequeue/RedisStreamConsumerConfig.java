@@ -95,6 +95,17 @@ public class RedisStreamConsumerConfig {
         return pool;
     }
 
+    /** {module}.consumer.{name}.pool.active / queued, read when reported; a new pool of the consumer replaces them */
+    public void registerPoolGauges(final ThreadPoolExecutor pool) {
+        if (pool == null) {
+            return;
+        }
+        String component = "consumer." + consumerName + ".pool";
+        com.king.gmms.metrics.MetricsCollector m = com.king.gmms.metrics.MetricsCollector.getInstance();
+        m.registerGauge(com.king.gmms.metrics.MetricsNames.gauge(component, "active"), () -> pool.getActiveCount());
+        m.registerGauge(com.king.gmms.metrics.MetricsNames.gauge(component, "queued"), () -> pool.getQueue().size());
+    }
+
     /** Hot reload of WorkerMaxPoolSize for a pool from {@link #newElasticWorkerPool}. */
     public void applyElasticWorkerPool(ThreadPoolExecutor pool) {
         if (pool == null) {

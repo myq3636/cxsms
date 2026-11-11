@@ -405,6 +405,12 @@ public class SerializableHandler {
 						    	case 59:
 						    		msg.setDrErrorCode(parameters[59]);
 									break;
+						    	case 60:
+						    		msg.setInTimeMs(Long.parseLong(parameters[60]));
+									break;
+						    	case 61:
+						    		msg.setOutTimeMs(Long.parseLong(parameters[61]));
+									break;
 								default:
 									if(log.isInfoEnabled()){
 										log.info("Unknown parameter in Redis String, and Redis String is {}", message);
@@ -901,6 +907,9 @@ public class SerializableHandler {
 					// 58, 59: the DR error code as the channel sent it, the internal one
 					sb.append(separator).append(msg.getVendorErrorCode() == null ? "" : msg.getVendorErrorCode().replaceAll(separator, repl_sep));
 					sb.append(separator).append(msg.getDrErrorCode() == null ? "" : msg.getDrErrorCode());
+					// 60, 61: entered the gateway, accepted by the vendor (epoch ms, latency metrics only)
+					sb.append(separator).append(msg.getInTimeMs() > 0 ? String.valueOf(msg.getInTimeMs()) : "");
+					sb.append(separator).append(msg.getOutTimeMs() > 0 ? String.valueOf(msg.getOutTimeMs()) : "");
 					
 				} catch (Exception e) {
 					if(log.isInfoEnabled()){

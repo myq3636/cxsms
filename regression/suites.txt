@@ -68,3 +68,4 @@ DrainClientIT it.DrainClientIT it-multiclient
 DrainServerIT it.DrainServerIT it-multi
 DrTransferIT it.DrTransferIT it-multi
 ModuleOpsIT it.ModuleOpsIT it-multicore
+MetricsIT it.MetricsIT it-mod:CoreEngine1

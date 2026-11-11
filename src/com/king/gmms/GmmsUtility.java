@@ -82,8 +82,6 @@ public class GmmsUtility {
 	private volatile int connectionSilentTime;
 	private String routerModule;
 	private volatile HashSet<String> loopbacks;
-	private volatile int alertFreq;
-	private int alertCount;
 	private volatile int maxSilentTime;
 	private volatile int cdrMaxTime;
 	private volatile int cdrMaxSize;
@@ -129,14 +127,9 @@ public class GmmsUtility {
 	
 	/**
 	 * Consecutive number of throttling control time window
-     * when need to send alert mail 
+     * before an alert
 	 */
 	private volatile int conSecThrottleWinNumToAlert;
-	
-	/**
-	 * max number of throttling alert mail to send
-	 */
-	private volatile int maxThrottleAlertMailNum;
 	
 	/**
 	 *  The interval of protocol module report incoming message count to SYS module.
@@ -472,8 +465,6 @@ public class GmmsUtility {
 					loopbacks.add(address);
 				}
 			}
-			alertFreq = Integer.parseInt(props.getProperty(
-					"AlertMailFrequence", "100").trim());
 			initPhoneLen = Integer.parseInt(props.getProperty("InitPhoneLen",
 					"0").trim());
 
@@ -528,8 +519,6 @@ public class GmmsUtility {
 			// throttling control conf
 			conSecThrottleWinNumToAlert = Integer.parseInt(props.getProperty(
 					"ThrottlingControl.ConsecutiveNumToAlert", "3"));
-			maxThrottleAlertMailNum = Integer.parseInt(props.getProperty(
-			        "ThrottlingControl.MaxAlertMailNum", "1"));
 			reportModuleIncomingMsgCountInterval = Integer.parseInt(props.getProperty(
 					"ThrottlingControl.ReportModuleIncomingMsgCountInterval", "60"));
 			dynamicCustInThresholdExipreTime = Integer.parseInt(props.getProperty(
@@ -889,8 +878,7 @@ public class GmmsUtility {
 		boolean metricsChanged = false;
 		boolean dbPoolStatsChanged = false;
 		for (String key : applied) {
-			if ("AlertMailFrequence".equals(key)) alertFreq = intProp(props, key, 100);
-			else if ("InitPhoneLen".equals(key)) initPhoneLen = intProp(props, key, 0);
+			if ("InitPhoneLen".equals(key)) initPhoneLen = intProp(props, key, 0);
 			else if ("MessageExpireTime".equals(key)) expireTime = intProp(props, key, 1380);
 			else if ("ResendDRThrottle".equals(key)) resendDRThrottle = intProp(props, key, 0);
 			else if ("Redis_MinIDExpireTime".equals(key)) min_ID_expireTime = intProp(props, key, 300);
@@ -921,16 +909,12 @@ public class GmmsUtility {
 			} else if (isShardRuntimeKey(key)) {
 				shardChanged = true;
 			} else if ("ThrottlingControl.ConsecutiveNumToAlert".equals(key)) conSecThrottleWinNumToAlert = intProp(props, key, 3);
-			else if ("ThrottlingControl.MaxAlertMailNum".equals(key)) maxThrottleAlertMailNum = intProp(props, key, 1);
 			else if ("ThrottlingControl.ReportModuleIncomingMsgCountInterval".equals(key)) reportModuleIncomingMsgCountInterval = intProp(props, key, 60);
 			else if ("ThrottlingControl.DynamicCustIncomingThresholdExipreTime".equals(key)) dynamicCustInThresholdExipreTime = intProp(props, key, 90);
 			else if ("ThrottlingControl.SystemIncomingThreshold".equals(key)) systemIncomingThreshold = intProp(props, key, 2000);
 			else if ("ThrottlingControl.DefaultCustIncomingThreshold".equals(key)) defaultCustIncomingThreshold = intProp(props, key, 20);
 			else if ("ThrottlingControl.MaxCustIncomingThresholdMagnification".equals(key)) maxCustIncomingThresholdMagnification = intProp(props, key, 5);
-			else if ("Metrics.Enable".equals(key) || "Metrics.ReportIntervalSeconds".equals(key)
-					|| "Metrics.LogLevel".equals(key) || "Metrics.PrintZero".equals(key)
-					|| "Metrics.PrintGauge".equals(key) || "Metrics.MinTPS".equals(key)
-					|| "Metrics.Ssid.Enable".equals(key)) metricsChanged = true;
+			else if (key.startsWith("Metrics.")) metricsChanged = true;
 			else if ("DB.PoolStats.Enable".equals(key) || "DB.PoolStats.IntervalSeconds".equals(key)) dbPoolStatsChanged = true;
 		}
 		if (shardChanged) {
@@ -955,18 +939,25 @@ public class GmmsUtility {
 	private void applyMetricsConfig(Properties props) {
 		boolean metricsEnable = Boolean.parseBoolean(props.getProperty("Metrics.Enable", "true").trim());
 		int metricsInterval = intProp(props, "Metrics.ReportIntervalSeconds", 30);
-		String metricsLogLevel = props.getProperty("Metrics.LogLevel", "DEBUG").trim();
+		String metricsLogLevel = props.getProperty("Metrics.LogLevel", "INFO").trim();
 		boolean metricsPrintZero = Boolean.parseBoolean(props.getProperty("Metrics.PrintZero", "false").trim());
-		boolean metricsPrintGauge = Boolean.parseBoolean(props.getProperty("Metrics.PrintGauge", "false").trim());
+		boolean metricsPrintGauge = Boolean.parseBoolean(props.getProperty("Metrics.PrintGauge", "true").trim());
 		double metricsMinTps = doubleProp(props, "Metrics.MinTPS", 0.01);
 		boolean metricsSsidEnable = Boolean.parseBoolean(props.getProperty("Metrics.Ssid.Enable", "false").trim());
 		MetricsNames.configureSsidMetrics(metricsSsidEnable);
+		MetricsNames.configureBindMetrics(Boolean.parseBoolean(props.getProperty("Metrics.Bind.Enable", "false").trim()));
+		MetricsReporter.getInstance().configureOutput(props.getProperty("Metrics.Format", "json").trim(),
+				Boolean.parseBoolean(props.getProperty("Metrics.Redis.Enable", "true").trim()),
+				new MetricsReporter.Alerts(intProp(props, "Metrics.Alert.StreamLagMs", 0),
+						intProp(props, "Metrics.Alert.VendorRttMs", 0), intProp(props, "Metrics.Alert.DbPoolWaiting", 0),
+						doubleProp(props, "Metrics.Alert.ConsumerFailRatio", 0.0),
+						intProp(props, "Metrics.Alert.RepeatSeconds", 300)));
 		MetricsReporter.getInstance().applyConfig(metricsEnable, metricsInterval, metricsLogLevel,
 				metricsPrintZero, metricsPrintGauge, metricsMinTps);
 	}
 
 	private void applyDbPoolStatsConfig(Properties props) {
-		boolean enable = Boolean.parseBoolean(props.getProperty("DB.PoolStats.Enable", "false").trim());
+		boolean enable = Boolean.parseBoolean(props.getProperty("DB.PoolStats.Enable", "true").trim());
 		int interval = intProp(props, "DB.PoolStats.IntervalSeconds", 60);
 		if (enable) {
 			JdbcPoolStatsReporter.getInstance().restart(interval);
@@ -1032,7 +1023,7 @@ public class GmmsUtility {
 
 	private boolean isDirectRuntimeKey(String key) {
 		String[] keys = new String[] {
-			"AlertMailFrequence", "InitPhoneLen", "MessageExpireTime", "ResendDRThrottle",
+			"InitPhoneLen", "MessageExpireTime", "ResendDRThrottle",
 			"Redis_MinIDExpireTime", "MessageFinalExpireTime", "DRInterval", "ConnectionSilentTime",
 			"MaxSilentTime", "CacheMessageTimeout", "CsmIntegrityCacheTimeout", "CsmIntegrityCacheCapacity",
 			"WaitingEnquireLinkResponseTime", "StoreDRModeEnable", "BlackholeSsid", "DNSTimeOut",
@@ -1040,13 +1031,15 @@ public class GmmsUtility {
 			"MaxMessageExpireTimeFromCust", "CDRFileSwitchInterval", "CDRFileMaxSize",
 			"MessageIdIncludeNodeId", "ScreenedIPs", "LoopbackAddresses", "Metrics.Enable", "Metrics.ReportIntervalSeconds",
 			"Metrics.LogLevel", "Metrics.PrintZero", "Metrics.PrintGauge", "Metrics.MinTPS",
-			"Metrics.Ssid.Enable",
+			"Metrics.Ssid.Enable", "Metrics.Bind.Enable", "Metrics.Format", "Metrics.Redis.Enable",
+			"Metrics.Alert.StreamLagMs", "Metrics.Alert.VendorRttMs", "Metrics.Alert.DbPoolWaiting",
+			"Metrics.Alert.ConsumerFailRatio", "Metrics.Alert.RepeatSeconds",
 			"AutoInDR.DelayDispatcherEnable", "AutoInDR.DelayBatchSize",
 			"AutoInDR.DelayClaimTimeoutMs", "AutoInDR.DelayRetryDelayMs", "AutoInDR.DelayMaxRetry",
 			"AutoInDR.DelayPayloadTTLSeconds",
 			"AutoInDR.DispatcherIdleSleepMs",
 			"DB.StartupCheck", "DB.StartupCheckSql", "DB.PoolStats.Enable", "DB.PoolStats.IntervalSeconds", "DB.DrErrorCodeColumns",
-			"ThrottlingControl.ConsecutiveNumToAlert", "ThrottlingControl.MaxAlertMailNum",
+			"ThrottlingControl.ConsecutiveNumToAlert",
 			"ThrottlingControl.ReportModuleIncomingMsgCountInterval",
 			"ThrottlingControl.DynamicCustIncomingThresholdExipreTime",
 			"ThrottlingControl.SystemIncomingThreshold",
@@ -1135,7 +1128,7 @@ public class GmmsUtility {
 	/** runtime keys whose value is text: not validated as numbers */
 	private boolean isStringRuntimeKey(String key) {
 		String[] keys = new String[] {
-			"Metrics.LogLevel", "DB.StartupCheckSql", "ScreenedIPs", "LoopbackAddresses",
+			"Metrics.LogLevel", "Metrics.Format", "DB.StartupCheckSql", "ScreenedIPs", "LoopbackAddresses",
 			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress", "CsmReassembleMode",
 			"Skytel_Prefix", "Indigo_prefix", "APBW_CPID", "APBW_SID", "DescendingTime",
 			"MQM.ActivePriority", "SmppServerInboundQueueFullCommandStatus", "enquirelinktime", "DB.DrErrorCodeColumns"
@@ -1148,7 +1141,7 @@ public class GmmsUtility {
 	}
 
 	private boolean isDoubleRuntimeKey(String key) {
-		return "Metrics.MinTPS".equals(key);
+		return "Metrics.MinTPS".equals(key) || "Metrics.Alert.ConsumerFailRatio".equals(key);
 	}
 
 	private boolean isIntegerRuntimeKey(String key) {
@@ -1246,6 +1239,7 @@ public class GmmsUtility {
 				|| "RedisStreamMonitor.Enable".equals(key)
 				|| "Metrics.Enable".equals(key) || "Metrics.PrintZero".equals(key)
 				|| "Metrics.PrintGauge".equals(key) || "Metrics.Ssid.Enable".equals(key)
+				|| "Metrics.Bind.Enable".equals(key) || "Metrics.Redis.Enable".equals(key)
 				|| "AutoInDR.DelayDispatcherEnable".equals(key)
 				|| "MQM.ActiveStandbyEnable".equals(key)
 				|| "CoreOutboundOutboxEnable".equals(key)
@@ -1332,8 +1326,7 @@ public class GmmsUtility {
 				|| (module != null && (key.equals(module + ".Asynchronous") || key.equals(module + ".MaxCDRAsynQueueSize")
 						|| key.equals(module + ".MaxSDQAsynQueueSize")))
 				|| key.startsWith("AsyncSql") || key.startsWith("DbHa.") || key.startsWith("ModuleStatus")
-				|| key.startsWith("DataControl_") || key.startsWith("SystemManager.") || key.startsWith("MGM.")
-				|| key.startsWith("Mail")) {
+				|| key.startsWith("DataControl_") || key.startsWith("SystemManager.") || key.startsWith("MGM.")) {
 			return true;
 		}
 		return "NodeID".equals(key) || "RouterModule".equals(key) || "ServerIP".equals(key)
@@ -1615,12 +1608,6 @@ public class GmmsUtility {
 	
 	public boolean isLoopbackAddress(String address) {
 		return loopbacks.contains(address);
-	}
-
-	public boolean needAlertMail() {
-		boolean result = alertCount == 0;
-		alertCount = (alertCount + 1) % alertFreq;
-		return result;
 	}
 
 	/**
@@ -2299,12 +2286,6 @@ public class GmmsUtility {
 		return conSecThrottleWinNumToAlert;
 	}
 
-	public int getMaxThrottleAlertMailNum() {
-		if (maxThrottleAlertMailNum <= 0) {
-			return 1; //default
-		}
-		return maxThrottleAlertMailNum;
-	}
 
 	public int getDefaultCustIncomingThreshold() {
 		if (defaultCustIncomingThreshold <=0 ) {

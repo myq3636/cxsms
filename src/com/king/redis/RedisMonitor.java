@@ -23,7 +23,6 @@ import com.king.framework.SystemLogger;
 import com.king.framework.lifecycle.LifecycleListener;
 import com.king.framework.lifecycle.event.Event;
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.MailSender;
 import com.king.gmms.ha.ModuleURI;
 
 
@@ -83,12 +82,12 @@ public class RedisMonitor extends Observable implements Runnable,
     private boolean isAuth;
     private String password;
 	/**
-	 * max number of alert mail to send
+	 * max number of [ALERT] logs of a Redis down (RedisMonitor_MaxAlertMailNum)
 	 */
 	private int MAX_ALERT_MAIL_NUM;
 
 	/**
-	 * default max number of alert mail to send
+	 * default max number of [ALERT] logs
 	 */
 	private static final int DEFAULT_ALERT_MAIL_NUM = 1;
 
@@ -254,9 +253,9 @@ public class RedisMonitor extends Observable implements Runnable,
 					if (masterCount >=redis_error_Connection_count) {
 						log.error("master redis is down! ");
 						if(SLAVE.equalsIgnoreCase(masterOrSlave)){							
-							sendRedisAlertMail(slave_host, slave_port,masterCount,MASTER);
+							alertRedisDown(slave_host, slave_port,masterCount,MASTER);
 						}else{							
-							sendRedisAlertMail(master_host, master_port,masterCount,MASTER);
+							alertRedisDown(master_host, master_port,masterCount,MASTER);
 						}
 						JedisPool slaveToMaster = getSlavePool(masterOrSlave);											
 							Jedis jedis = getJedis(slaveToMaster);
@@ -283,9 +282,9 @@ public class RedisMonitor extends Observable implements Runnable,
 					}
 					if (slaveCount >= redis_error_Connection_count) {
 						if (SLAVE.equalsIgnoreCase(masterOrSlave)) {
-							sendRedisAlertMail(master_host, master_port,slaveCount,SLAVE);
+							alertRedisDown(master_host, master_port,slaveCount,SLAVE);
 						} else {
-							sendRedisAlertMail(slave_host, slave_port,slaveCount,SLAVE);
+							alertRedisDown(slave_host, slave_port,slaveCount,SLAVE);
 						}
 					}
 				} catch (Exception e) {
@@ -441,38 +440,21 @@ public class RedisMonitor extends Observable implements Runnable,
 		RedisMonitor.masterOrSlave = masterOrSlave;
 	}
 
-	private void sendRedisAlertMail(String host, int port, int count,String mOS) {
-		// make alert mail content and subject
-		StringBuilder mailTextBuffer = new StringBuilder(100);
-		String mailSubject = null;
-		String hostAddress = ModuleURI.self().getAddress();
-
-		mailTextBuffer.append(host).append(":").append(port).append(
-				" redis is down, please help to start it!");
-		mailSubject = "A2P alert mail from " + hostAddress
-				+ " for redisMonitor!";
-
-		if(MASTER.equalsIgnoreCase(mOS)){
+	/** an [ALERT] log that a Redis is down: every redis_error_Connection_count failures, at most MAX_ALERT_MAIL_NUM times */
+	private void alertRedisDown(String host, int port, int count, String mOS) {
+		int n;
+		if (MASTER.equalsIgnoreCase(mOS)) {
 			if (count % redis_error_Connection_count != 0 || MASTER_CONSECUTIVE_NUM_TO_ALERT >= MAX_ALERT_MAIL_NUM) {
 				return;
 			}
-			MASTER_CONSECUTIVE_NUM_TO_ALERT++;
-			mailTextBuffer.append(", AlertMailNumId=").append(
-					MASTER_CONSECUTIVE_NUM_TO_ALERT).append(".");
-		}else{
+			n = ++MASTER_CONSECUTIVE_NUM_TO_ALERT;
+		} else {
 			if (count % redis_error_Connection_count != 0 || SLAVE_CONSECUTIVE_NUM_TO_ALERT >= MAX_ALERT_MAIL_NUM) {
 				return;
 			}
-			SLAVE_CONSECUTIVE_NUM_TO_ALERT++;
-			mailTextBuffer.append(", AlertMailNumId=").append(
-					SLAVE_CONSECUTIVE_NUM_TO_ALERT).append(".");
-		}	
-		String mailText = mailTextBuffer.toString();
-		if(log.isDebugEnabled()){
-			log.debug("mailText is: {}" , mailText);
+			n = ++SLAVE_CONSECUTIVE_NUM_TO_ALERT;
 		}
-		MailSender.getInstance().sendAlertMail(mailSubject, mailText, null);
-		return;
+		log.error("[ALERT] redis {}:{} ({}) is down, please start it; failures={}, alert {} of {}", host, port, mOS, count, n, MAX_ALERT_MAIL_NUM);
 	}
 	public boolean switchRedis(String s){
 		JedisPool master = getMasterPool(s);											

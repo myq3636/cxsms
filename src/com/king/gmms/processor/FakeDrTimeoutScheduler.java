@@ -93,7 +93,20 @@ public class FakeDrTimeoutScheduler implements Runnable {
 		worker = new Thread(this, "FakeDrTimeoutScheduler");
 		worker.setDaemon(true);
 		worker.start();
+		// MTs being timed on the shards of this Core: one ZCARD per shard each report
+		com.king.gmms.metrics.MetricsCollector.getInstance().registerGauge(
+				com.king.gmms.metrics.MetricsNames.gauge("fakedr.timeout", "timing"), () -> timing());
 		log.info("FakeDrTimeoutScheduler started");
+	}
+
+	private long timing() {
+		long n = 0;
+		try (redis.clients.jedis.Jedis j = redis().getJedis()) {
+			for (Integer shard : GmmsUtility.getInstance().getMyShards()) {
+				n += j.zcard(READY_PREFIX + shard);
+			}
+		}
+		return n;
 	}
 
 	public synchronized void stop() {

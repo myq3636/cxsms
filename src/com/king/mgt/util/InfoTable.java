@@ -28,10 +28,8 @@ public class InfoTable {
     public static final int BLACKLIST_RELOAD_FTP_FAILED=100;
     public static final int HELP_INFO=200;
 
-    public static final int ALERT_MAIL_SUBJECT=900;
 
     private HashMap<Integer, String> infoTable=new HashMap<Integer, String>();
-    private UserInterfaceUtility util;
     private static InfoTable instance=new InfoTable();
     private InfoTable() {
         this.add(SYNTAX_ERROR, "Syntax Error.");
@@ -53,10 +51,6 @@ public class InfoTable {
                  + "switchdns: switchdns [master|slave]\n"
                  + "version: query GW version\n"
                  + "help: List all supported commands with a simple description");
-
-        util=UserInterfaceUtility.getInstance();
-        String ip=util.getProperty("Host");
-        this.add(ALERT_MAIL_SUBJECT, "[Alert] Management Interface Alert Mail ("+ip+")");
     }
     public static InfoTable getInstance()
     {
