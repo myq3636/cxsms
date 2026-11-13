@@ -66,7 +66,7 @@ public class IncrementalRoutingIT extends ItSupport {
 		m.setRecipientAddress("8613800000000");
 		m.setOSsID(ssid);
 		m.setRSsID(-1);
-		return String.valueOf(ctm().getCustomerRoutingRelay(ssid, m));
+		return String.valueOf(ctm().mainRouteRssid(ssid, m));
 	}
 
 	public static void main(String[] args) throws Exception {
@@ -84,12 +84,12 @@ public class IncrementalRoutingIT extends ItSupport {
 			JSONObject u = user("VENDOR8", "CUST8888");
 			check(u != null && "8888".equals(u.getString("ssid")), "IR-01b channel index: VENDOR8 used by CUST8888 (" + u + ")");
 			JSONObject route = route("VENDOR8", "CUST8888");
-			check(u != null && u.getIntValue("routes") == 1 && route != null && "A2PRoutingRelay".equals(route.getString("type")) && "86".equals(route.getString("PhonePrefix")),
+			check(u != null && u.getIntValue("routes") == 1 && route != null && "A2PMainRouting".equals(route.getString("type")) && "86".equals(route.getString("PhonePrefix")),
 					"IR-01c channel index: route shows type and prefix");
 			check(user("VENDOR9", "CUST7001") != null && user("VENDOR8", "CUST7001") == null, "IR-01d channel index: CUST7001 only under VENDOR9");
 
 			// no change: nothing is read, tables stay the very same object
-			java.lang.reflect.Field tf = A2PCustomerManager.class.getDeclaredField("routingTables");
+			java.lang.reflect.Field tf = A2PCustomerManager.class.getDeclaredField("ruleIndex");
 			tf.setAccessible(true);
 			Object t0 = tf.get(ctm());
 			long noChange = logs("no routing file changed");
@@ -110,9 +110,9 @@ public class IncrementalRoutingIT extends ItSupport {
 			// bad file: fails alone, keeps its routing
 			String[][] bad = {
 				{"empty", ""},
-				{"no CCBSSID", "A2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR8)\n"},
-				{"bad CCBSSID", "CCBSSID: abc\nA2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR8)\n"},
-				{"no Relay", "CCBSSID: 8888\nA2PRoutingRelay: (PhonePrefix=86,Relayy=VENDOR8)\n"},
+				{"no CCBSSID", "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR8)\n"},
+				{"bad CCBSSID", "CCBSSID: abc\nA2PMainRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR8)\n"},
+				{"no Relay", "CCBSSID: 8888\nA2PMainRouting: (Priority=30,PhonePrefix=86,Relayy=VENDOR8)\n"},
 			};
 			int i = 0;
 			for (String[] b : bad) {
@@ -144,7 +144,7 @@ public class IncrementalRoutingIT extends ItSupport {
 
 			// add files, remove one, remove too many
 			for (int n = 1; n <= 8; n++) {
-				write(file("CUSTX" + n), "CCBSSID: " + (7100 + n) + "\nA2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR9)\n");
+				write(file("CUSTX" + n), "CCBSSID: " + (7100 + n) + "\nA2PMainRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR9)\n");
 			}
 			reload();
 			check(lastDone().contains("loaded=8,") && users("VENDOR9").size() == 9, "IR-07a 8 new files loaded, channel index has them");
@@ -156,7 +156,7 @@ public class IncrementalRoutingIT extends ItSupport {
 			reload();
 			check("failed".equals(files("routing.result")) && v2.equals(files("routing.version")) && user("VENDOR9", "CUSTX1") != null,
 					"IR-07c 5 of 9 deleted: rejected, nothing removed (" + files("routing.failReason") + ")");
-			for (int n = 1; n <= 5; n++) write(file("CUSTX" + n), "CCBSSID: " + (7100 + n) + "\nA2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR9)\n");
+			for (int n = 1; n <= 5; n++) write(file("CUSTX" + n), "CCBSSID: " + (7100 + n) + "\nA2PMainRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR9)\n");
 
 			// file being written: fails alone, next reload picks it up
 			final Path busy = file("CUSTX1");
@@ -165,7 +165,7 @@ public class IncrementalRoutingIT extends ItSupport {
 				int k = 0;
 				while (go.get()) {
 					try {
-						Files.write(busy, ("CCBSSID: 7101\nA2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR9)\n#" + (k++) + "\n").getBytes("UTF-8"));
+						Files.write(busy, ("CCBSSID: 7101\nA2PMainRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR9)\n#" + (k++) + "\n").getBytes("UTF-8"));
 						Thread.sleep(50);
 					} catch (Exception e) { }
 				}
@@ -181,12 +181,12 @@ public class IncrementalRoutingIT extends ItSupport {
 			check("ok".equals(files("routing.result")), "IR-08b writing done: next reload ok");
 
 			// channel index: mix and master/backup, other routing kinds
-			write(file("CUSTX2"), "CCBSSID: 7102\nA2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR9:20,VENDOR12:80)\n"
-					+ "A2PBackupRoutingRelay: (PhonePrefix=86,Relay=VENDOR8)\nA2PSenderRoutingRelay: (PhonePrefix=852,Sender=ABC,Relay=VENDOR31)\n");
+			write(file("CUSTX2"), "CCBSSID: 7102\nA2PMainRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR9:20,VENDOR12:80);(Priority=10,PhonePrefix=852,Sender=ABC,Relay=VENDOR31)\n"
+					+ "A2PBackupRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR8)\n");
 			reload();
 			JSONObject mix = user("VENDOR12", "CUSTX2");
 			check(user("VENDOR9", "CUSTX2") != null && mix != null, "IR-09a mix relay: listed under both channels (" + mix + ")");
-			check(user("VENDOR8", "CUSTX2") != null && "A2PBackupRoutingRelay".equals(route("VENDOR8", "CUSTX2").getString("type")),
+			check(user("VENDOR8", "CUSTX2") != null && "A2PBackupRouting".equals(route("VENDOR8", "CUSTX2").getString("type")),
 					"IR-09b backup routing listed with its type");
 			check(user("VENDOR31", "CUSTX2") != null, "IR-09c sender routing listed");
 

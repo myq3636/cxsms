@@ -173,7 +173,7 @@ public class CsmCdrIT extends CoreBizSupport {
 		home = System.getProperty("a2p_home");
 		appendCm("\n[CUST8889]\nCCBSSID: 8889\nA2PPlayerType: operator\nProtocol: SMPP\n"
 				+ "\n[VENDOR18]\nCCBSSID: 18\nA2PPlayerType: operator\nProtocol: SMPP\nChlMsgSplit: yes\nMsgSplitLen: 100\n");
-		route("CUST8889", 8889, "A2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR18)");
+		route("CUST8889", 8889, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR18)");
 		try {
 			boot();
 			ResultStreamConsumer.getInstance().start();

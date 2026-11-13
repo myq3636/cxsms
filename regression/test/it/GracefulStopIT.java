@@ -49,7 +49,7 @@ public class GracefulStopIT extends CoreFailoverIT {
 	public static void main(String[] a) throws Exception {
 		home = System.getProperty("a2p_home");
 		appendCm(cust("V901", RSSID, "") + cust("R900", OSSID, ""));
-		route("R900", OSSID, "A2PRoutingRelay: (PhonePrefix=86,Relay=V901)");
+		route("R900", OSSID, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V901)");
 		Path cfg = Paths.get(home + "Gmms/GmmsConfig.properties");
 		Files.write(cfg, (new String(Files.readAllBytes(cfg), "UTF-8") + "\nRedisStreamAutoClaimEnable=true\nCoreMtLeaseMs=10000\nRedisStreamAutoClaimIdleMs=10000\nRedisStreamAutoClaimIntervalMs=1000\n").getBytes("UTF-8"));
 		Process n1 = null, n2 = null;

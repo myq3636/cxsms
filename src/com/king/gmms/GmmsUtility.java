@@ -1038,7 +1038,7 @@ public class GmmsUtility {
 			"AutoInDR.DelayClaimTimeoutMs", "AutoInDR.DelayRetryDelayMs", "AutoInDR.DelayMaxRetry",
 			"AutoInDR.DelayPayloadTTLSeconds",
 			"AutoInDR.DispatcherIdleSleepMs",
-			"DB.StartupCheck", "DB.StartupCheckSql", "DB.PoolStats.Enable", "DB.PoolStats.IntervalSeconds", "DB.DrErrorCodeColumns",
+			"DB.StartupCheck", "DB.StartupCheckSql", "DB.PoolStats.Enable", "DB.PoolStats.IntervalSeconds", "DB.DrErrorCodeColumns", "DB.RoutingLevelColumn",
 			"ThrottlingControl.ConsecutiveNumToAlert",
 			"ThrottlingControl.ReportModuleIncomingMsgCountInterval",
 			"ThrottlingControl.DynamicCustIncomingThresholdExipreTime",
@@ -1131,7 +1131,7 @@ public class GmmsUtility {
 			"Metrics.LogLevel", "Metrics.Format", "DB.StartupCheckSql", "ScreenedIPs", "LoopbackAddresses",
 			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress", "CsmReassembleMode",
 			"Skytel_Prefix", "Indigo_prefix", "APBW_CPID", "APBW_SID", "DescendingTime",
-			"MQM.ActivePriority", "SmppServerInboundQueueFullCommandStatus", "enquirelinktime", "DB.DrErrorCodeColumns"
+			"MQM.ActivePriority", "SmppServerInboundQueueFullCommandStatus", "enquirelinktime", "DB.DrErrorCodeColumns", "DB.RoutingLevelColumn"
 		};
 		if (contains(keys, key)) {
 			return true;

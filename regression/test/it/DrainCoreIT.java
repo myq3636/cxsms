@@ -90,7 +90,7 @@ public class DrainCoreIT extends CoreFailoverIT {
 	public static void main(String[] a) throws Exception {
 		home = System.getProperty("a2p_home");
 		appendCm(cust("V901", RSSID, "") + cust("R900", OSSID, ""));
-		route("R900", OSSID, "A2PRoutingRelay: (PhonePrefix=86,Relay=V901)");
+		route("R900", OSSID, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V901)");
 		Files.write(Paths.get(home + "conf/a2p_modules.conf"), ("1|" + D2 + "|core|x|0|core|10||\n1|" + D3 + "|core|x|0|core|10||\n"
 				+ "1|MultiSmppServer1|smpp-server|x|0|server|40||\n1|MultiSmppClient1|smpp-client|x|0|client|20||\n").getBytes("UTF-8"));
 		Path cfg = Paths.get(home + "Gmms/GmmsConfig.properties");

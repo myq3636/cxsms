@@ -570,8 +570,9 @@ public class MessageStoreManager extends DataManager {
 				.isRssidNotSupportDR(message.getRSsID());
 		String messageType = message.getMessageType();	
 		GmmsMessage cdr = new GmmsMessage(message);
-		// reroute check and process
-		if (checkReroute) {				
+		// reroute check and process: only a failure code in the channel's SMSOptionSubmitRetryCode goes to the next
+		// backup level (docs/路由重构设计.md 2.4, 2.9); any other failure is final
+		if (checkReroute && needRetryForOutSubmitRes(message)) {
 			if (rerouteOnce(message)) {
 				// reroute success, return directly				
 				if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(messageType)) {			
@@ -645,6 +646,8 @@ public class MessageStoreManager extends DataManager {
 					}
 				}
 			} else {				
+				// the backup levels are used up: the retry goes to the main route again (docs/路由重构设计.md 2.9)
+				backToMainRoute(message);
 				if (message.getOriginalQueue() == null) {
 					if (inRopBusyMode(message.getRSsID())) {
 						insertMessageToDB(message, SMQ);
@@ -656,6 +659,10 @@ public class MessageStoreManager extends DataManager {
 				}
 			}
 		} else {			
+			if (checkReroute && message.getStatus() != null && !message.getStatus().equals(GmmsStatus.SUCCESS)) {
+				log.info(message, "[MT-REROUTE] not rerouted: status {} not in SMSOptionSubmitRetryCode of rssid {}",
+						message.getStatusCode(), message.getRSsID());
+			}
 			if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(messageType)) {			
 				if (supportDR)
 					gmmsUtility.getCdrManager().logOutSubmitRes(message, supportDR);
@@ -1191,6 +1198,36 @@ public class MessageStoreManager extends DataManager {
 			return true;
 		}
 		return false;
+	}
+
+	/**
+	 * A retry of a rerouted MT: back to the channel of its main route (the first in routingSsIDs), which keeps its
+	 * place there, so its CDRs have the plain msgId again (2.10); the level stays, so a failure of the main route
+	 * does not go through the backups again.
+	 */
+	void backToMainRoute(GmmsMessage message) {
+		if (message.getRoutingLevel() <= 0 || message.getRoutingSsIDs() == null) {
+			return;
+		}
+		int main = 0;
+		for (String p : message.getRoutingSsIDs().split(",")) {
+			if (!p.trim().isEmpty()) {
+				try {
+					main = Integer.parseInt(p.trim());
+				} catch (NumberFormatException e) {
+					return;
+				}
+				break;
+			}
+		}
+		A2PCustomerInfo mainChannel = main > 0 ? ctm.getCustomerBySSID(main) : null;
+		if (mainChannel == null || main == message.getRSsID()) {
+			return;
+		}
+		log.info(message, "[MT-REROUTE] backup levels used up (level {}, rssid {}): retried on the main route rssid {}",
+				message.getRoutingLevel(), message.getRSsID(), main);
+		message.setRSsID(main);
+		message.setOutClientPull("1".equalsIgnoreCase(mainChannel.getOutClientPull()));
 	}
 
 	public boolean needRetry(GmmsMessage message) {
@@ -2047,6 +2084,7 @@ public class MessageStoreManager extends DataManager {
 					.append("`DeliveryChannel` varchar(100) default '0',")
 					.append("`VendorErrorCode` varchar(64) default NULL,")
 					.append("`DrErrorCode` varchar(3) default NULL,")
+					.append("`RoutingLevel` tinyint default NULL,")
 					.append("`O_Operator` int(11) default '-1',")
 					.append("`R_Operator` int(11) default '-1',")
 					.append("`Split` int(11) default '0',")
@@ -3476,6 +3514,7 @@ public class MessageStoreManager extends DataManager {
 		sb.append(",").append("ServiceTypeID=").append(msg.getServiceTypeID());
 		sb.append(",").append("ScheduleDeliveryTime=").append(formatMySqlDate(msg.getScheduleDeliveryTime()));
 		sb.append(drErrorSql(msg));
+		sb.append(routingLevelSql(msg));
 		return sb.toString();
 	}
 
@@ -3608,6 +3647,87 @@ public class MessageStoreManager extends DataManager {
 		msg.setServiceTypeID(rs.getInt("ServiceTypeID"));
 		msg.setScheduleDeliveryTime(rs.getTimestamp("ScheduleDeliveryTime"));
 		readDrError(rs, msg);
+		readRoutingLevel(rs, msg);
+	}
+
+	// ---- RoutingLevel column (docs/sql/2026-11-13_routing_level.sql, docs/路由重构设计.md 2.11) ----
+
+	/** null: not checked yet */
+	private static volatile Boolean routingLevelColumnFound = null;
+
+	/** GmmsConfig DB.RoutingLevelColumn: true / false, or auto (default): whether the DB has the column */
+	public boolean routingLevelColumn() {
+		String mode = gmmsUtility.getCommonProperty("DB.RoutingLevelColumn", "auto").trim();
+		if ("true".equalsIgnoreCase(mode)) {
+			return true;
+		}
+		if ("false".equalsIgnoreCase(mode)) {
+			return false;
+		}
+		Boolean found = routingLevelColumnFound;
+		if (found == null) {
+			found = detectRoutingLevelColumn();
+			routingLevelColumnFound = found;
+		}
+		return found;
+	}
+
+	/** checked again on the next use (RELOAD_ROUTING, after the SQL has been run) */
+	public static void recheckRoutingLevelColumn() {
+		routingLevelColumnFound = null;
+	}
+
+	private boolean detectRoutingLevelColumn() {
+		List<String> missing = new ArrayList<String>();
+		int seen = 0;
+		for (String table : DR_ERROR_TABLES) {
+			ResultSet rs = null;
+			try {
+				rs = doSelect("SELECT RoutingLevel FROM " + table + " WHERE 1=0");
+				seen++;
+			} catch (Exception e) {
+				String m = e.getMessage() == null ? "" : e.getMessage();
+				if (m.contains("Unknown column")) {
+					missing.add(table);
+					seen++;
+				}
+			} finally {
+				if (rs != null) {
+					try { rs.close(); } catch (Exception e) { }
+				}
+				super.closeSession();
+			}
+		}
+		if (seen == 0) {
+			log.warn("[MT-REROUTE] DB not reachable: RoutingLevel column not used (DB.RoutingLevelColumn=auto); checked again on RELOAD_ROUTING");
+			return false;
+		}
+		if (!missing.isEmpty()) {
+			log.error("[MT-REROUTE] DB tables without RoutingLevel: {}. Not written: an MT retried from the DB finds its backup level again "
+					+ "from level 1 (skipping the channels used); run docs/sql/2026-11-13_routing_level.sql, then RELOAD_ROUTING", missing);
+			return false;
+		}
+		log.info("[MT-REROUTE] DB has the RoutingLevel column: written and read");
+		return true;
+	}
+
+	/** ", RoutingLevel=n" when the DB has the column, else "" */
+	public String routingLevelSql(GmmsMessage msg) {
+		if (!routingLevelColumn()) {
+			return "";
+		}
+		return ", RoutingLevel=" + msg.getRoutingLevel();
+	}
+
+	private void readRoutingLevel(ResultSet rs, GmmsMessage msg) {
+		if (!routingLevelColumn()) {
+			return;
+		}
+		try {
+			msg.setRoutingLevel(rs.getInt("RoutingLevel"));   // NULL (written before the column): 0
+		} catch (SQLException e) {
+			log.debug(msg, "no RoutingLevel column in this result: {}", e.getMessage());
+		}
 	}
 
 	// ---- DR error code columns (docs/sql/2026-11-11_dr_error_code.sql) ----

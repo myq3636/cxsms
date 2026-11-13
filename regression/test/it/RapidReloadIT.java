@@ -225,7 +225,7 @@ public class RapidReloadIT extends ItSupport {
 			String rv = files("routing.version");
 			Files.write(route, new byte[0]); Files.write(route2, new byte[0]);
 			control("RELOAD_ROUTING");
-			check(waitFor(() -> "partial".equals(files("routing.result")), 8000) && String.valueOf(files("routing.failed")).contains("CUST8888") && rv.equals(files("routing.version")) && ctm().getCustomerRoutingRelay(8888, mt("8888_G", 8888, -1, 0)) == 8,
+			check(waitFor(() -> "partial".equals(files("routing.result")), 8000) && String.valueOf(files("routing.failed")).contains("CUST8888") && rv.equals(files("routing.version")) && ctm().mainRouteRssid(8888, mt("8888_G", 8888, -1, 0)) == 8,
 					"RR-13 empty routing files: each keeps its routing (" + files("routing.failed") + ")");
 			Files.write(route, r1); Files.write(route2, r2);
 			control("RELOAD_ROUTING");
@@ -241,7 +241,7 @@ public class RapidReloadIT extends ItSupport {
 					while (go.get()) {
 						try {
 							total.incrementAndGet();
-							int r = ctm().getCustomerRoutingRelay(8888, m);
+							int r = ctm().mainRouteRssid(8888, m);
 							if (r != 8 && r != 12) miss.incrementAndGet();
 						} catch (Exception e) { err.incrementAndGet(); }
 					}
@@ -250,7 +250,7 @@ public class RapidReloadIT extends ItSupport {
 			}
 			for (int n = 0; n < 300; n++) { control("RELOAD_ROUTING"); Thread.sleep(20); }
 			long done0 = logs("Reload routingInfo completed");
-			byte[] other = "CCBSSID: 8888\nA2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR12)\n".getBytes("UTF-8");
+			byte[] other = "CCBSSID: 8888\nA2PMainRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR12)\n".getBytes("UTF-8");
 			for (int n = 0; n < 30; n++) {
 				Files.write(route, n % 2 == 0 ? other : r1);
 				control("RELOAD_ROUTING");

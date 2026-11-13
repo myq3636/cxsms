@@ -166,12 +166,12 @@ public class CoreDrBizIT extends CoreRetryIT {
 		cm.append(cust("R818", 818, ""));
 		cm.append(cust("R819", 819, ""));
 		appendCm(cm.toString());
-		for (int r : new int[] { 814, 815, 817 }) route("R" + r, r, "A2PRoutingRelay: (PhonePrefix=86;852,Relay=V801)");
-		for (int r : new int[] { 810, 811, 812 }) route("R" + r, r, "A2PRoutingRelay: (PhonePrefix=86;852,Relay=V807)");
-		route("R816", 816, "A2PRoutingRelay: (PhonePrefix=86,Relay=V808)");
-		route("R813", 813, "A2PRoutingRelay: (PhonePrefix=86,Relay=V802)");
-		route("R818", 818, "A2PRoutingRelay: (PhonePrefix=86,Relay=V803)", "A2PBackupRoutingRelay: (PhonePrefix=86,Relay=V804)");
-		route("R819", 819, "A2PRoutingRelay: (PhonePrefix=86,Relay=V805;V806)");
+		for (int r : new int[] { 814, 815, 817 }) route("R" + r, r, "A2PMainRouting: (Priority=30,PhonePrefix=86;852,Relay=V801)");
+		for (int r : new int[] { 810, 811, 812 }) route("R" + r, r, "A2PMainRouting: (Priority=30,PhonePrefix=86;852,Relay=V807)");
+		route("R816", 816, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V808)");
+		route("R813", 813, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V802)");
+		route("R818", 818, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V803)", "A2PBackupRouting: (Priority=30,PhonePrefix=86,Relay=V804)");
+		route("R819", 819, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V805;V806)");
 		Path cfg = Paths.get(home + "Gmms/GmmsConfig.properties");
 		Files.write(cfg, (new String(Files.readAllBytes(cfg), "UTF-8") + "\nAsyncSqlWriterEnable=false\nAutoInDR.DirectStreamEnable=true\nAutoInDR.DispatcherIdleSleepMs=100\n").getBytes("UTF-8"));
 		msmFactory = RecordingStore::new;

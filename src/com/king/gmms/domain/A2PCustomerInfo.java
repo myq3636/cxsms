@@ -367,6 +367,8 @@ public abstract class A2PCustomerInfo {
 	protected ArrayList<String> drSuccessRatioPrefix = new ArrayList<String>();
 	/** customer: seconds without a final vendor DR after the vendor accepted, then a fake DR; 0 = off */
 	protected int fakeDrTimeoutSec = 0;
+	/** SMSOptionMaxReroute: at most so many backup channels for one MT (docs/路由重构设计.md 2.4), default 10 */
+	protected int smsOptionMaxReroute = 10;
 	/** customer: status of that fake DR: success, fail or ratio (SMSOptionFakeDRSuccessRatio) */
 	protected String fakeDrTimeoutStatus = "success";
 	protected ArrayList<String> smsRecPrefixForFakeDR = new ArrayList<String>();
@@ -1631,6 +1633,7 @@ public abstract class A2PCustomerInfo {
 		fakeDrDisable = cfg.getBool("SMSOptionFakeDRDisable", false);
 		drSuccessRatioPrefix = prefixList(cfg.getString("SMSOptionDRSuccessRatioPrefix"));
 		fakeDrTimeoutSec = Math.max(0, cfg.getInt("SMSOptionFakeDRTimeoutSec", 0));
+		smsOptionMaxReroute = Math.max(0, cfg.getInt("SMSOptionMaxReroute", 10));
 		fakeDrTimeoutStatus = cfg.getString("SMSOptionFakeDRTimeoutStatus", "success").trim().toLowerCase();
 		if (!"success".equals(fakeDrTimeoutStatus) && !"fail".equals(fakeDrTimeoutStatus) && !"ratio".equals(fakeDrTimeoutStatus)) {
 			log.warn("{}: SMSOptionFakeDRTimeoutStatus={} is not success, fail or ratio; success is used", shortName, fakeDrTimeoutStatus);
@@ -2822,6 +2825,10 @@ public abstract class A2PCustomerInfo {
 		return false;
 	}
 
+	public int getSmsOptionMaxReroute() {
+		return smsOptionMaxReroute;
+	}
+
 	public int getFakeDrTimeoutSec() {
 		return fakeDrTimeoutSec;
 	}
@@ -3029,6 +3036,7 @@ public abstract class A2PCustomerInfo {
 		.append(prefix).append("SMSOptionSendDRByOutSubmit:").append(this.sendDrByOutSubmit)
 		.append(prefix).append("SMSOptionFakeDRSuccessRatio:").append(this.fakeDrSuccessRatio)
 		.append(prefix).append("SMSOptionFakeDRTimeoutSec:").append(this.fakeDrTimeoutSec)
+		.append(prefix).append("SMSOptionMaxReroute:").append(this.smsOptionMaxReroute)
 		.append(prefix).append("SMSOptionTimeZone:").append(this.getSmsOptionTimeZone().getDisplayName())
 		.append(prefix).append("SMSOptionDeliveryStartTime:").append(this.deliveryStartHH).append(":").append(this.deliveryStartmm)
 		.append(prefix).append("SMSOptionDeliveryEndTime:").append(this.deliveryEndHH).append(":").append(this.deliveryEndmm)

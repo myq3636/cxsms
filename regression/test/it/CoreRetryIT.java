@@ -89,7 +89,7 @@ public class CoreRetryIT extends CoreBizSupport {
 		cm.append(cust("V603", 603, retry));
 		cm.append(cust("V604", 604, retry + "SMSOptionMTRetryPolicy: 1S\n"));
 		cm.append(cust("V605", 605, retry + "SMSOptionMTRetryPolicy: 2D,2D\n"));
-		cm.append(cust("V606", 606, ""));
+		cm.append(cust("V606", 606, retry));   // reroute only for a code in the channel's SMSOptionSubmitRetryCode (docs/路由重构设计.md 2.9)
 		cm.append(cust("V607", 607, ""));
 		cm.append(cust("R700", 700, ""));
 		cm.append(cust("R701", 701, ""));
@@ -101,15 +101,15 @@ public class CoreRetryIT extends CoreBizSupport {
 		cm.append(cust("R707", 707, "SMSOptionOnlySupportDRRetry: true\n"));
 		cm.append(cust("R708", 708, "SMSOptionSenderRetryPolicy: (prefix=SEND,policy=7S*5)\n"));
 		appendCm(cm.toString());
-		route("R700", 700, "A2PRoutingRelay: (PhonePrefix=86,Relay=V601)");
-		route("R701", 701, "A2PRoutingRelay: (PhonePrefix=86,Relay=V602)");
-		route("R702", 702, "A2PRoutingRelay: (PhonePrefix=86,Relay=V603)");
-		route("R703", 703, "A2PRoutingRelay: (PhonePrefix=86,Relay=V603)");
-		route("R704", 704, "A2PRoutingRelay: (PhonePrefix=86,Relay=V604)");
-		route("R705", 705, "A2PRoutingRelay: (PhonePrefix=86,Relay=V604)");
-		route("R706", 706, "A2PRoutingRelay: (PhonePrefix=86,Relay=V606)", "A2PBackupRoutingRelay: (PhonePrefix=86,Relay=V607)");
-		route("R707", 707, "A2PRoutingRelay: (PhonePrefix=86,Relay=V603)");
-		route("R708", 708, "A2PRoutingRelay: (PhonePrefix=86,Relay=V601)");
+		route("R700", 700, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V601)");
+		route("R701", 701, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V602)");
+		route("R702", 702, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V603)");
+		route("R703", 703, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V603)");
+		route("R704", 704, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V604)");
+		route("R705", 705, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V604)");
+		route("R706", 706, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V606)", "A2PBackupRouting: (Priority=30,PhonePrefix=86,Relay=V607)");
+		route("R707", 707, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V603)");
+		route("R708", 708, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V601)");
 		Path cfg = Paths.get(home + "Gmms/GmmsConfig.properties");
 		Files.write(cfg, (new String(Files.readAllBytes(cfg), "UTF-8") + "\nAsyncSqlWriterEnable=false\n").getBytes("UTF-8"));
 		msmFactory = RecordingStore::new;

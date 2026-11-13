@@ -11,17 +11,17 @@ public class CoreRouteIT extends CoreBizSupport {
 		cm.append(cust("R500", 500, "")).append(cust("R501", 501, "")).append(cust("R502", 502, "")).append(cust("R503", 503, "CustomerServiceType: SVC\n"));
 		cm.append(cust("R504", 504, "BlackholePercent: (Percent=100)\n")).append(cust("R505", 505, "")).append(cust("BH", 490, "Role: blackhole\n")).append(cust("R506", 506, ""));
 		appendCm(cm.toString());
-		route("R500", 500, "A2PRoutingRelay: (PhonePrefix=86,Relay=V401);(PhonePrefix=8613,Relay=V402)",
-				"A2PSenderRoutingRelay: (PhonePrefix=86,Sender=SENDA,Relay=V403)",
-				"A2PContentKeywordRoutingRelay: (PhonePrefix=86,KeywordId=K1,Relay=V404)",
-				"A2PBackupRoutingRelay: (PhonePrefix=852,Relay=V405)",
-				"A2PNumberRoutingRelay: (Number=8613800000099,Relay=405,Priority=1)");
-		route("R505", 505, "A2PRoutingRelay: (PhonePrefix=86,Relay=BH)");
-		route("R506", 506, "A2PRoutingRelay: (PhonePrefix=86,Relay=V401)",
-				"A2PNumberRoutingRelay: (Number=8613800000090;8613800000091,Relay=405,Priority=1);(Number=8613800000092,Relay=403,Priority=2);(Number=8613800000092,Relay=402,Priority=1);(Number=8613800000093,Relay=999,Priority=1);(Number=8613800000094,Relay=402:50,403:50,Priority=1)");
-		route("R501", 501, "A2PRoutingRelay: (PhonePrefix=86,Relay=V401:20,V402:80)");
-		route("R502", 502, "A2PRoutingRelay: (PhonePrefix=86,Relay=V401)");
-		route("R504", 504, "A2PRoutingRelay: (PhonePrefix=86,Relay=V401)");
+		// the old sender and keyword routes, in the new rules: before the prefix routes in 86 and 8613 (as the converter writes them)
+		route("R500", 500, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V401);(Priority=31,PhonePrefix=8613,Relay=V402)"
+				+ ";(Priority=10,PhonePrefix=86;8613,Sender=SENDA,Relay=V403);(Priority=20,PhonePrefix=86;8613,KeywordId=K1,Relay=V404)",
+				"A2PBackupRouting: (Priority=30,PhonePrefix=852,Relay=V405)",
+				"A2PNumberRouting: (Number=8613800000099,Relay=405,Priority=1)");
+		route("R505", 505, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=BH)");
+		route("R506", 506, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V401)",
+				"A2PNumberRouting: (Number=8613800000090;8613800000091,Relay=405,Priority=1);(Number=8613800000092,Relay=403,Priority=2);(Number=8613800000092,Relay=402,Priority=1);(Number=8613800000093,Relay=999,Priority=1);(Number=8613800000094,Relay=402:50,403:50,Priority=1)");
+		route("R501", 501, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V401:20,V402:80)");
+		route("R502", 502, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V401)");
+		route("R504", 504, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V401)");
 		Files_writeDefault();
 		conf("contentTemplate.cfg", "[K1]\nEnglish: your otp .*\n");
 		java.nio.file.Path cfg = java.nio.file.Paths.get(home + "Gmms/GmmsConfig.properties");
@@ -43,7 +43,7 @@ public class CoreRouteIT extends CoreBizSupport {
 			o = send(506, "18667991226", "8613800000092", "plain"); check(o.routedTo(402), "RT-07e same number twice: the lowest Priority wins: " + o);
 			o = send(506, "18667991226", "8613800000089", "plain"); check(o.routedTo(401), "RT-07f number not listed: prefix routing: " + o);
 			o = send(502, "18667991226", "8613800000090", "plain"); check(o.routedTo(401), "RT-07g number routing is per customer: another customer uses its prefix route: " + o);
-			o = send(506, "18667991226", "8613800000093", "plain"); check(o.routedTo(401), "RT-07h ssid of no channel: falls back to prefix routing: " + o);
+			o = send(506, "18667991226", "8613800000093", "plain"); check(o.rssid == -1 && o.dr != null, "RT-07h number rule to an ssid of no channel: not routed (no other main rule is tried; no backup route here): " + o);
 			java.util.Set<Integer> mix = new java.util.HashSet<>();
 			for (int i = 0; i < 30; i++) { o = send(506, "18667991226", "8613800000094", "m" + i); mix.add(o.rssid); }
 			check(mix.equals(new java.util.HashSet<>(java.util.Arrays.asList(402, 403))), "RT-07i split on one number, 402:50,403:50: both used: " + mix);
@@ -71,6 +71,6 @@ public class CoreRouteIT extends CoreBizSupport {
 		return n;
 	}
 	static void Files_writeDefault() throws Exception {
-		java.nio.file.Files.write(java.nio.file.Paths.get(home + "conf/routing/SVC_default_routingInfo.cfg"), "A2PRoutingRelay: (PhonePrefix=86,Relay=V403)\n".getBytes("UTF-8"));
+		java.nio.file.Files.write(java.nio.file.Paths.get(home + "conf/routing/SVC_default_routingInfo.cfg"), "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V403)\n".getBytes("UTF-8"));
 	}
 }

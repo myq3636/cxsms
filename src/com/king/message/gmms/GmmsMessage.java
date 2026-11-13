@@ -77,6 +77,10 @@ public class GmmsMessage extends MessageBase {
 	protected long inTimeMs = 0L;
 	/** epoch ms the vendor accepted the MT (submit_sm_resp OK), for the vendor DR latency */
 	protected long outTimeMs = 0L;
+	/** the routing level of the channel the MT is at: 0 main route, 1..10 backup level (docs/路由重构设计.md 2.4) */
+	protected int routingLevel = 0;
+	/** the rule that picked the channel: "{layer of the main route}|{layer}:{level}:{group}:{priority}" */
+	protected String routingRule = null;
 	protected String routingSsIDs = null;
 	protected String redisStreamID = null; // V4.0 Redis Stream ID for ACK
 	protected long redisFence = -1L; // C-9: 该消息所属 MQM 任期纪元(来自 stream 字段, 非序列化); -1=缺失
@@ -308,6 +312,22 @@ public class GmmsMessage extends MessageBase {
 		this.outTimeMs = outTimeMs;
 	}
 
+	public int getRoutingLevel() {
+		return routingLevel;
+	}
+
+	public void setRoutingLevel(int routingLevel) {
+		this.routingLevel = routingLevel;
+	}
+
+	public String getRoutingRule() {
+		return routingRule;
+	}
+
+	public void setRoutingRule(String routingRule) {
+		this.routingRule = routingRule;
+	}
+
 //	public boolean inClientPull() {
 //		return this.inClientPull;
 //	}
@@ -418,6 +438,8 @@ public class GmmsMessage extends MessageBase {
 		this.drErrorCode = oneMsg.drErrorCode;
 		this.inTimeMs = oneMsg.inTimeMs;
 		this.outTimeMs = oneMsg.outTimeMs;
+		this.routingLevel = oneMsg.routingLevel;
+		this.routingRule = oneMsg.routingRule;
 		this.oOperator = oneMsg.oOperator;
 		this.rOperator = oneMsg.rOperator;
 		// this.localTimeStamp = oneMsg.localTimeStamp;

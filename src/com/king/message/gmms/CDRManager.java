@@ -178,22 +178,7 @@ public class CDRManager {
 			sb.append(cdr.getCurrentA2P()).append(",");
 			sb.append(cdr.getOA2P()).append(",");
 			sb.append(cdr.getRA2P()).append(",");
-			try {
-				String routingRssids = cdr.getRoutingSsIDs();
-				if((CDR.TYPE_IN_DELI_REP.equalsIgnoreCase(cdr.getCdrType()))
-						||routingRssids == null || "".equalsIgnoreCase(routingRssids.trim())){
-					sb.append(makeCdrStrEnclosed(cdr.getMsgID())).append(",");
-				}else{
-					String[] rssidArr = routingRssids.trim().split(",");
-					if(rssidArr.length>2 && !rssidArr[0].contains("0")){
-						sb.append(makeCdrStrEnclosed(cdr.getMsgID()+"-"+rssidArr[rssidArr.length-1])).append(",");
-					}else{
-						sb.append(makeCdrStrEnclosed(cdr.getMsgID())).append(",");
-					}
-				}
-			} catch (Exception e) {
-				sb.append(makeCdrStrEnclosed(cdr.getMsgID())).append(",");
-			}
+			sb.append(makeCdrStrEnclosed(cdrMsgId(cdr))).append(",");
 			//sb.append(makeCdrStrEnclosed(cdr.getMsgID())).append(",");
 			sb.append(cdr.getSplitStatus()).append(",");
 			sb.append(makeCdrStr(cdr.getSarMsgRefNum())).append(",");
@@ -241,22 +226,7 @@ public class CDRManager {
 					cdrToRedis.append(formatDate(cdr.getTimeStamp())).append(",");
 					cdrToRedis.append(cdr.getStatusCode()).append(",");	
 					cdrToRedis.append(makeCdrStrEnclosed(cdr.getDeliveryChannel())).append(",");
-					try {
-						String routingRssids = cdr.getRoutingSsIDs();
-						if((CDR.TYPE_IN_DELI_REP.equalsIgnoreCase(cdr.getCdrType()))
-								||routingRssids == null || "".equalsIgnoreCase(routingRssids.trim())){
-							cdrToRedis.append(makeCdrStrEnclosed(cdr.getMsgID())).append(",");
-						}else{
-							String[] rssidArr = routingRssids.trim().split(",");
-							if(rssidArr.length>2 && !rssidArr[0].contains("0")){
-								cdrToRedis.append(makeCdrStrEnclosed(cdr.getMsgID()+"-"+rssidArr[rssidArr.length-1])).append(",");
-							}else{
-								cdrToRedis.append(makeCdrStrEnclosed(cdr.getMsgID())).append(",");
-							}
-						}
-					} catch (Exception e) {
-						cdrToRedis.append(makeCdrStrEnclosed(cdr.getMsgID())).append(",");
-					}
+					cdrToRedis.append(makeCdrStrEnclosed(cdrMsgId(cdr))).append(",");
 					cdrToRedis.append(
 							makeCdrStrEnclosed(gmmsUtility.modifybackslash(cdr
 									.getTextContent(), 1))).append(",");
@@ -279,6 +249,37 @@ public class CDRManager {
 		return false;
 	}
 	
+	/**
+	 * The MsgID column (docs/路由重构设计.md 2.10): msgId-{channel} for a CDR of a backup channel, the plain msgId for
+	 * the main route (the first channel in routingSsIDs, also when it is retried after the backups), an MT never
+	 * rerouted, and IN_DELI_REP. A channel not in routingSsIDs: the last one of it, as before.
+	 */
+	public static String cdrMsgId(CDR cdr) {
+		String msgId = cdr.getMsgID();
+		try {
+			String routing = cdr.getRoutingSsIDs();
+			if (CDR.TYPE_IN_DELI_REP.equalsIgnoreCase(cdr.getCdrType()) || routing == null || routing.trim().isEmpty()) {
+				return msgId;
+			}
+			java.util.List<String> channels = new java.util.ArrayList<String>();
+			for (String p : routing.trim().split(",")) {
+				if (!p.trim().isEmpty()) {
+					channels.add(p.trim());
+				}
+			}
+			if (channels.size() < 2) {
+				return msgId;
+			}
+			String rssid = String.valueOf(cdr.getRSsID());
+			if (rssid.equals(channels.get(0))) {
+				return msgId;
+			}
+			return msgId + "-" + (channels.contains(rssid) ? rssid : channels.get(channels.size() - 1));
+		} catch (Exception e) {
+			return msgId;
+		}
+	}
+
 	private String makeRedisCDR(CDR cdr) {
 		StringBuilder cdrToRedis = new StringBuilder(1024);		
 				cdrToRedis.append("0").append(",");
@@ -302,22 +303,7 @@ public class CDRManager {
 				cdrToRedis.append(formatDate(cdr.getTimeStamp())).append(",");
 				cdrToRedis.append(cdr.getStatusCode()).append(",");	
 				cdrToRedis.append(makeCdrStrEnclosed(cdr.getDeliveryChannel())).append(",");
-				try {
-					String routingRssids = cdr.getRoutingSsIDs();
-					if((CDR.TYPE_IN_DELI_REP.equalsIgnoreCase(cdr.getCdrType()))
-							||routingRssids == null || "".equalsIgnoreCase(routingRssids.trim())){
-						cdrToRedis.append(makeCdrStrEnclosed(cdr.getMsgID())).append(",");
-					}else{
-						String[] rssidArr = routingRssids.trim().split(",");
-						if(rssidArr.length>2 && !rssidArr[0].contains("0")){
-							cdrToRedis.append(makeCdrStrEnclosed(cdr.getMsgID()+"-"+rssidArr[rssidArr.length-1])).append(",");
-						}else{
-							cdrToRedis.append(makeCdrStrEnclosed(cdr.getMsgID())).append(",");
-						}
-					}
-				} catch (Exception e) {
-					cdrToRedis.append(makeCdrStrEnclosed(cdr.getMsgID())).append(",");
-				}
+				cdrToRedis.append(makeCdrStrEnclosed(cdrMsgId(cdr))).append(",");
 				cdrToRedis.append(
 						makeCdrStrEnclosed(gmmsUtility.modifybackslash(cdr
 								.getTextContent(), 1))).append(",");
@@ -405,22 +391,7 @@ public class CDRManager {
 			sb.append(cdrRecord.getCurrentA2P()).append(",");
 			sb.append(cdrRecord.getOA2P()).append(",");
 			sb.append(cdrRecord.getRA2P()).append(",");
-			try {
-				String routingRssids = cdrRecord.getRoutingSsIDs();
-				if((CDR.TYPE_IN_DELI_REP.equalsIgnoreCase(cdrRecord.getCdrType()))
-						||routingRssids == null || "".equalsIgnoreCase(routingRssids.trim())){
-					sb.append(makeCdrStrEnclosed(cdrRecord.getMsgID())).append(",");
-				}else{
-					String[] rssidArr = routingRssids.trim().split(",");
-					if(rssidArr.length>2 && !rssidArr[0].contains("0")){
-						sb.append(makeCdrStrEnclosed(cdrRecord.getMsgID()+"-"+rssidArr[rssidArr.length-1])).append(",");
-					}else{
-						sb.append(makeCdrStrEnclosed(cdrRecord.getMsgID())).append(",");
-					}
-				}
-			} catch (Exception e) {
-				sb.append(makeCdrStrEnclosed(cdrRecord.getMsgID())).append(",");
-			}
+			sb.append(makeCdrStrEnclosed(cdrMsgId(cdrRecord))).append(",");
 			//sb.append(makeCdrStrEnclosed(cdrRecord.getMsgID())).append(",");
 			sb.append(cdrRecord.getSplitStatus()).append(",");
 			sb.append(makeCdrStr(cdrRecord.getSarMsgRefNum())).append(",");

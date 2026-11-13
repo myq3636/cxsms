@@ -58,7 +58,7 @@ public class MetricsIT extends ItSupport {
 				+ "IncomingConnection: (ConnName=CUST8891_c1,userName=mc8891,password=pw8891,URL=127.0.0.1,SessionNumber=20,MinReceiverNumber=1,MaxReceiverNumber=5,BindMode=TRX,Version=V34)\n"
 				+ "\n[VENDOR81]\nCCBSSID: 81\nA2PPlayerType: operator\nProtocol: SMPP\nConnectionType: MC\nIsInit: true\nReconnectInterval: 1\nEnquireLink: false\nBufferTimeout: 30\nWindowSize: 100\n"
 				+ "OutgoingConnection: (ConnName=VENDOR81_c1,userName=u81,password=p,URL=127.0.0.1,Port=" + VPORT + ",SessionNumber=1,BindMode=TRX,Version=V34,IsInit=true)\n").getBytes("UTF-8"));
-		Files.write(Paths.get(home + "conf/routing/CUST8891_routingInfo.cfg"), "CCBSSID: 8891\nA2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR81)\n".getBytes("UTF-8"));
+		Files.write(Paths.get(home + "conf/routing/CUST8891_routingInfo.cfg"), "CCBSSID: 8891\nA2PMainRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR81)\n".getBytes("UTF-8"));
 		FakeSmsc smsc = new FakeSmsc(VPORT);
 		FakeSmsc.Account v = smsc.account("u81");
 		v.submitMessageId = "MIV1";

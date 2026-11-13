@@ -155,7 +155,7 @@ public class RenameReloadIT extends ItSupport {
 
 		// routing and phone prefix are written to Redis when they take effect, not on a cm.cfg reload
 		String rv = files("routing.version"), pv = files("phonePrefix.version");
-		Files.write(route, "CCBSSID: 8888\nA2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR12)\n".getBytes("UTF-8"));
+		Files.write(route, "CCBSSID: 8888\nA2PMainRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR12)\n".getBytes("UTF-8"));
 		Files.write(phone, "[VENDOR8]\nCCBSSID: 8\nSenderReplacement: (PhonePrefix=86,ReplaceTo=1069,SenderAddress=all,Ossid=all,Rssid=8)\n".getBytes("UTF-8"));
 		load(base + "\n[CUSTNEW90]\nCCBSSID: 90\nA2PPlayerType: operator\nProtocol: SMPP\n");
 		Thread.sleep(500);

@@ -411,6 +411,12 @@ public class SerializableHandler {
 						    	case 61:
 						    		msg.setOutTimeMs(Long.parseLong(parameters[61]));
 									break;
+						    	case 62:
+						    		msg.setRoutingLevel(Integer.parseInt(parameters[62]));
+									break;
+						    	case 63:
+						    		msg.setRoutingRule(parameters[63]);
+									break;
 								default:
 									if(log.isInfoEnabled()){
 										log.info("Unknown parameter in Redis String, and Redis String is {}", message);
@@ -910,6 +916,9 @@ public class SerializableHandler {
 					// 60, 61: entered the gateway, accepted by the vendor (epoch ms, latency metrics only)
 					sb.append(separator).append(msg.getInTimeMs() > 0 ? String.valueOf(msg.getInTimeMs()) : "");
 					sb.append(separator).append(msg.getOutTimeMs() > 0 ? String.valueOf(msg.getOutTimeMs()) : "");
+					// 62, 63: the routing level and the rule of the channel (docs/路由重构设计.md 2.4, 2.6)
+					sb.append(separator).append(msg.getRoutingLevel() > 0 ? String.valueOf(msg.getRoutingLevel()) : "");
+					sb.append(separator).append(msg.getRoutingRule() == null ? "" : msg.getRoutingRule().replaceAll(separator, repl_sep));
 					
 				} catch (Exception e) {
 					if(log.isInfoEnabled()){

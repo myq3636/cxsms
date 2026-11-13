@@ -19,7 +19,6 @@ public class IOSMSRerouteDispatcher extends MessageDispatcher {
 
 	private static SystemLogger log = SystemLogger.getSystemLogger(IOSMSRerouteDispatcher.class);
 	
-	private ChannelRouter backupChannelRouter = null;
 	private MessageProcessorHandler msgProcessorhandler = null;
 
 	/**
@@ -29,7 +28,6 @@ public class IOSMSRerouteDispatcher extends MessageDispatcher {
 		super();
 		try {
 			super.channelRouter = new IOSMSChannelRouter();
-			backupChannelRouter = new IOSMSBackupChannelRouter();
 			msgProcessorhandler = MessageProcessorHandler.getInstance();
 		} catch (Exception ex) {
 			log.fatal("Fail to init IOSMSBackupDispatcher", ex);
@@ -68,41 +66,29 @@ public class IOSMSRerouteDispatcher extends MessageDispatcher {
 			if (inContent!=null && !inContent.equals(message.getTextContent())) {
 				tmpMsg.setTextContent(inContent);				
 			}					
-			//tmpMsg.setRSsID(0);
 			tmpMsg.setRA2P(0);
-			if(!backupChannelRouter.dispatch(tmpMsg)){
-				//dead node
+			// the next backup level (docs/路由重构设计.md 2.4): from the level the MT is at, skipping the channels used
+			java.util.Set<Integer> used = usedChannels(message.getRoutingSsIDs());
+			A2PCustomerInfo oCustomer = ctm.getCustomerBySSID(message.getOSsID());
+			int maxReroute = oCustomer == null ? 10 : oCustomer.getSmsOptionMaxReroute();
+			if (used.size() - 1 >= maxReroute) {
+				log.info(message, "[MT-REROUTE] not rerouted: rerouted {} times already, SMSOptionMaxReroute={}", used.size() - 1, maxReroute);
 				return false;
 			}
-			//do system vendor replacement
-			ctm.getSystemRoutingReplace(tmpMsg);
-			int r_ssid_backup = tmpMsg.getRSsID();
-			String routingSsIDs = message.getRoutingSsIDs();
+			com.king.gmms.routing.rule.RoutingRule.Layer mainLayer = mainLayer(message.getRoutingRule());
+			com.king.gmms.routing.rule.RuleRouter.Choice c = new com.king.gmms.routing.rule.RuleRouter(ctm)
+					.backup(tmpMsg, message.getRoutingLevel() + 1, mainLayer, used);
+			if (!c.ok()) {
+				log.info(message, "[MT-REROUTE] not rerouted: no backup level after level {} (rssid={}, status={})",
+						message.getRoutingLevel(), message.getRSsID(), message.getStatusCode());
+				return false;
+			}
+			int r_ssid_backup = c.rssid;
+			int from = message.getRSsID();
+			tmpMsg.setRSsID(r_ssid_backup);
+			((IOSMSChannelRouter) channelRouter).routeToChannel(r_ssid_backup, tmpMsg);
 			if (r_ssid_backup > 0) {
-				if (routingSsIDs!=null && routingSsIDs.contains(","+r_ssid_backup+",")) {
-					/*if (message.getSplitStatus() <= 0 ){
-						// already reroute, set rssid to primary DC, do retry policy in the caller
-						tmpMsg.setRSsID(0);
-						tmpMsg.setRA2P(0);
-						channelRouter.dispatch(tmpMsg);
-						int rssid_primary = tmpMsg.getRSsID();
-						if (rssid_primary > 0) {
-							message.setRSsID(rssid_primary);
-							A2PCustomerInfo customerInfo = ctm.getCustomerBySSID(rssid_primary);
-							message.setOutClientPull("1".equals(customerInfo.getOutClientPull()));
-							if (log.isInfoEnabled()) {
-								log.info(message, "message rerouted to primary channel, set rssid={}", rssid_primary);
-							}
-						}
-					}*/
-					if (log.isDebugEnabled()) {
-						log.debug(message, "the message not to rerouted again");
-					}
-					// if primary DC not need split, but backupDc split the message, should not set dc to primary
-					// use backupDC retry policy
-					
-					return false;
-				} else {
+				{
 					// reroute
 					String routingSsids = message.getRoutingSsIDs();
 					if (routingSsids == null || "".equalsIgnoreCase(routingSsids)) {
@@ -140,9 +126,10 @@ public class IOSMSRerouteDispatcher extends MessageDispatcher {
 							}				
 						}
 						
-						if (log.isInfoEnabled()) {
-							log.info(message, "message rerouted to backup channel, set rssid={}", r_ssid_backup);
-						}
+						log.info(message, "[MT-REROUTE] level={} from={} to={} code={} attempt={} {}", c.level, from, r_ssid_backup,
+								message.getStatusCode(), used.size(), c.describe());
+						message.setRoutingLevel(c.level);
+						message.setRoutingRule(c.ruleText(mainLayer));
 						//设置msgsplit值为0
 						message.setSplitStatus(0);
 						if (!msgProcessorhandler.putMsg(message)) {
@@ -166,4 +153,29 @@ public class IOSMSRerouteDispatcher extends MessageDispatcher {
 		return false;
 	}
 
+
+	/** the channels in routingSsIDs (",81,,82,") */
+	static java.util.Set<Integer> usedChannels(String routingSsIDs) {
+		java.util.Set<Integer> out = new java.util.LinkedHashSet<Integer>();
+		if (routingSsIDs != null) {
+			for (String p : routingSsIDs.split(",")) {
+				try {
+					if (!p.trim().isEmpty()) {
+						out.add(Integer.parseInt(p.trim()));
+					}
+				} catch (NumberFormatException e) {
+					// not a channel
+				}
+			}
+		}
+		return out;
+	}
+
+	/** the layer the main route came from: routingRule "{layer}|..." (null: the main layer, e.g. retried from the DB) */
+	static com.king.gmms.routing.rule.RoutingRule.Layer mainLayer(String routingRule) {
+		if (routingRule == null || routingRule.indexOf('|') < 0) {
+			return null;
+		}
+		return com.king.gmms.routing.rule.RoutingRule.Layer.byLabel(routingRule.substring(0, routingRule.indexOf('|')));
+	}
 }

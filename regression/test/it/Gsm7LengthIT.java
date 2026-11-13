@@ -86,12 +86,12 @@ public class Gsm7LengthIT extends CsmCdrIT {
 				+ "\n[VENDOR66]\nCCBSSID: 66\nA2PPlayerType: operator\nProtocol: SMPP\nChlMsgSplit: yes\nMsgSplitLen: 140\nSMSOptionAsciiMsgSplitLen: 160\nSMSOptionSupportOutgoingGSM7bit: 1\n"
 				+ "\n[CUST8900]\nCCBSSID: 8900\nA2PPlayerType: operator\nProtocol: SMPP\nNeedCheckMsgSize: false\n"
 				+ "\n[CUST8901]\nCCBSSID: 8901\nA2PPlayerType: operator\nProtocol: SMPP\nNeedCheckMsgSize: false\n");
-		route("CUST8892", 8892, "A2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR8)");
-		route("CUST8897", 8897, "A2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR62)");
-		route("CUST8898", 8898, "A2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR63)");
-		route("CUST8899", 8899, "A2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR64)");
-		route("CUST8900", 8900, "A2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR65)");
-		route("CUST8901", 8901, "A2PRoutingRelay: (PhonePrefix=86,Relay=VENDOR66)");
+		route("CUST8892", 8892, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR8)");
+		route("CUST8897", 8897, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR62)");
+		route("CUST8898", 8898, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR63)");
+		route("CUST8899", 8899, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR64)");
+		route("CUST8900", 8900, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR65)");
+		route("CUST8901", 8901, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=VENDOR66)");
 		try {
 			boot();
 			String iso = GmmsMessage.AIC_CS_ISO8859_1, ucs2 = GmmsMessage.AIC_CS_UCS2, ascii = GmmsMessage.AIC_CS_ASCII;

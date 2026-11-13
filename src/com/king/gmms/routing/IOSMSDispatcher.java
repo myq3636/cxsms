@@ -39,11 +39,6 @@ public class IOSMSDispatcher extends MessageDispatcher {
 	private static SystemLogger log = SystemLogger
 			.getSystemLogger(IOSMSDispatcher.class);
 	private DBBackupHandler dbHandler = null;
-	private ChannelRouter backupChannelRouter = null;
-	private ChannelRouter opChannelRouter = null;
-	private ChannelRouter numChannelRouter = null;
-	private ChannelRouter backupOPChannelRouter = null;
-	private A2PSecondChannelRouter a2pSecondChannelRouter = null;
 	/**
 	 * Constructor
 	 */
@@ -52,11 +47,6 @@ public class IOSMSDispatcher extends MessageDispatcher {
 		try {
 			super.deliveryPolicy = new IOSMSDeliveryPolicy();
 			super.channelRouter = new IOSMSChannelRouter();
-			a2pSecondChannelRouter = new A2PSecondChannelRouter();
-			backupChannelRouter = new IOSMSBackupChannelRouter();
-			opChannelRouter = new SMSOPChannelRouter();
-			numChannelRouter = new SMSNumberChannelRouter();
-			backupOPChannelRouter = new SMSOPBackupChannelRouter();
 			super.operatorRouter = new IOSMSOperatorRouter(false);
 			dbHandler = DBBackupHandler.getInstance();
 		} catch (Exception ex) {
@@ -145,63 +135,16 @@ public class IOSMSDispatcher extends MessageDispatcher {
 				log.error(msg," enum query msg error ", e);
 			}			
 		}
-		if (oCustomer.isSmsOptionNeedSupportSecondRouting()
-				&&oCustomer.getReicipienSecondRoutingtCache()!=null
-				&&oCustomer.getReicipienSecondRoutingtCache().asMap().containsKey("SecRouting_"+msg.getRecipientAddress())
-				&&oCustomer.isNeedSecondRoutingRecPrefix(msg.getRecipientAddress())
-				) {
-			if(a2pSecondChannelRouter.dispatch(msg)) {
-				//routing replacement
-				ctm.getSystemRoutingReplace(msg);
-				restoreTransientRecipientError(msg);
-				return RouteResponse.RouteOK;
-			}else {
-				if(!numChannelRouter.dispatch(msg)) {
-					if(msg.getRoperator()>0) {					
-						if (!opChannelRouter.dispatch(msg)) {
-							if (!backupOPChannelRouter.dispatch(msg)) {
-								if (!channelRouter.dispatch(msg)) {
-									if (!backupChannelRouter.dispatch(msg)) {
-										return RouteResponse.RouteFailed;
-									}			
-							    }
-							}			
-					    }
-					}else {
-						if (!channelRouter.dispatch(msg)) {
-							if (!backupChannelRouter.dispatch(msg)) {
-								return RouteResponse.RouteFailed;
-							}			
-					    }
-					}
-				}				
-			}			
-		}else {
-			if(!numChannelRouter.dispatch(msg)) {
-				if(msg.getRoperator()>0) {				
-					if (!opChannelRouter.dispatch(msg)) {
-						if (!backupOPChannelRouter.dispatch(msg)) {
-							if (!channelRouter.dispatch(msg)) {
-								if (!backupChannelRouter.dispatch(msg)) {
-									return RouteResponse.RouteFailed;
-								}			
-						    }
-						}			
-				    }				
-				}else if (!channelRouter.dispatch(msg)) {
-					if (!backupChannelRouter.dispatch(msg)) {
-						return RouteResponse.RouteFailed;
-					}			
-			    }
-			}
+		// second routing: the recipient was sent to lately (docs/路由重构设计.md 2.1, layer 1)
+		boolean second = oCustomer.isSmsOptionNeedSupportSecondRouting()
+				&& oCustomer.getReicipienSecondRoutingtCache() != null
+				&& oCustomer.getReicipienSecondRoutingtCache().asMap().containsKey("SecRouting_" + msg.getRecipientAddress())
+				&& oCustomer.isNeedSecondRoutingRecPrefix(msg.getRecipientAddress());
+		// the layers, rules and system routing replacement: IOSMSChannelRouter / RuleRouter
+		if (!((IOSMSChannelRouter) channelRouter).dispatch(msg, second)) {
+			return RouteResponse.RouteFailed;
 		}
-		
-		String routingSsids = msg.getRoutingSsIDs();
-		if (routingSsids == null || "".equalsIgnoreCase(routingSsids)) {
-			msg.setRoutingSsIDs(","+msg.getRSsID()+",");
-		}else if(msg.getRSsID()>0 && !msg.getRoutingSsIDs().contains(","+msg.getRSsID()+",")){
-			msg.setRoutingSsIDs(routingSsids+","+msg.getRSsID()+",");
-		}
+		boolean bySecond = msg.getRoutingRule() != null && msg.getRoutingRule().startsWith("second|");
 		A2PCustomerInfo rCustomer = GmmsUtility.getInstance().getCustomerManager().getCustomerBySSID(msg.getRSsID());
 		
 		if(rCustomer!=null && "blackhole".equalsIgnoreCase(rCustomer.getRole()) 
@@ -211,10 +154,7 @@ public class IOSMSDispatcher extends MessageDispatcher {
 			oCustomer.getReicipientCache().put(msg.getRecipientAddress(), "true");
 		}
 		
-		//routing replacement
-		ctm.getSystemRoutingReplace(msg);
-		
-		if(oCustomer.isSmsOptionNeedSupportSecondRouting()
+		if(!bySecond && oCustomer.isSmsOptionNeedSupportSecondRouting()
 				&&oCustomer.getReicipienSecondRoutingtCache()!=null
 				&&oCustomer.isNeedSecondRoutingRecPrefix(msg.getRecipientAddress())
 				) {

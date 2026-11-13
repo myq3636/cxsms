@@ -47,9 +47,9 @@ public class FakeDrIT extends CoreDrBizIT {
 		cm.append(cust("C959", 959 + 50, "SMSOptionSendFakeDRByInSubmitRecPrefixInCU: 8613\n"));
 		cm.append(cust("C960", 960 + 50, "SMSOptionSendFakeDR: true\n"));
 		appendCm(cm.toString());
-		for (int c : new int[] { 1001, 1002, 1003, 1005, 1006, 1010 }) route("C" + (c - 50), c, "A2PRoutingRelay: (PhonePrefix=86;852,Relay=V951)");
-		for (int c : new int[] { 1007, 1008 }) route("C" + (c - 50), c, "A2PRoutingRelay: (PhonePrefix=86,Relay=V952)");
-		route("C959", 1009, "A2PRoutingRelay: (PhonePrefix=86;852,Relay=V953)");
+		for (int c : new int[] { 1001, 1002, 1003, 1005, 1006, 1010 }) route("C" + (c - 50), c, "A2PMainRouting: (Priority=30,PhonePrefix=86;852,Relay=V951)");
+		for (int c : new int[] { 1007, 1008 }) route("C" + (c - 50), c, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V952)");
+		route("C959", 1009, "A2PMainRouting: (Priority=30,PhonePrefix=86;852,Relay=V953)");
 		Path cfg = Paths.get(home + "Gmms/GmmsConfig.properties");
 		Files.write(cfg, (new String(Files.readAllBytes(cfg), "UTF-8") + "\nAsyncSqlWriterEnable=false\nAutoInDR.DispatcherIdleSleepMs=100\n").getBytes("UTF-8"));
 		msmFactory = RecordingStore::new;

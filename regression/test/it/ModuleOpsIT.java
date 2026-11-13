@@ -49,7 +49,7 @@ public class ModuleOpsIT extends DrainCoreIT {
 		appendCm(cust("V901", RSSID, "") + cust("R900", OSSID, "")
 				+ "\n[V950]\nCCBSSID: 950\nA2PPlayerType: operator\nProtocol: SMPP\nConnectionType: MC\nIsInit: true\nSMSOptionOutgoingThrottlingNum: 100\n"
 				+ "OutgoingConnection: (ConnName=V950_c1,userName=u950,password=p,URL=127.0.0.1,Port=1,SessionNumber=4,BindMode=TRX,Version=V34,IsInit=true)\n");
-		route("R900", OSSID, "A2PRoutingRelay: (PhonePrefix=86,Relay=V901)");
+		route("R900", OSSID, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V901)");
 		Files.write(Paths.get(home + "conf/a2p_modules.conf"), ("1|" + E1 + "|core|x|0|core|10||\n1|" + E2 + "|core|x|0|core|10||\n"
 				+ "1|MultiSmppServer1|smpp-server|x|0|server|40||\n1|MultiSmppClient1|smpp-client|x|0|client|20||\n1|MultiSmppClient2|smpp-client|x|0|client|20||\n").getBytes("UTF-8"));
 		Path cfg = Paths.get(home + "Gmms/GmmsConfig.properties");

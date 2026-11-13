@@ -15,7 +15,7 @@ public class CoreCheckIT extends CoreBizSupport {
 			{ "C309", "309", "PhonePrefix: (Prefix=86)\nSMSOptionRecNumberLenList: 13\n" }, { "C310", "310", "NeedCheckMsgSize: false\n" }, { "C311", "311", "" },
 			{ "C312", "312", "" }, { "C313", "313", "CustomerTypeBySender: PA\n" }, { "C314", "314", "" }, { "C315", "315", "" }, { "C316", "316", "" },
 		};
-		for (String[] x : c) { cm.append(cust(x[0], Integer.parseInt(x[1]), x[2])); route(x[0], Integer.parseInt(x[1]), "A2PRoutingRelay: (PhonePrefix=86;852;65,Relay=V401)"); }
+		for (String[] x : c) { cm.append(cust(x[0], Integer.parseInt(x[1]), x[2])); route(x[0], Integer.parseInt(x[1]), "A2PMainRouting: (Priority=30,PhonePrefix=86;852;65,Relay=V401)"); }
 		appendCm(cm.toString());
 		conf("senderactiondir/-1_sender_blacklist.cfg", "86:GLOBALBAD\n65:SGBAD\n");
 		conf("senderactiondir/301_sender_blacklist.cfg", "86:CUSTBAD\n65:CUSTBAD65\n");
