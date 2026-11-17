@@ -9,7 +9,7 @@
 1. **Core 入向长度检查直接拒绝**（2.2）：`NeedCheckMsgSize` 默认开启，非 ASCII 且超过 140 就回 2250。这是代码问题，可以修，改动小。
 2. **发给不支持 7-bit 的通道时按 ISO 字节数拆分**（2.3）：通道没配 `SMSOptionSupportOutgoingGSM7bit` 时，消息不再按 7-bit 处理，按 ISO 字节数和通道的 `MsgSplitLen` 拆。这一处要分两种情况：
    - 通道其实支持 GSM 7-bit（多数运营商 SMSC 的 `data_coding=0` 就是 GSM 7-bit），只是没配：**改配置即可**，保持 160。
-   - 通道确实只收 8 位 Latin-1：单条 140 字节是协议上限，不是 bug；可选的只有拆条、转 UCS2，或用 `SMSOptionForceTrans2ASCII` 把 é 变成 e 保持 160。
+   - 通道确实只收 8 位 Latin-1：单条 140 字节是协议上限，不是 bug；可选的只有拆条、转 UCS2，或用 `SMSOptionForceTrans2ASCII` 按 ASCII 发、保持 160（é 这类字符会变成 `?`，不是转写成 e）。
 
 另外，第 2 种情况下发出去的 `data_coding` 是 0，但字节是 Latin-1，这是已登记的已知缺陷 **DEF-C6**（2.4）。它和本问题同源，要不要一起修需要确认（第 6 节）。
 
@@ -65,7 +65,7 @@ if (oCustomer.isNeedCheckMsgSize()) {                       // NeedCheckMsgSize�
 ```java
 if (message.isGsm7bit() && cm != null) {
     if (cm.getSmsOptionOutgoingGSM7bit() == 0) {          // 通道不支持 7-bit（默认）
-        if (cm.getSmsOptionForceTrans2ASCII()) {           // 强转 ASCII：é -> e
+        if (cm.getSmsOptionForceTrans2ASCII()) {           // 强转 ASCII：只改 contentType，é 编码成 ASCII 时变成 ?
             ... contentType=ASCII, gsm7bit=false, messageSize=ASCII 字节数; return;
         } else {
             message.setGsm7bit(false);                     // 不再是 7-bit
@@ -82,7 +82,7 @@ if (message.isGsm7bit() && cm != null) {
 | 通道 | 带 é 的 160 字符消息 |
 |---|---|
 | `SMSOptionSupportOutgoingGSM7bit: 1` 或 `2` | 保持 7-bit，按 160 字符判断，**不拆**，发 `data_coding=0` 的 GSM 编码。正确 |
-| 默认 0，`SMSOptionForceTrans2ASCII: true` | é 变成 e，按 160 判断，不拆 |
+| 默认 0，`SMSOptionForceTrans2ASCII: true` | 按 ASCII 编码，ASCII 以外的字符（é、ü、£ 等）变成 `?`，按 160 判断，不拆 |
 | 默认 0，其他 | 变成 ISO、160 字节，按 `MsgSplitLen` 拆：**配了 140 就拆成 2 条**；没配按 160 不拆 |
 | 默认 0，带 € 的（UCS2） | 按 UCS2 字节数（320）拆，**变成 3 条** |
 
@@ -216,7 +216,7 @@ gsm7bit               -> septets = 每个字符 1 个，扩展字符（{ } [ ] ~
 | 做法 | 结果 |
 |---|---|
 | 现状（按 `MsgSplitLen` 拆） | 2 条，内容不变 |
-| `SMSOptionForceTrans2ASCII: true` | 1 条，é 变成 e |
+| `SMSOptionForceTrans2ASCII: true` | 1 条，é 变成 `?` |
 | 转 UCS2 | 3 条，内容不变，最贵 |
 
 **DEF-C6 的修法：** `Smpp.java:589` 改成和 Server 侧一样：只有 `ASCII` 或 `gsm7bit` 才标 0，ISO 标 3、UCS2 标 8（`getDataCoding` 已有映射）。（原来还写了“非 7-bit 的 ISO 拆分上限默认 140”，实现时没有做，见第 8 节。）
@@ -265,7 +265,7 @@ gsm7bit               -> septets = 每个字符 1 个，扩展字符（{ } [ ] ~
 | G7-07 | G7-02 发往 `SupportOutgoingGSM7bit: 1` 的通道 | 1 条，`data_coding=0`，GSM 编码 |
 | G7-08 | G7-02 发往 `SupportOutgoingGSM7bit: 2` 的通道 | 1 条，压缩，140 字节 |
 | G7-09 | G7-02 发往默认通道，`MsgSplitLen: 140` | 现状：2 条，`data_coding=0`（记录现状；3.2 确认后改断言） |
-| G7-10 | G7-02 发往默认通道，`ForceTrans2ASCII` | 1 条，é 变成 e |
+| G7-10 | G7-02 发往默认通道，`ForceTrans2ASCII` | 1 条，é 变成 `?`（2026-11-17 服务器实测；原来写的“变成 e”不对，代码只改 `contentType`，没有转写） |
 | G7-11 | `NeedCheckMsgSize: false` | 不检查（对照） |
 
 ## 6. 需要确认
@@ -344,7 +344,12 @@ if (gsmBytes || (cst.getSmsOptionOutgoingGSM7bit() == 0 && ASCII.equalsIgnoreCas
 
 | 编号 | 通道 | ASCII 160 | 7-bit 带 é 160 | ISO 160 |
 |---|---|---|---|---|
-| G7-17 | 只配 `MsgSplitLen: 140` | `[140, 20]` | `[140, 20]` | — |
-| G7-18 | 再加 `SMSOptionAsciiMsgSplitLen: 160` | `[160]` | `[160]` | `[140, 20]` |
+| G7-17 | 7-bit 模式 1（`SMSOptionSupportOutgoingGSM7bit: 1`），只配 `MsgSplitLen: 140` | `[140, 20]` | `[140, 20]` | — |
+| G7-18 | 同上（7-bit 模式 1），再加 `SMSOptionAsciiMsgSplitLen: 160` | `[160]` | `[160]` | `[140, 20]` |
 
 所以配了 `MsgSplitLen: 140` 的通道要同时配 `SMSOptionAsciiMsgSplitLen: 160`，否则 160 字符的英文、7-bit 消息会多拆一条。
+
+- 上表的两种通道都配了 `SMSOptionSupportOutgoingGSM7bit: 1`（回归 `Gsm7LengthIT` 的 VENDOR65、VENDOR66）。通道没配 7-bit 时，7-bit 消息先按 2.3 去掉 7-bit 变成 ISO，再按 `MsgSplitLen` 拆，加了 `SMSOptionAsciiMsgSplitLen: 160` 也是两段（同 G7-16）。
+- 表里的数字是拆分前的内容长度。发出去的每一段 short_message 是 `MsgSplitLen` 个字节**包括 6 字节 UDH**，所以供应商收到的内容是 134 + 26（服务器用例 GL002 实测）。
+- **带 UCS2 字符（Δ、希腊字母、€）的 7-bit 消息**：2026-11-17 修复前，判断要不要加 UDH 时按 UCS2 字节数算长度（160 个字符算成 320），160 个 GSM 字符发往 7-bit 通道会多拆成两条；现在 7-bit 消息按字符数算，和拆分时的大小一致（`MessageProcessor.getSplitMessageUdhLength`，服务器用例 GL001 M4 发现）。
+- **`[GSM7]` 告警的 ossid**：Server 解析时消息上还没有 ossid，原来打的是 `ossid=-1`；现在用客户的 ssid（GL001 M11 发现）。

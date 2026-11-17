@@ -363,6 +363,8 @@ public class MessageProcessorThread extends RunnableMsgTask{
 			A2PCustomerInfo cst= ctm.getCustomerBySSID(message.getOSsID());
 			// 7) the customer had its fake DR (way 1) already
 			if (FakeDr.given(message)) {
+				log.info(message, "[DR-SKIP] ossid={} status={}: the customer had its fake DR, this blackhole DR is only recorded",
+						message.getOSsID(), message.getStatusCode());
 				return;
 			}
 			

@@ -181,7 +181,7 @@
 
 **日志：**
 - 决定时：`[FAKE-DR] mode=IN_SUBMIT|OUT_SUBMIT|TIMEOUT delaySec=... status=...`
-- 被跳过的 DR：`[DR-SKIP] source=REAL|FAIL decided=IN_SUBMIT|OUT_SUBMIT|TIMEOUT`（DEBUG；每个客户 10 分钟一条 INFO 汇总）
+- 被跳过的 DR：每条一行 INFO `[DR-SKIP] ossid=... status=...: the customer had its fake DR, this DR is only recorded`（真实 DR、外发失败 DR 都经过 `sendDRMessage`，在那里判断）；过期 DR 不进 WDQ 时 `... this expired DR is only recorded (not kept in WDQ)`；黑洞 DR `... this blackhole DR is only recorded`；方式 4 超时后才到的真实 DR `[DR-SKIP] outMsgId=... the timeout DR was sent before`
 - 方式 3 改写：`[DR-REWRITE] from=10400 to=10000`
 - 启动和 reload 时每个客户一行 INFO：实际生效的方式、比例、延迟、超时；第 9 节列的旧配置打 WARN。
 
@@ -218,6 +218,7 @@
 **删除：** `AutoSendInDRProcessorThread`、MQM 的 `SendDelayRedisDRThread`、`MessageBase.setFakeDR` / `hasFakeSendDR`、`DirectInDRDispatchService.buildAutoInDR` / `isEnabled`、`MessageStoreManager` 的旧延迟键写入、`MessageProcessorThread` 的“外发前回”、各处旧的避让条件；GmmsConfig 的 `AutoInDR.DirectStreamEnable`、`AutoInDR.FallbackToLegacyDelayDR`（同时移出热加载白名单）。延迟 DR 发不出去时改为直接进 RDQ。
 
 **和设计稿不同的地方：**
+- `[DR-SKIP]` 每条打 INFO，没有做 10 分钟汇总；2026-11-17 补上了原来不打日志的分支（通道真实 DR 转发前的 9 处判断改为都经过 `sendDRMessage`、过期 DR、黑洞 DR），服务器用例 FD001、FD002 发现。
 - 决定记录用 `milterActionCode` 的第 15、16 位，不是新的序列化字段（第 5 节）。
 - 方式 1、2、4 都要求客户在 submit 里要了 DR（`registered_delivery`）才回；原来方式 1 不检查。
 - 实现中发现：`GmmsMessage` 的复制构造函数（`MessageBase(MessageBase)`）和原消息**共用同一个 `milterActionCode` 数组**，改一边另一边也变（`setMilterActionCode(位, 值)` 原地改数组）。已改为复制一份数组，所有复制消息的地方都不再共用。

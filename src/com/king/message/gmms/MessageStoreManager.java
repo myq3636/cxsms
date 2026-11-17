@@ -1371,6 +1371,9 @@ public class MessageStoreManager extends DataManager {
 						message.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT);
 						insertMessageToDB(message, WDQ);
 						message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
+					} else {
+						log.info(message, "[DR-SKIP] ossid={} status={}: the customer had its fake DR, this expired DR is only recorded (not kept in WDQ)",
+								message.getOSsID(), message.getStatusCode());
 					}
 					message.setStatusText(GmmsStatus.getStatus(message.getStatusCode()).getText());
 					gmmsUtility.getCdrManager().logOutDeliveryReportRes(message);
@@ -1490,6 +1493,9 @@ public class MessageStoreManager extends DataManager {
 						message.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT);
 						insertMessageToDB(message, WDQ);
 						message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
+					} else {
+						log.info(message, "[DR-SKIP] ossid={} status={}: the customer had its fake DR, this expired DR is only recorded (not kept in WDQ)",
+								message.getOSsID(), message.getStatusCode());
 					}
 					
 					//just record the out_dr into CDR table with real status
@@ -1542,15 +1548,11 @@ public class MessageStoreManager extends DataManager {
 											message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 											message.setStatus(temp);
 											FakeDr.rewriteRealDr(message, info);
-											if (!FakeDr.given(message)) {
-												sendDRMessage(message);
-											}
+											sendDRMessage(message);   // [DR-SKIP] there when the customer had its fake DR
 										}
 									}else{
 										FakeDr.rewriteRealDr(message, info);
-										if (!FakeDr.given(message)) {
-											sendDRMessage(message);
-										}
+										sendDRMessage(message);   // [DR-SKIP] there when the customer had its fake DR
 									}
 								}else{
 									Date timeDate = message.getTimeStamp();									
@@ -1565,23 +1567,17 @@ public class MessageStoreManager extends DataManager {
 											message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 											message.setStatus(temp);
 											FakeDr.rewriteRealDr(message, info);
-											if (!FakeDr.given(message)) {
-												sendDRMessage(message);
-											}
+											sendDRMessage(message);   // [DR-SKIP] there when the customer had its fake DR
 										}
 									}else{
 										FakeDr.rewriteRealDr(message, info);
-										if (!FakeDr.given(message)) {
-											sendDRMessage(message);
-										}
+										sendDRMessage(message);   // [DR-SKIP] there when the customer had its fake DR
 									}
 								}													
 							}else {
 								//modify to support add success ratio in 20190201
 								FakeDr.rewriteRealDr(message, info);
-								if (!FakeDr.given(message)) {
-									sendDRMessage(message);
-								}
+								sendDRMessage(message);   // [DR-SKIP] there when the customer had its fake DR
 							}
 						}
 					} else {
@@ -1616,15 +1612,11 @@ public class MessageStoreManager extends DataManager {
 										message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 										message.setStatus(temp);
 										FakeDr.rewriteRealDr(message, info);
-										if (!FakeDr.given(message)) {
-											sendDRMessage(message);
-										}
+										sendDRMessage(message);   // [DR-SKIP] there when the customer had its fake DR
 									}
 								}else{
 									FakeDr.rewriteRealDr(message, info);
-									if (!FakeDr.given(message)) {
-										sendDRMessage(message);
-									}
+									sendDRMessage(message);   // [DR-SKIP] there when the customer had its fake DR
 								}
 							}else{
 								GmmsStatus temp = message.getStatus();
@@ -1634,17 +1626,13 @@ public class MessageStoreManager extends DataManager {
 									message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 									message.setStatus(temp);
 									FakeDr.rewriteRealDr(message, info);
-									if (!FakeDr.given(message)) {
-										sendDRMessage(message);
-									}
+									sendDRMessage(message);   // [DR-SKIP] there when the customer had its fake DR
 								}
 							}
 							
 						}else {
 							FakeDr.rewriteRealDr(message, info);
-							if (!FakeDr.given(message)) {
-								sendDRMessage(message);
-							}
+							sendDRMessage(message);   // [DR-SKIP] there when the customer had its fake DR
 						}
 						
 					}

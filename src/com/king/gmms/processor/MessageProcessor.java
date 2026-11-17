@@ -399,7 +399,10 @@ public class MessageProcessor {
 		}
 		int mlength = 0;
 		try {
-			mlength = message.getTextContent().getBytes(message.getContentType()).length;
+			// GSM 7-bit: a character is a septet whatever contentType says (UCS2 for Δ, €), the same count as the
+			// message size computed for the split; the bytes of UCS2 would double it and add a UDH to a 160 one
+			mlength = message.isGsm7bit() ? message.getTextContent().length()
+					: message.getTextContent().getBytes(message.getContentType()).length;
 		} catch (Exception e) {
 			log.warn(message, "get message length error!");
 			mlength = message.getMessageSize();

@@ -2705,7 +2705,7 @@ public class Smpp {
 			//judge dataCoding = 0 or 00xx 0000, or 1111 x0xx for specialDataCodingScheme 
 			if(dataCoding==0||((dataCoding & -16) == -16)){
 				if(cst.getSmsOptionIncomingGSM7bit()==1||cst.getSmsOptionIncomingGSM7bit()==2){
-					this.handleGSM7bitMessageContent(msg, udh, btContent, cst.getSmsOptionIncomingGSM7bit());
+					this.handleGSM7bitMessageContent(msg, udh, btContent, cst.getSmsOptionIncomingGSM7bit(), cst.getSSID());
 				}else{
 					charset = GmmsMessage.AIC_CS_ASCII;
 					handleMessageContent(msg, btContent, charset, udh);
@@ -2780,7 +2780,7 @@ public class Smpp {
 	 *            byte[]
 	 * @throws Exception
 	 */
-	private void handleGSM7bitMessageContent(GmmsMessage msg, boolean udh, byte[] btContent, int smsOptionIncomingGSM7bit)
+	private void handleGSM7bitMessageContent(GmmsMessage msg, boolean udh, byte[] btContent, int smsOptionIncomingGSM7bit, int ossid)
 			throws Exception {
 		
 		boolean iso = false;
@@ -2858,11 +2858,12 @@ public class Smpp {
 					chars[j]=value;
 				}
 				if (notGsm > 0) {
-					// a customer set to GSM 7-bit sends something else (ISO-8859-1?): shown, the parsing stays
-					long times = com.king.gmms.util.LogRateLimiter.allow("gsm7-not-gsm:" + msg.getOSsID(), 600000L);
+					// a customer set to GSM 7-bit sends something else (ISO-8859-1?): shown, the parsing stays.
+					// ossid of the customer: the message does not have it yet here
+					long times = com.king.gmms.util.LogRateLimiter.allow("gsm7-not-gsm:" + ossid, 600000L);
 					if (times > 0) {
 						log.warn(msg, "[GSM7] ossid={} SMSOptionSupportIncomingGSM7bit={}: {} byte(s) above 0x7F, no GSM 7-bit character, replaced with '?'"
-								+ " ({} message(s) in 10 min)", msg.getOSsID(), smsOptionIncomingGSM7bit, notGsm, times);
+								+ " ({} message(s) in 10 min)", ossid, smsOptionIncomingGSM7bit, notGsm, times);
 					}
 				}
 				int tempContent[] = new int[j]; 

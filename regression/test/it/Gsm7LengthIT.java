@@ -153,22 +153,20 @@ public class Gsm7LengthIT extends CsmCdrIT {
 			Constructor<?> k = c.getDeclaredConstructor();
 			k.setAccessible(true);
 			Object smpp = k.newInstance();
-			Method parse = c.getDeclaredMethod("handleGSM7bitMessageContent", GmmsMessage.class, boolean.class, byte[].class, int.class);
+			Method parse = c.getDeclaredMethod("handleGSM7bitMessageContent", GmmsMessage.class, boolean.class, byte[].class, int.class, int.class);
 			parse.setAccessible(true);
+			// as the Server parses it: the message has no ossid yet, the customer's is passed
 			GmmsMessage gsm = new GmmsMessage();
-			gsm.setOSsID(8893);
-			parse.invoke(smpp, gsm, false, new byte[] { 0x43, 0x61, 0x66, 0x05 }, 1);
+			parse.invoke(smpp, gsm, false, new byte[] { 0x43, 0x61, 0x66, 0x05 }, 1, 8893);
 			check("Café".equals(gsm.getTextContent()) && iso.equals(gsm.getContentType()) && gsm.isGsm7bit() && logCount("[GSM7] ossid=8893") == 0,
 					"G7-05e real GSM 7-bit (é = 0x05): Café, ISO-8859-1, gsm7bit, no warning");
 			GmmsMessage wrong = new GmmsMessage();
-			wrong.setOSsID(8894);
-			parse.invoke(smpp, wrong, false, new byte[] { 0x43, 0x61, 0x66, (byte) 0xE9 }, 1);
+			parse.invoke(smpp, wrong, false, new byte[] { 0x43, 0x61, 0x66, (byte) 0xE9 }, 1, 8894);
 			check("Caf?".equals(wrong.getTextContent()) && ascii.equals(wrong.getContentType()) && wrong.isGsm7bit(),
 					"G7-05d byte 0xE9 on a mode-1 customer: parsed as before (Caf?, ASCII, gsm7bit)");
-			check(waitFor(() -> logCount("[GSM7] ossid=8894") == 1, 3000), "G7-05f and a warning");
+			check(waitFor(() -> logCount("[GSM7] ossid=8894") == 1, 3000), "G7-05f and a warning with the customer's ossid (the message has none yet)");
 			GmmsMessage again = new GmmsMessage();
-			again.setOSsID(8894);
-			parse.invoke(smpp, again, false, new byte[] { (byte) 0xA3 }, 1);
+			parse.invoke(smpp, again, false, new byte[] { (byte) 0xA3 }, 1, 8894);
 			Thread.sleep(500);
 			check(logCount("[GSM7] ossid=8894") == 1, "G7-05g the next one within 10 minutes: no second line (rate limited)");
 		} catch (Throwable x) { x.printStackTrace(System.out); failures++; }

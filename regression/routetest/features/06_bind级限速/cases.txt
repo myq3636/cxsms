@@ -1,0 +1,6 @@
+BT001_per_bind_rate
+BT002_per_bind_and_account
+BT003_account_only
+BT004_slow_bind_skipped
+BT005_slow_bind_no_per_bind
+BT006_reload_rate

@@ -108,7 +108,7 @@ HTTP 通道用同样的块，`DRErr` 的 `Err` 填 HTTP DR 里错误码字段的
 | SMPP | 回执文本 `err:XXX`（3 位，不足补 0）。客户配了 `SMSOptionDRNetworkErrorTLV=true`（新增）时，另外带 `network_error_code` TLV（类型 3 = SMPP，值 = 错误码） |
 | HTTP | 接口 XML 的 DR 推送里新增变量 `errorCode`（和现有的 `statusCode`、`statusText` 一样配字段名）；客户的接口没配这个字段就不带 |
 
-`stat:` 仍按内部错误码对应的 DR 状态生成，`SMSOptionDRStatusMapping` 照旧可以改显示的状态词。
+`stat:` 和原来一样按内部状态生成（`Smpp.createSmppDeliverSM4dr`），不看码表的状态词，`SMSOptionDRStatusMapping` 照旧可以改显示的状态词。例：欠费 404 的内部状态是 10800，客户收到 `stat:DELETED`（原有的对应关系，不是码表里的 `REJECTD`）。
 
 ### 5.3 几种 DR 给客户的码
 
@@ -220,7 +220,7 @@ HTTP 通道用同样的块，`DRErr` 的 `Err` 填 HTTP DR 里错误码字段的
 | 列 | 说明 |
 |---|---|
 | 码 | 3 位数字，不能重复 |
-| 状态词 | 给客户的 SMPP 回执 `stat:` 用：DELIVRD / ACCEPTD / ENROUTE / UNDELIV / EXPIRED / REJECTD / DELETED / UNKNOWN |
+| 状态词 | DELIVRD / ACCEPTD / ENROUTE / UNDELIV / EXPIRED / REJECTD / DELETED / UNKNOWN。用于通道侧：通道回执的状态词没有更具体的规则时的默认码（10.4）、对不上时码取这个状态的码。**给客户的回执 `stat:` 不用它**，按内部状态生成（5.2） |
 | 内部状态 | 现有的 `GmmsStatus` 码。决定重试、改道（`SMSOptionDRRerouteCode`）、CDR 的状态列、HTTP 客户的 `StatusMapping`，和现在一样 |
 | 说明 | 运营和对接文档用，不参与匹配 |
 
@@ -313,7 +313,7 @@ for 块 in [通道自己的块, DEFAULT 块]:          ← 通道块整块优先
 4. 没有客户块：同 DRErrDefault=legacy（默认，客户收到的码和现在的错误码表一致）
 ```
 
-- SMPP 回执：`err:` = 结果（3 位，不足补 0）；`stat:` = 码表里这个内部码的状态词（`SMSOptionDRStatusMapping` 照旧可以改显示）。
+- SMPP 回执：`err:` = 结果（3 位，不足补 0）；`stat:` 和原来一样按内部状态生成（例如 10800 → `DELETED`），不看码表的状态词（`SMSOptionDRStatusMapping` 照旧可以改显示）。
 - HTTP：接口 XML 的 `errorCode` 字段 = 结果；状态字段照旧按 `StatusMapping` 用内部状态换。
 
 ### 10.6 一个完整的例子
@@ -355,6 +355,7 @@ drErrorMapping.cfg: [VENDOR_X]  DRErr: (Stat=UNDELIV,Err=002~009,Code=104)
 - `A2PCustomerInfo`：`SMSOptionSmppMapErrCod4DR` 不再读取，读到时打 WARN。`SMSOptionDRNotPaidCode` 保留，`DrErrorConfig.applyVendorDr` 在对照表之前先按它判断（原样比较回执 err，或 6 位十六进制的 network_error_code）。
 
 **和设计稿不同的地方：**
+- **客户回执的 `stat:` 没有改用码表的状态词**（2026-11-17 确认保持现状）：仍按内部状态生成，和升级前一样，例如欠费 404（10800）是 `DELETED`。服务器用例 DE001 实测；5.2、10.1、10.5 已按此改写。
 - **没有规则命中时不改状态**：状态保持 Client 按状态词定的（和现在一样），码取这个状态的默认码（码表里第一个是这个状态的码）。只有规则命中时才按码表改状态。这样不配对照表时，所有 DR 的状态都和现在完全一样。
 - 两个字段写进 DB、RDQ 重试按码恢复状态，见第 12 节（DEF-C5 已修复）。
 - 对照表里的 shortName 在 cm.cfg 里不存在时没有打 WARN（加载时客户表可能还没准备好）。
