@@ -747,6 +747,26 @@ public class StreamQueueManager {
 		}
 	}
 
+	/**
+	 * After RELOAD_CORE_SHARDS / RELOAD_CLIENT_SHARDS: the streams of the role that still have entries get their
+	 * doorbell again, so the shards a node gained are read now and not when their next entry comes (the doorbell of a
+	 * backlog can be gone: taken by the node that had the shard and died). The doorbells are shared, every node takes
+	 * only the ones of its own shards, so ringing streams of other nodes does no harm.
+	 */
+	public void reRingAfterShardChange(boolean core) {
+		if (core) {
+			reRingExistingStreams(STR_MT_PENDING_PREFIX + "*", true);
+			reRingExistingStreams(STR_INBOUND_DR_PREFIX + "*", false);
+			reRingExistingStreams(STR_CORE_RESULTS + "*", false);
+			reRingExistingStreams(STR_MQM_SUBMIT_PREFIX + "*", true);
+			reRingExistingStreams(STR_MQM_REPORT_PREFIX + "*", false);
+		} else {
+			reRingExistingStreams(STR_MT_ROUTED_PREFIX + "*", true);
+			reRingExistingStreams(STR_HTTP_SUBMIT_PREFIX + "*", true);
+			reRingExistingStreams(STR_HTTP_DR_PREFIX + "*", false);
+		}
+	}
+
 	public void reRingExistingStreams(String pattern, boolean isSubmitMq) {
 		Set<String> streams = isSubmitMq ? redisClient.keysSubmitMq(pattern) : redisClient.keysReportMq(pattern);
 		if (streams == null || streams.isEmpty()) {

@@ -143,7 +143,9 @@ public class BindRateIT extends ItSupport {
 			List<FakeSmsc.Submit> l = got(a1, ids, 20000);
 			System.out.println("INFO BR-01 " + rates(a1, l));
 			List<Integer> pl = perLink(a1, l);
-			check(l.size() == 300 && Math.abs(pl.get(0) - pl.get(1)) <= 2, "BR-01 account 100 only: all sent, binds even: " + pl);
+			// round robin moves on also when the account rate says no (docs/SMPP外发bind级限速设计.md 4.3): on a busy
+			// machine the two binds differ by a few percent (the test server: up to 18 of 300 with other load); 10% of 300
+			check(l.size() == 300 && Math.abs(pl.get(0) - pl.get(1)) <= 30, "BR-01 account 100 only: all sent, binds even (within 30): " + pl);
 
 			// ---- BR-02 / BR-08 / BR-10: 2 binds at 20 each ----
 			FakeSmsc.Account a2 = smsc.account("u902");

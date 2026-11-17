@@ -1676,6 +1676,13 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
     public void stop() {
         synchronized (mutex) {
             if (keepRunning == false) {
+                // the customer closed the connection right after its bind, before start(): the session is in the
+                // bind registry already with CONNECT, and would be chosen for DRs that then fail (ServerFuncIT D-01)
+                if (isServer && (ConnectionStatus.CONNECT.equals(status) || ConnectionStatus.RECOVER.equals(status))) {
+                    log.info("SMSCSession closed before it started, unregistered. name={}", this.getSessionName());
+                    unregisterServerBindSession();
+                    setStatus(ConnectionStatus.DISCONNECT);
+                }
                 return;
             }
             try {

@@ -313,18 +313,26 @@ public class DRStreamConsumer {
                 logger.debug(msg, "Server DR-to-customer resolved session. streamKey={}, session={}, status={}",
                     streamKey, session.getSessionName(), session.getStatus());
             }
-            SmppDrSubmitResult submitResult = SmppDrSubmitResult.FAILED;
-            if (session != null && isConnected(session)) {
-                if (session instanceof MultiSmppSession) {
-                    MultiSmppSession smppSession = (MultiSmppSession) session;
-                    if (!smppSession.hasServerDrWindow()) {
+            SmppDrSubmitResult submitResult = submitTo(session, msg);
+            if (submitResult == SmppDrSubmitResult.WINDOW_FULL_PRECHECK) {
+                recordWindowFull(streamKey, msg, session.getSessionName(), "precheck");
+                queueManager.logNack(streamKey, groupName, consumerName, msg, false, "server_dr_window_full");
+                return ProcessResult.WINDOW_FULL;
+            }
+            if (submitResult == SmppDrSubmitResult.FAILED && !isConnected(session)) {
+                // the session was chosen while it still looked connected (the customer had closed it, the Server
+                // found out on this send): once more on the session chosen now, before the DR fails
+                Session again = resolveServerSession(msg);
+                if (again != null && again != session && isConnected(again)) {
+                    logger.info(msg, "Server DR-to-customer session {} is {}, sent again on {}. streamKey={}",
+                            session.getSessionName(), session.getStatus(), again.getSessionName(), streamKey);
+                    session = again;
+                    submitResult = submitTo(session, msg);
+                    if (submitResult == SmppDrSubmitResult.WINDOW_FULL_PRECHECK) {
                         recordWindowFull(streamKey, msg, session.getSessionName(), "precheck");
                         queueManager.logNack(streamKey, groupName, consumerName, msg, false, "server_dr_window_full");
                         return ProcessResult.WINDOW_FULL;
                     }
-                    submitResult = smppSession.submitServerDr(msg);
-                } else {
-                    submitResult = session.submit(msg) ? SmppDrSubmitResult.SENT : SmppDrSubmitResult.FAILED;
                 }
             }
             if (submitResult == SmppDrSubmitResult.WINDOW_FULL) {
@@ -439,6 +447,21 @@ public class DRStreamConsumer {
         return null;
     }
     
+    /** one send of the DR on this session; WINDOW_FULL_PRECHECK: its DR window is full, nothing sent */
+    private SmppDrSubmitResult submitTo(Session session, GmmsMessage msg) throws java.io.IOException {
+        if (session == null || !isConnected(session)) {
+            return SmppDrSubmitResult.FAILED;
+        }
+        if (session instanceof MultiSmppSession) {
+            MultiSmppSession smppSession = (MultiSmppSession) session;
+            if (!smppSession.hasServerDrWindow()) {
+                return SmppDrSubmitResult.WINDOW_FULL_PRECHECK;
+            }
+            return smppSession.submitServerDr(msg);
+        }
+        return session.submit(msg) ? SmppDrSubmitResult.SENT : SmppDrSubmitResult.FAILED;
+    }
+
     private boolean isConnected(Session session) {
         ConnectionStatus status = session.getStatus();
         return ConnectionStatus.CONNECT.equals(status) || ConnectionStatus.RECOVER.equals(status);

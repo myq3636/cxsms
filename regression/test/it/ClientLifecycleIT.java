@@ -80,6 +80,10 @@ public class ClientLifecycleIT extends ItSupport {
 			Thread.sleep(300);
 
 			// ---- backlog from before the start, doorbell gone ----
+			// startService started the consumer already (it found nothing then): stopped, so that the start below
+			// is the one that has to find the backlog
+			OutboundStreamConsumer.getInstance().stop();
+			Thread.sleep(300);
 			List<String> old = new ArrayList<>();
 			for (int i = 0; i < 20; i++) old.add(send(801));
 			jedis.del("zset:mt:routed:active");

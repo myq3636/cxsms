@@ -2090,7 +2090,7 @@ public class MessageStoreManager extends DataManager {
 					.append("PRIMARY KEY  (`ID`),")
 					.append("KEY `OutMsgID` (`OutMsgID`),")
 					.append("KEY `InmsgID` (`InMsgID`)")
-					.append(") ENGINE=MyISAM DEFAULT CHARSET=utf8;\n");
+					.append(") ENGINE=InnoDB DEFAULT CHARSET=utf8;\n");
 			String sqlStr = sb.toString();
 			if (log.isDebugEnabled()) {
 				log.debug("createPMQTable sql:{}", sqlStr);

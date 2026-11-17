@@ -81,6 +81,7 @@ public class InboundDRStreamConsumer {
                     }
                 }));
 
+        queueManager.reRingExistingStreams(StreamQueueManager.STR_INBOUND_DR_PREFIX + "*", false);
         logger.info("Core inbound-DR consumer started. Group: {}, Consumer: {}, Config: {}",
                 groupName, consumerName, consumerConfig.summary());
     }

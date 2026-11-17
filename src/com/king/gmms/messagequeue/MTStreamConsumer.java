@@ -77,6 +77,8 @@ public class MTStreamConsumer {
                     }
                 }));
 
+        // a backlog whose doorbell is gone (rung before a restart, taken by a Core that died) is found now
+        queueManager.reRingExistingStreams(StreamQueueManager.STR_MT_PENDING_PREFIX + "*", true);
         logger.info("Core MT-router consumer started. Consumer: {}, Shards: {}, Config: {}",
             consumerName, GmmsUtility.getInstance().getMyShards(), consumerConfig.summary());
     }
