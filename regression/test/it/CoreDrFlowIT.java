@@ -64,6 +64,12 @@ public class CoreDrFlowIT {
 		return null;
 	}
 
+	static long inboundDrLen(String pattern) {
+		long n = 0;
+		for (String k : jedis.keys(pattern)) n += jedis.xlen(k);
+		return n;
+	}
+
 	static String thread(String line) {
 		if (line == null) return null;
 		int a = line.indexOf('['), b = line.indexOf(']', a);
@@ -161,10 +167,12 @@ public class CoreDrFlowIT {
 		check(waitFor(() -> jedis.exists("OUT-IT1"), 10000), "Core result consumer cached the original under outMsgID");
 
 		// ---- 3. vendor DR -> Core forwards it inline, acks only afterwards ----
-		check(q.produceInboundDeliveryReport(vendorDr("OUT-IT1", "8_DR1")), "(client) vendor DR written to stream:core:inbound-dr:8");
+		check(q.produceInboundDeliveryReport(vendorDr("OUT-IT1", "8_DR1")), "(client) vendor DR written to stream:core:inbound-dr:8:{shard}");
+		check(jedis.keys("stream:core:inbound-dr:8:*").size() == 1 && !jedis.exists("stream:core:inbound-dr:8"),
+				"vendor DR stream has a shard (CoreInboundDRShardEnable): " + jedis.keys("stream:core:inbound-dr:8*"));
 		check(waitFor(() -> drPendingCount() == 1, 10000), "Core produced the DR to stream:dr:pending:8888:MultiSmppServer1:*");
 		check(waitFor(() -> !jedis.exists("OUT-IT1"), 5000), "DR lookup entry deleted after the DR was processed");
-		check(waitFor(() -> jedis.xlen("stream:core:inbound-dr:8") == 0, 5000), "inbound DR acked (XACK+XDEL)");
+		check(waitFor(() -> inboundDrLen("stream:core:inbound-dr:8:*") == 0, 5000), "inbound DR acked (XACK+XDEL)");
 		String sent = logLine("8888_IT1", "[DR-TO-SERVER]");
 		System.out.println("     log: " + sent);
 		check(sent != null && !thread(sent).startsWith("MessageProcessorThread"),

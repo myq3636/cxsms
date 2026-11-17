@@ -207,6 +207,7 @@ public class RegistryBatchIT extends ItSupport {
 		String module = MODULE;
 		String zombie = "smpp:server:session:24:" + module + "|0|n|zombie|z";
 		jedis.setex(zombie, 600, "module=" + module + ";lastSeen=1;");
+		jedis.sadd("smpp:server:idx:" + module, zombie);   // as the registry writes it: in the module's index
 		sun.misc.Unsafe u;
 		Field uf = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
 		uf.setAccessible(true);

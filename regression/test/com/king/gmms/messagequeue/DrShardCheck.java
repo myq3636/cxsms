@@ -58,6 +58,23 @@ public class DrShardCheck {
 		check(!q.isResponsibleForStream("stream:mt:pending:8888:1"), "MT shard filter unchanged (shard 1 not mine)");
 		check(q.isResponsibleForStream("stream:mt:pending:8888:0"), "MT shard filter unchanged (shard 0 mine)");
 
+		// vendor DRs to Core: stream:core:inbound-dr:{rssid}:{shard} by sender and recipient (CoreInboundDRShardEnable)
+		check(q.isResponsibleForStream("stream:core:inbound-dr:9991:0"), "inbound DR shard 0 consumed (MyShards=0)");
+		check(!q.isResponsibleForStream("stream:core:inbound-dr:9991:1"), "inbound DR shard 1 not consumed");
+		check(q.isResponsibleForStream("stream:core:inbound-dr:9991"), "inbound DR key without a shard (before the switch) consumed by every Core");
+		com.king.message.gmms.GmmsMessage d = new com.king.message.gmms.GmmsMessage();
+		d.setRSsID(9991); d.setSenderAddress("OTP"); d.setRecipientAddress("8613800000001"); d.setOutMsgID("RTVS1-1");
+		String k1 = q.getInboundDrQueue(d);
+		d.setOutMsgID("RTVS1-2");
+		check(k1.matches("stream:core:inbound-dr:9991:[0-3]") && k1.equals(q.getInboundDrQueue(d)),
+				"inbound DR key has a shard, the same for the DRs of one sender and recipient (the segments of one MT): " + k1);
+		java.util.Set<String> keys = new java.util.HashSet<String>();
+		for (int i = 0; i < 200; i++) { d.setRecipientAddress("86138" + (10000000 + i * 7919)); keys.add(q.getInboundDrQueue(d)); }
+		check(keys.size() == 4, "200 recipients spread over all 4 shards: " + keys.size());
+		props.setProperty("CoreInboundDRShardEnable", "false");
+		check(q.getInboundDrQueue(d).equals("stream:core:inbound-dr:9991"), "CoreInboundDRShardEnable=false: the key without a shard");
+		props.remove("CoreInboundDRShardEnable");
+
 		System.out.println(failures == 0 ? "ALL CHECKS PASSED" : failures + " CHECK(S) FAILED");
 		System.exit(failures == 0 ? 0 : 1);
 	}

@@ -201,6 +201,17 @@ public class Batch3IT {
 		check(ob.claimResult(r1) == CoreOutboundOutboxManager.Claim.FIRST && !jedis.exists("core:outbox:submit:8888_C:2:0"),
 				"D: first result of part 2 claims the outbox");
 		check(jedis.exists("core:outbox:submit:8888_C:1:0"), "D: part 1 outbox untouched");
+		long doneTtl = jedis.ttl("core:outbox:submit:8888_C:2:0:done"), payloadTtl = jedis.ttl("core:outbox:submit:8888_C:1:0");
+		check(doneTtl > 1700 && doneTtl <= 1800 && payloadTtl > 3 * 3600,
+				"D: the :done marker lives CoreOutboundOutboxDoneTTLSeconds (30 min), not the payload's 4 h: done " + doneTtl + " s, payload " + payloadTtl + " s");
+		props.setProperty("CoreOutboundOutboxDoneTTLSeconds", "600");
+		GmmsMessage r3 = mt("8888_C", 8, 3);
+		r3.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT_RESP);
+		r3.setRedisStreamID("3-1");
+		ob.claimResult(r3);
+		long ttl600 = jedis.ttl("core:outbox:submit:8888_C:3:0:done");
+		check(ttl600 > 500 && ttl600 <= 600, "D: CoreOutboundOutboxDoneTTLSeconds=600 used for the next marker: " + ttl600 + " s");
+		props.remove("CoreOutboundOutboxDoneTTLSeconds");
 		r1.setRedisStreamID("2-1");
 		check(ob.claimResult(r1) == CoreOutboundOutboxManager.Claim.STALE, "D: second result (e.g. late resp after timeout) -> STALE");
 		r1.setRedisStreamID("1-1");

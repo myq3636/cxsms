@@ -168,10 +168,10 @@ public class MTStreamConsumer {
                 logger.error("Error processing MT stream: " + streamKey, e);
             } finally {
                 processingMap.remove(streamKey);
-                // M-1: 与 ResultStreamConsumer 安全范式一致 —— pendingDoorbellMap 仅做清理，
-                // re-ring 只看 streamLength>0(只处理一批后仍有剩余、或处理期间无新 doorbell 时不再被搁置)。
-                pendingDoorbellMap.remove(streamKey);
-                if (queueManager.streamLength(streamKey, true) > 0) {
+                // M-1: entries left that this group has not read (also after the budget) are never put aside;
+                // the ones in flight (pending) are the auto-claim's, re-ringing for them only busy-loops
+                boolean rung = pendingDoorbellMap.remove(streamKey) != null;
+                if (rung || queueManager.unreadEntries(streamKey, groupName, true) > 0) {
                     queueManager.triggerDoorbell(streamKey, true);
                 }
             }

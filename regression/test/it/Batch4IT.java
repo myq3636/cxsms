@@ -112,7 +112,7 @@ public class Batch4IT extends ItSupport {
 		q.produceInboundDeliveryReport(dr);
 		InboundDRStreamConsumer.getInstance().start();
 		boolean moved = waitFor(() -> dlq("stream:dlq:report").size() == 1, 15000);
-		check(moved && jedis.xlen("stream:core:inbound-dr:8") == 0,
+		check(moved && streamLen("stream:core:inbound-dr:8:*") == 0,
 				"DLQ-07 inbound DR failing every time: after 3 deliveries moved to stream:dlq:report by the auto-claim runner");
 		check(streamLen("stream:dr:pending:*") == 0, "DLQ-08 no DR produced for it (no failure DR)");
 		msmField.set(InternalCoreEngineSession.getReactiveInstance(), real);
@@ -128,12 +128,19 @@ public class Batch4IT extends ItSupport {
 			p.xadd("stream:mt:pending:" + (100000 + i) + ":0", StreamEntryID.NEW_ENTRY, body);
 		}
 		p.sync();
+		// written directly (not by a producer): not in the stream index until a full scan
+		q.scheduleStreamIndexFullScan();
 		jedis.configResetStat();
 		List<String> found = q.listResponsibleStreams("stream:mt:pending:1*", true);
 		String stats = jedis.info("commandstats");
 		check(found.size() >= 20000, "SCAN-01 listResponsibleStreams finds all 20000 streams (" + found.size() + ")");
 		check(!stats.contains("cmdstat_keys:") && stats.contains("cmdstat_scan:"),
-				"SCAN-02 listed with SCAN, no KEYS command issued");
+				"SCAN-02 the full scan of the stream index uses SCAN, no KEYS command issued");
+		jedis.configResetStat();
+		found = q.listResponsibleStreams("stream:mt:pending:1*", true);
+		stats = jedis.info("commandstats");
+		check(found.size() >= 20000 && !stats.contains("cmdstat_keys:") && !stats.contains("cmdstat_scan:") && stats.contains("cmdstat_smembers:"),
+				"SCAN-03 the next listing reads the stream index (SMEMBERS), no SCAN of the keyspace: " + found.size());
 		Pipeline d = jedis.pipelined();
 		for (int i = 0; i < 20000; i++) {
 			d.del("stream:mt:pending:" + (100000 + i) + ":0");

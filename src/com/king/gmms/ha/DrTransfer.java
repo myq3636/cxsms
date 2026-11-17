@@ -41,7 +41,7 @@ public final class DrTransfer {
 		ModuleRegistry.excludeLocally(module);
 		RedisClient redis = RedisClient.getInstance();
 		StreamQueueManager queue = StreamQueueManager.getInstance();
-		for (String key : redis.keysReportMq(StreamQueueManager.STR_DR_PENDING_PREFIX + "*:" + module + ":*")) {
+		for (String key : StreamQueueManager.getInstance().streamKeys(StreamQueueManager.STR_DR_PENDING_PREFIX + "*:" + module + ":*", false)) {
 			String[] parts = key.split(":");
 			if (parts.length < 6) {
 				continue;

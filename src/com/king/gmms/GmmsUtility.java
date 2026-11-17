@@ -1069,13 +1069,13 @@ public class GmmsUtility {
 			"SmppServerRegistryLegacyCleanupEnable", "SmppServerRegistryLegacyCleanupIntervalMs",
 			"SmppServerRegistryLegacyCleanupScanCount", "SmppServerRegistryLegacyCleanupMaxKeysPerRun",
 			"CoreOutboundOutboxEnable", "CoreOutboundOutboxRecheckMs",
-			"CoreOutboundOutboxHardTimeoutMs", "CoreOutboundOutboxPayloadTTLSeconds",
+			"CoreOutboundOutboxHardTimeoutMs", "CoreOutboundOutboxPayloadTTLSeconds", "CoreOutboundOutboxDoneTTLSeconds",
 			"CoreOutboundOutboxScanBatchSize", "CoreOutboundOutboxResultRetryMs",
 			"CoreOutboundUnreadStallMs", "CoreOutboundRespTimeoutMs",
 			"CoreDrInlineDispatch", "CoreMtIdempotency", "CoreMtLeaseMs", "CoreMtMarkerTtlSeconds",
 			"CoreHoldReleaseTickMs", "CoreHoldRecoverIntervalMs", "CoreHoldRecoverIdleMs",
-			"ServerDrStreamShardFilter",
-			"RedisStreamMaxDeliveries", "CoreStreamTaskMaxBatches", "CoreStreamTaskMaxMs",
+			"ServerDrStreamShardFilter", "CoreInboundDRShardEnable",
+			"RedisStreamMaxDeliveries", "RedisStreamIndexFullScanMinutes", "CoreStreamTaskMaxBatches", "CoreStreamTaskMaxMs",
 			"CoreResultStreamSharded", "CoreDrResultIdempotency",
 			"CoreDbFallbackInline", "CsmReassembleMode", "CoreCsmExpirySweep",
 			"CoreCsmExpiryIntervalSec", "CoreCsmExpiryBatch", "CoreCsmExpiryLeaseMs",
@@ -1246,6 +1246,7 @@ public class GmmsUtility {
 				|| "CoreDrInlineDispatch".equals(key)
 				|| "CoreMtIdempotency".equals(key)
 				|| "ServerDrStreamShardFilter".equals(key)
+				|| "CoreInboundDRShardEnable".equals(key)
 				|| "CoreResultStreamSharded".equals(key)
 				|| "CoreDrResultIdempotency".equals(key)
 				|| "CoreDbFallbackInline".equals(key)
@@ -1275,6 +1276,7 @@ public class GmmsUtility {
 				|| "CoreOutboundOutboxRecheckMs".equals(key)
 				|| "CoreOutboundOutboxHardTimeoutMs".equals(key)
 				|| "CoreOutboundOutboxPayloadTTLSeconds".equals(key)
+				|| "CoreOutboundOutboxDoneTTLSeconds".equals(key)
 				|| "CoreOutboundOutboxResultRetryMs".equals(key)
 				|| "CoreOutboundUnreadStallMs".equals(key)
 				|| "CoreOutboundRespTimeoutMs".equals(key)

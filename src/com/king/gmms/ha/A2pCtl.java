@@ -183,7 +183,7 @@ public final class A2pCtl {
 	static long drLeft(String module) {
 		long n = 0;
 		RedisClient redis = RedisClient.getInstance();
-		for (String key : redis.keysReportMq(StreamQueueManager.STR_DR_PENDING_PREFIX + "*:" + module + ":*")) {
+		for (String key : StreamQueueManager.getInstance().streamKeys(StreamQueueManager.STR_DR_PENDING_PREFIX + "*:" + module + ":*", false)) {
 			n += redis.xlenReportMq(key);
 		}
 		return n;

@@ -59,7 +59,7 @@ public class ServerBatch3IT extends ItSupport {
 		Thread.sleep(500);
 		Map<String, Long> m = calls();
 		c.close();
-		long evals = m.containsKey("eval") ? m.get("eval") : 0;
+		long evals = (m.containsKey("eval") ? m.get("eval") : 0) + (m.containsKey("evalsha") ? m.get("evalsha") : 0);
 		return (evals - n) / (double) n;      // minus the n produces of the test itself
 	}
 
@@ -96,7 +96,7 @@ public class ServerBatch3IT extends ItSupport {
 		jedis.configResetStat();
 		for (int i = 0; i < 50; i++) { mgr.put("m" + i, dr("PMM" + i, ssid)); mgr.remove("m" + i); }
 		Map<String, Long> c = calls();
-		long evals = c.containsKey("eval") ? c.get("eval") : 0;
+		long evals = (c.containsKey("eval") ? c.get("eval") : 0) + (c.containsKey("evalsha") ? c.get("evalsha") : 0);
 		check(evals < 5, "PM-01 memory: 50 put and remove, no Redis call per DR: " + evals + " EVAL");
 		check(jedis.keys("smpp:pending:dr:*:itpm:*").isEmpty(), "PM-02 memory: no pending key in Redis");
 

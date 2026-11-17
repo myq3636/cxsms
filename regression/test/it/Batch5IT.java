@@ -81,7 +81,7 @@ public class Batch5IT extends ItSupport {
 		jedis.del("zset:core:results:active");   // doorbells lost (e.g. Redis restart)
 		check(results() == 5, "R5-06a 5 results in sharded streams, doorbells removed");
 		ResultStreamConsumer.getInstance().start();
-		check(waitFor(() -> results() == 0, 8000), "R5-06b consumer start finds them by SCAN and processes them");
+		check(waitFor(() -> results() == 0, 8000), "R5-06b consumer start finds them (stream index) and processes them");
 		check(waitFor(() -> cdrCount("8888_RR4", "OUT_SUBMIT") == 1, 5000), "R5-06c and processes them normally (OUT_SUBMIT CDR)");
 
 		// ---- R5-03 legacy and sharded consumed side by side ----

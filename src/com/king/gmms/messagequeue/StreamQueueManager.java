@@ -60,6 +60,12 @@ public class StreamQueueManager {
 	public static final String ZSET_MQM_REPORT_ACTIVE = "zset:mqm:report:active";
 	public static final String ZSET_DR_PENDING_ACTIVE = "zset:dr:pending:active";
 	public static final String ZSET_INBOUND_DR_ACTIVE = "zset:core:inbound-dr:active";
+	/**
+	 * Every stream key written on this Redis (a SET on each MQ Redis; the scripts that XADD also SADD here). Listing the
+	 * streams reads it instead of a SCAN of the whole keyspace (docs/Redis CPU瓶颈分析.md 5, item 3). Not "stream:..."
+	 * so that no stream pattern matches it.
+	 */
+	public static final String STREAM_INDEX_KEY = "idx:streams";
 	public static final String ZSET_CORE_RESULTS_ACTIVE = "zset:core:results:active";
 	public static final String ZSET_CORE_HOLD_ACTIVE = "zset:core:hold:active";
 	private static final StreamEntryID AUTOCLAIM_START_ID = new StreamEntryID("0-0");
@@ -365,6 +371,7 @@ public class StreamQueueManager {
 			+ "if ARGV[2] == '~' then args[#args+1] = '~' end "
 			+ "args[#args+1] = ARGV[1] args[#args+1] = '*' args[#args+1] = 'body' args[#args+1] = ARGV[4] "
 			+ "local id = redis.call('XADD', unpack(args)) "
+			+ "redis.call('SADD', '" + STREAM_INDEX_KEY + "', KEYS[1]) "
 			+ "redis.call('ZADD', KEYS[2], ARGV[3], KEYS[1]) "
 			+ "local acked = redis.call('XACK', KEYS[3], ARGV[5], ARGV[6]) "
 			+ "if acked > 0 then redis.call('XDEL', KEYS[3], ARGV[6]) end "
@@ -426,6 +433,7 @@ public class StreamQueueManager {
 			+ "if ARGV[2] == '~' then args[#args+1] = '~' end "
 			+ "args[#args+1] = ARGV[1] args[#args+1] = '*' args[#args+1] = 'body' args[#args+1] = ARGV[5] "
 			+ "local id = redis.call('XADD', unpack(args)) "
+			+ "redis.call('SADD', '" + STREAM_INDEX_KEY + "', KEYS[1]) "
 			+ "redis.call('ZADD', KEYS[2], ARGV[3], KEYS[1]) "
 			+ "if KEYS[4] ~= '' then "
 			+ "  redis.call('SETEX', KEYS[4], ARGV[6], ARGV[5]) "
@@ -620,28 +628,56 @@ public class StreamQueueManager {
 		if (candidates == null || candidates.isEmpty()) {
 			return null;
 		}
+		List<String> keys = new ArrayList<String>();
+		keys.add(doorbellKey);
 		for (String streamKey : candidates) {
-			if (!isResponsibleForStream(streamKey)) {
-				continue;
-			}
-			long len = streamLength(streamKey, isSubmitMq);
-			if (len <= 0) {
-				// only if still empty: an entry produced since the XLEN rang this doorbell again
-				if (removeDoorbellIfEmpty(doorbellKey, streamKey, isSubmitMq) && logger.isDebugEnabled()) {
-					logger.debug("Removed stale doorbell. zsetKey={}, streamKey={}, isSubmitMq={}",
-							doorbellKey, streamKey, isSubmitMq);
-				}
-				continue;
-			}
-			if (removeDoorbell(doorbellKey, streamKey, isSubmitMq)) {
-				return streamKey;
+			if (isResponsibleForStream(streamKey)) {
+				keys.add(streamKey);
 			}
 		}
-		return null;
+		if (keys.size() == 1) {
+			return null;
+		}
+		// one Lua for the candidates in order: an empty stream loses its doorbell, the first one with entries is popped
+		com.king.redis.RedisConnection c = isSubmitMq ? redisClient.getSubmitMqRedis() : redisClient.getReportMqRedis();
+		Object popped = c.evalScript(POP_DOORBELL_LUA, keys, new ArrayList<String>());
+		return popped instanceof String ? (String) popped : null;
 	}
+
+	// KEYS: 1 doorbell zset, 2.. candidate streams (the ones this node is responsible for), in the zset's order.
+	// XLEN and ZREM in the same Lua: an entry produced in between rings again, it is never left without a doorbell.
+	private static final String POP_DOORBELL_LUA =
+			"for i = 2, #KEYS do "
+			+ "  if redis.call('XLEN', KEYS[i]) == 0 then redis.call('ZREM', KEYS[1], KEYS[i]) "
+			+ "  elseif redis.call('ZREM', KEYS[1], KEYS[i]) == 1 then return KEYS[i] end "
+			+ "end "
+			+ "return false";
 
 	public long streamLength(String streamKey, boolean isSubmitMq) {
 		return isSubmitMq ? redisClient.xlenSubmitMq(streamKey) : redisClient.xlenReportMq(streamKey);
+	}
+
+	private static final String UNREAD_ENTRIES_LUA =
+			"local n = redis.call('XLEN', KEYS[1]) if n == 0 then return 0 end "
+			+ "local ok, p = pcall(redis.call, 'XPENDING', KEYS[1], ARGV[1]) if not ok then return n end return n - p[1]";
+
+	/**
+	 * Entries of the stream the group has not read yet: XLEN minus the group's pending ones (an entry is deleted when
+	 * it is acked; no group yet: all). A consumer re-rings a stream after its task only for these: the pending ones
+	 * are the auto-claim's, re-ringing for them read nothing and rang again, as fast as Redis answered (the stream
+	 * tasks busy-looped on a stream with an entry in flight).
+	 */
+	public long unreadEntries(String streamKey, String groupName, boolean isSubmitMq) {
+		com.king.redis.RedisConnection c = isSubmitMq ? redisClient.getSubmitMqRedis() : redisClient.getReportMqRedis();
+		try {
+			Object r = c.evalScript(UNREAD_ENTRIES_LUA, Arrays.asList(streamKey), Arrays.asList(groupName));
+			if (r instanceof Number) {
+				return ((Number) r).longValue();
+			}
+		} catch (Exception e) {
+			logger.warn("unread entries of {} not read, using XLEN: {}", streamKey, e.toString());
+		}
+		return streamLength(streamKey, isSubmitMq);
 	}
 
 	private static final String REMOVE_DOORBELL_IF_EMPTY_LUA =
@@ -709,6 +745,17 @@ public class StreamQueueManager {
 					logger.warn("Failed to parse stream shardId from streamKey: " + streamKey);
 				}
 			}
+		} else if (streamKey.startsWith(STR_INBOUND_DR_PREFIX)) {
+			// stream:core:inbound-dr:{rssid}:{shardId}; the key without a shard (before CoreInboundDRShardEnable): every Core
+			String[] parts = streamKey.split(":");
+			if (parts.length >= 5) {
+				try {
+					int shardId = Integer.parseInt(parts[4]);
+					return GmmsUtility.getInstance().getMyShards().contains(shardId);
+				} catch (Exception e) {
+					logger.warn("Failed to parse inbound DR shardId from streamKey: " + streamKey);
+				}
+			}
 		} else if (streamKey.startsWith(STR_DR_PENDING_PREFIX)) {
 			String[] parts = streamKey.split(":");
 			if (parts.length >= 5) {
@@ -768,7 +815,7 @@ public class StreamQueueManager {
 	}
 
 	public void reRingExistingStreams(String pattern, boolean isSubmitMq) {
-		Set<String> streams = isSubmitMq ? redisClient.keysSubmitMq(pattern) : redisClient.keysReportMq(pattern);
+		Set<String> streams = isSubmitMq ? streamKeys(pattern, true) : streamKeys(pattern, false);
 		if (streams == null || streams.isEmpty()) {
 			logger.info("No redis stream found for re-ring. pattern={}, isSubmitMq={}", pattern, isSubmitMq);
 			return;
@@ -820,17 +867,62 @@ public class StreamQueueManager {
 		return key;
 	}
 
+	/**
+	 * stream:core:inbound-dr:{rssid}:{shardId}: the Core of the shard reads it (CoreInboundDRShardEnable). Without the
+	 * shard one stream held all DRs of a vendor and they were processed one by one (docs/高TPS一致性和内存测试设计.md).
+	 * The shard is by sender and recipient, so the DRs of the segments of one MT stay in one stream, in order.
+	 */
 	public String getInboundDrQueue(GmmsMessage msg) {
 		int targetSsid = msg.getRSsID() >= 0 ? msg.getRSsID() : msg.getOSsID();
-		return STR_INBOUND_DR_PREFIX + targetSsid;
+		if (!isInboundDrShardEnabled()) {
+			return STR_INBOUND_DR_PREFIX + targetSsid;
+		}
+		return STR_INBOUND_DR_PREFIX + targetSsid + ":" + calculateInboundDrShardId(msg, targetSsid);
 	}
 
-	public void createGroup(String key, String groupName, boolean isSubmitMq) {
-		if (isSubmitMq) {
-			redisClient.xgroupCreateSubmitMq(key, groupName, true);
+	private int calculateInboundDrShardId(GmmsMessage msg, int targetSsid) {
+		int totalShards = GmmsUtility.getInstance().getTotalShards();
+		if (totalShards <= 1) return 0;
+		String hashKey;
+		if (!isBlank(msg.getSenderAddress()) || !isBlank(msg.getRecipientAddress())) {
+			hashKey = targetSsid + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
 		} else {
-			redisClient.xgroupCreateReportMq(key, groupName, true);
+			hashKey = targetSsid + "_" + msg.getOutMsgID();
 		}
+		return (hashKey.hashCode() & Integer.MAX_VALUE) % totalShards;
+	}
+
+	public boolean isInboundDrShardEnabled() {
+		return Boolean.parseBoolean(GmmsUtility.getInstance().getCommonProperty("CoreInboundDRShardEnable", "true").trim());
+	}
+
+	/** groups this JVM created (or found): createGroup sends XGROUP CREATE once per stream and group */
+	private final Set<String> groupsCreated = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+	/**
+	 * XGROUP CREATE (MKSTREAM) the first time this JVM uses the stream and group; later calls send nothing (every stream
+	 * task called it, docs/Redis CPU瓶颈分析.md 5, item 9). A group deleted since (the stream deleted) is created again
+	 * by consumeBatch: XREADGROUP fails with NOGROUP and recoverGroups creates it.
+	 */
+	public void createGroup(String key, String groupName, boolean isSubmitMq) {
+		if (!groupsCreated.contains(groupCacheKey(key, groupName, isSubmitMq))) {
+			createGroupNow(key, groupName, isSubmitMq);
+		}
+	}
+
+	private void createGroupNow(String key, String groupName, boolean isSubmitMq) {
+		boolean ok = isSubmitMq ? redisClient.xgroupCreateSubmitMq(key, groupName, true)
+				: redisClient.xgroupCreateReportMq(key, groupName, true);
+		String k = groupCacheKey(key, groupName, isSubmitMq);
+		if (ok) {
+			groupsCreated.add(k);
+		} else {
+			groupsCreated.remove(k);
+		}
+	}
+
+	private static String groupCacheKey(String key, String groupName, boolean isSubmitMq) {
+		return (isSubmitMq ? "s|" : "r|") + groupName + "|" + key;
 	}
 
 	public void ack(String key, String groupName, GmmsMessage msg, boolean isSubmitMq) {
@@ -1163,7 +1255,7 @@ public class StreamQueueManager {
 		for (String streamKey : streamsMap.keySet()) {
 			logger.warn("Try to recover redis stream consumer group. streamKey={}, group={}, isSubmitMq={}",
 					streamKey, groupName, isSubmitMq);
-			createGroup(streamKey, groupName, isSubmitMq);
+			createGroupNow(streamKey, groupName, isSubmitMq);
 			triggerDoorbell(streamKey, isSubmitMq);
 			recovered = true;
 		}
@@ -1213,6 +1305,7 @@ public class StreamQueueManager {
 			+ "if ARGV[4] == '~' then args[#args+1] = '~' end "
 			+ "args[#args+1] = ARGV[3] args[#args+1] = '*' args[#args+1] = 'body' args[#args+1] = ARGV[6] "
 			+ "local id = redis.call('XADD', unpack(args)) "
+			+ "redis.call('SADD', '" + STREAM_INDEX_KEY + "', KEYS[3]) "
 			+ "redis.call('ZADD', KEYS[4], ARGV[5], KEYS[3]) "
 			+ "if KEYS[5] ~= '' then "
 			+ "  redis.call('SETEX', KEYS[5], ARGV[7], ARGV[6]) "
@@ -1337,9 +1430,96 @@ public class StreamQueueManager {
 		return max <= 0 ? 1000 : max;
 	}
 
+	private final long[] lastIndexFullScanMs = new long[2];
+
+	/**
+	 * The stream keys matching pattern (a glob: * and ?): the members of STREAM_INDEX_KEY. The first call and then one
+	 * call every RedisStreamIndexFullScanMinutes also SCANs the whole keyspace for "stream:*": adds the streams the index
+	 * misses (written before the index existed) and removes the members that no longer exist.
+	 */
+	public Set<String> streamKeys(String pattern, boolean isSubmitMq) {
+		com.king.redis.RedisConnection c = isSubmitMq ? redisClient.getSubmitMqRedis() : redisClient.getReportMqRedis();
+		if (c == null) {
+			return null;
+		}
+		int slot = isSubmitMq ? 0 : 1;
+		long every = Math.max(1, intProperty("RedisStreamIndexFullScanMinutes", 60)) * 60000L;
+		boolean full;
+		synchronized (lastIndexFullScanMs) {
+			long now = System.currentTimeMillis();
+			full = lastIndexFullScanMs[slot] == 0 || now - lastIndexFullScanMs[slot] >= every;
+			if (full) {
+				lastIndexFullScanMs[slot] = now;
+			}
+		}
+		if (full) {
+			refreshStreamIndex(c, isSubmitMq);
+		}
+		Set<String> members = c.smembers(STREAM_INDEX_KEY);
+		Set<String> out = new java.util.LinkedHashSet<String>();
+		if (members == null) {
+			return out;
+		}
+		java.util.regex.Pattern re = globPattern(pattern);
+		for (String k : members) {
+			if (re.matcher(k).matches()) {
+				out.add(k);
+			}
+		}
+		return out;
+	}
+
+	/** the next streamKeys call (of each MQ Redis) also does the full scan, e.g. after streams were written around the index */
+	public void scheduleStreamIndexFullScan() {
+		synchronized (lastIndexFullScanMs) {
+			lastIndexFullScanMs[0] = 0;
+			lastIndexFullScanMs[1] = 0;
+		}
+	}
+
+	private void refreshStreamIndex(com.king.redis.RedisConnection c, boolean isSubmitMq) {
+		long start = System.currentTimeMillis();
+		Set<String> all = c.scanAll("stream:*");
+		if (all == null) {
+			return;
+		}
+		Set<String> indexed = c.smembers(STREAM_INDEX_KEY);
+		List<String> missing = new ArrayList<String>();
+		for (String k : all) {
+			if (indexed == null || !indexed.contains(k)) {
+				missing.add(k);
+			}
+		}
+		if (!missing.isEmpty()) {
+			c.sadd(STREAM_INDEX_KEY, missing);
+		}
+		int removed = 0;
+		if (indexed != null) {
+			for (String k : indexed) {
+				// not found by the scan and no entries (nothing to read or claim; written again, it is added again)
+				if (!all.contains(k) && c.xlen(k) <= 0) {
+					c.srem(STREAM_INDEX_KEY, k);
+					removed++;
+				}
+			}
+		}
+		logger.info("Stream index refreshed by a full scan. isSubmitMq={}, streams={}, added={}, removed={}, costMs={}",
+				isSubmitMq, all.size(), missing.size(), removed, System.currentTimeMillis() - start);
+	}
+
+	static java.util.regex.Pattern globPattern(String glob) {
+		StringBuilder b = new StringBuilder();
+		for (char ch : glob.toCharArray()) {
+			if (ch == '*') b.append(".*");
+			else if (ch == '?') b.append('.');
+			else b.append(java.util.regex.Pattern.quote(String.valueOf(ch)));
+		}
+		return java.util.regex.Pattern.compile(b.toString());
+	}
+
 	public List<String> listResponsibleStreams(String pattern, boolean isSubmitMq) {
 		List<String> result = new ArrayList<String>();
-		Set<String> streams = isSubmitMq ? redisClient.keysSubmitMq(pattern) : redisClient.keysReportMq(pattern);
+		Set<String> streams = isSubmitMq ? streamKeys(pattern, true) : streamKeys(pattern, false);
 		if (streams == null || streams.isEmpty()) {
 			return result;
 		}
@@ -1504,7 +1684,7 @@ public class StreamQueueManager {
 		}
 		int every = Math.max(1, intProperty("RedisStreamMonitor.FullScanEveryCycles", 10));
 		if (backlogCycle % every == 0) {
-			Set<String> all = isSubmitMq ? redisClient.keysSubmitMq(pattern) : redisClient.keysReportMq(pattern);
+			Set<String> all = isSubmitMq ? streamKeys(pattern, true) : streamKeys(pattern, false);
 			if (all != null) {
 				streams.addAll(all);
 			}
@@ -1628,8 +1808,8 @@ public class StreamQueueManager {
 	private void scanAndClaimStreams(String pattern, String groupName, String consumerName, boolean isSubmitMq) {
 		try {
 			Set<String> streams = isSubmitMq 
-				? redisClient.keysSubmitMq(pattern)
-				: redisClient.keysReportMq(pattern);
+				? streamKeys(pattern, true)
+				: streamKeys(pattern, false);
 				
 			if (streams != null) {
 				for (String streamKey : streams) {
@@ -1664,6 +1844,7 @@ public class StreamQueueManager {
 			+ "  if src[i] == 'body' then body = src[i+1] end "
 			+ "end "
 			+ "redis.call('XADD', KEYS[2], 'MAXLEN', '~', ARGV[7], '*', unpack(f)) "
+			+ "redis.call('SADD', '" + STREAM_INDEX_KEY + "', KEYS[2]) "
 			+ "redis.call('XACK', KEYS[1], ARGV[1], ARGV[2]) "
 			+ "redis.call('XDEL', KEYS[1], ARGV[2]) "
 			+ "return {1, body}";

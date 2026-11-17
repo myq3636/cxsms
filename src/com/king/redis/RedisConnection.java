@@ -231,7 +231,7 @@ public class RedisConnection {
 				+ "if v == 1 or redis.call('TTL', KEYS[1]) == -1 then "
 				+ "redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1])); end; return v";
 		try (Jedis jedis = pool.getResource()) {
-			Object r = jedis.eval(script, Arrays.asList(key), Arrays.asList(String.valueOf(expireSeconds)));
+			Object r = evalCached(jedis, script, Arrays.asList(key), Arrays.asList(String.valueOf(expireSeconds)));
 			return r instanceof Long ? (Long) r : null;
 		} catch (Exception e) {
 			logger.error("incrWithExpire failed. key={}", key, e);
@@ -271,7 +271,7 @@ public class RedisConnection {
 				+ "if v then redis.call('DEL',KEYS[1]); redis.call('ZREM',KEYS[2],KEYS[1]); end;"
 				+ "return v";
 		try (Jedis jedis = pool.getResource()) {
-			Object value = jedis.eval(script, Arrays.asList(key, zsetKey), new ArrayList<String>());
+			Object value = evalCached(jedis, script, Arrays.asList(key, zsetKey), new ArrayList<String>());
 			return value == null ? null : value.toString();
 		} catch (Exception e) {
 			logger.error("consumePendingMessage failed. key={}, zsetKey={}", key, zsetKey, e);
@@ -287,7 +287,7 @@ public class RedisConnection {
 				+ "redis.call('ZADD',KEYS[2],ARGV[3],KEYS[1]);"
 				+ "return 1";
 		try (Jedis jedis = pool.getResource()) {
-			Object result = jedis.eval(script, Arrays.asList(key, zsetKey),
+			Object result = evalCached(jedis, script, Arrays.asList(key, zsetKey),
 					Arrays.asList(String.valueOf(expireTime), value, String.valueOf(score)));
 			return result != null && Long.parseLong(result.toString()) == 1L;
 		} catch (Exception e) {
@@ -331,7 +331,7 @@ public class RedisConnection {
 				+ "redis.call('setex', KEYS[1], tonumber(ARGV[2]), ARGV[1]); return 1; "
 				+ "else return 0; end";
 		try (Jedis jedis = pool.getResource()) {
-			Object result = jedis.eval(script, Arrays.asList(key),
+			Object result = evalCached(jedis, script, Arrays.asList(key),
 					Arrays.asList(value, String.valueOf(expireSeconds)));
 			return Long.valueOf(1L).equals(result);
 		} catch (Exception e) {
@@ -345,7 +345,7 @@ public class RedisConnection {
 				+ "redis.call('setex', KEYS[1], tonumber(ARGV[3]), ARGV[2]); return 1; "
 				+ "else return 0; end";
 		try (Jedis jedis = pool.getResource()) {
-			Object result = jedis.eval(script, Arrays.asList(key),
+			Object result = evalCached(jedis, script, Arrays.asList(key),
 					Arrays.asList(expectedValue, newValue, String.valueOf(expireSeconds)));
 			return Long.valueOf(1L).equals(result);
 		} catch (Exception e) {
@@ -358,7 +358,7 @@ public class RedisConnection {
 		String script = "if redis.call('get', KEYS[1]) == ARGV[1] then "
 				+ "return redis.call('del', KEYS[1]); else return 0; end";
 		try (Jedis jedis = pool.getResource()) {
-			Object result = jedis.eval(script, Arrays.asList(key), Arrays.asList(expectedValue));
+			Object result = evalCached(jedis, script, Arrays.asList(key), Arrays.asList(expectedValue));
 			return Long.valueOf(1L).equals(result);
 		} catch (Exception e) {
 			logger.error("deleteIfStringEquals failed. key={}", key, e);
@@ -648,7 +648,7 @@ public class RedisConnection {
 	public Set<String> zrangeByScore(String key, long minScore, long maxScore, int limit) {
 		String script = "return redis.call('ZRANGEBYSCORE', KEYS[1], ARGV[1], ARGV[2], 'LIMIT', 0, ARGV[3])";
 		try (Jedis jedis = pool.getResource()) {
-			Object result = jedis.eval(script, Arrays.asList(key),
+			Object result = evalCached(jedis, script, Arrays.asList(key),
 					Arrays.asList(String.valueOf(minScore), String.valueOf(maxScore),
 							String.valueOf(limit <= 0 ? 500 : limit)));
 			Set<String> set = new LinkedHashSet<>();
@@ -912,7 +912,7 @@ public class RedisConnection {
 			// 脚本里的ARGV参数
 			List<String> args = new ArrayList<>();
 			args.add(Integer.toString(num));
-			return (Long) jedis.eval(STOCK_LUA, keys, args);
+			return (Long) evalCached(jedis, STOCK_LUA, keys, args);
 		} catch (Exception e) {
 			logger.error("stock failed. key={}", key, e);
 			return null;
@@ -976,6 +976,7 @@ public class RedisConnection {
 			+ "args[#args+1] = ARGV[1] args[#args+1] = '*' "
 			+ "for i=5,#ARGV do args[#args+1] = ARGV[i] end "
 			+ "local id = redis.call('XADD', unpack(args)) "
+			+ "redis.call('SADD', 'idx:streams', KEYS[1]) "                 // StreamQueueManager.STREAM_INDEX_KEY
 			+ "redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4]) "
 			+ "return id";
 		try (Jedis jedis = pool.getResource()) {
@@ -987,7 +988,7 @@ public class RedisConnection {
 			if (fieldValues != null) {
 				argv.addAll(fieldValues);
 			}
-			Object r = jedis.eval(script, Arrays.asList(streamKey, doorbellZset), argv);
+			Object r = evalCached(jedis, script, Arrays.asList(streamKey, doorbellZset), argv);
 			return r == null ? null : String.valueOf(r);
 		} catch (Exception e) {
 			logger.error("xaddWithDoorbell failed. key={}, zset={}", streamKey, doorbellZset, e);
@@ -1086,7 +1087,7 @@ public class RedisConnection {
 				+ "if acked >= 1 then redis.call('XDEL', KEYS[1], ARGV[2]); end; "
 				+ "return acked";
 		try (Jedis jedis = pool.getResource()) {
-			Object result = jedis.eval(script, Arrays.asList(key),
+			Object result = evalCached(jedis, script, Arrays.asList(key),
 					Arrays.asList(groupName, id.toString()));
 			return result instanceof Long ? (Long) result : 0L;
 		} catch (Exception e) {
@@ -1209,7 +1210,7 @@ public class RedisConnection {
 				+ "end "
 				+ "return nil";
 		try (Jedis jedis = pool.getResource()) {
-			Object result = jedis.eval(script, Arrays.asList(fromKey, toKey),
+			Object result = evalCached(jedis, script, Arrays.asList(fromKey, toKey),
 					Arrays.asList(String.valueOf(dueScore), String.valueOf(processingScore)));
 			return result == null ? null : String.valueOf(result);
 		} catch (Exception e) {
@@ -1235,9 +1236,50 @@ public class RedisConnection {
 	 * Run a Lua script. Unlike most methods here a Redis error is thrown, so a caller
 	 * that must not ack on failure can tell "failed" from "returned nil".
 	 */
+	/** sha1 of each script text sent so far (at most SCRIPT_SHA_MAX texts) */
+	private static final java.util.concurrent.ConcurrentHashMap<String, String> SCRIPT_SHA = new java.util.concurrent.ConcurrentHashMap<String, String>();
+	private static final int SCRIPT_SHA_MAX = 1000;
+
+	/**
+	 * EVALSHA with the sha1 of the script, EVAL on NOSCRIPT (which also puts the script in the cache of this Redis
+	 * again, e.g. after a restart or a failover). The script text is sent and hashed once per Redis instead of on
+	 * every call; the result is the same as EVAL's (docs/Redis CPU瓶颈分析.md 5, item 1).
+	 */
+	static Object evalCached(Jedis jedis, String script, List<String> keys, List<String> args) {
+		String sha = SCRIPT_SHA.get(script);
+		if (sha == null) {
+			if (SCRIPT_SHA.size() >= SCRIPT_SHA_MAX) {
+				return jedis.eval(script, keys, args);
+			}
+			sha = sha1Hex(script);
+			SCRIPT_SHA.put(script, sha);
+		}
+		try {
+			return jedis.evalsha(sha, keys, args);
+		} catch (redis.clients.jedis.exceptions.JedisDataException e) {
+			if (e.getMessage() == null || !e.getMessage().startsWith("NOSCRIPT")) {
+				throw e;
+			}
+			return jedis.eval(script, keys, args);
+		}
+	}
+
+	static String sha1Hex(String script) {
+		try {
+			byte[] d = java.security.MessageDigest.getInstance("SHA-1").digest(script.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+			StringBuilder b = new StringBuilder(40);
+			for (byte x : d) {
+				b.append(Character.forDigit((x >> 4) & 0xf, 16)).append(Character.forDigit(x & 0xf, 16));
+			}
+			return b.toString();
+		} catch (java.security.NoSuchAlgorithmException e) {
+			throw new IllegalStateException(e);
+		}
+	}
+
 	public Object evalScript(String script, List<String> keys, List<String> args) {
 		try (Jedis jedis = pool.getResource()) {
-			return jedis.eval(script, keys, args);
+			return evalCached(jedis, script, keys, args);
 		}
 	}
 

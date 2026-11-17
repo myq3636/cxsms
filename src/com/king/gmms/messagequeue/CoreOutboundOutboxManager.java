@@ -54,6 +54,7 @@ public class CoreOutboundOutboxManager {
     private static final long DEFAULT_RESP_TIMEOUT_MS = TimeUnit.MINUTES.toMillis(3);
     private static final long DEFAULT_HARD_TIMEOUT_MS = TimeUnit.HOURS.toMillis(3);
     private static final int DEFAULT_PAYLOAD_TTL_SECONDS = (int) TimeUnit.HOURS.toSeconds(4);
+    private static final int DEFAULT_DONE_TTL_SECONDS = (int) TimeUnit.MINUTES.toSeconds(30);
 
     public enum Claim {
         /** first result of the attempt (or the retry of the same result entry): process it */
@@ -134,7 +135,7 @@ public class CoreOutboundOutboxManager {
         String resultId = msg.getRedisStreamID() == null ? "-" : msg.getRedisStreamID();
         Object r = redis().evalScript(CLAIM_LUA,
                 Arrays.asList(key, OUTBOX_TIMEOUT_ZSET, metaKey(key), key + OUTBOX_DONE_SUFFIX),
-                Arrays.asList(resultId, String.valueOf(payloadTtlSeconds())));
+                Arrays.asList(resultId, String.valueOf(doneTtlSeconds())));
         return Claim.valueOf(String.valueOf(r));
     }
 
@@ -384,6 +385,17 @@ public class CoreOutboundOutboxManager {
     private static long hardTimeoutMs() {
         return Math.max(positiveLongProperty("CoreOutboundOutboxHardTimeoutMs", DEFAULT_HARD_TIMEOUT_MS, 1000L),
                 respTimeoutMs());
+    }
+
+    /**
+     * How long the :done marker of a claimed attempt lives: it only has to outlast a second result of the same attempt
+     * (a submit_resp after the timeout result, the timeout after the real one), which comes within minutes; before it
+     * had the payload's TTL (4 hours, for the hard timeout) and at high TPS filled the submit Redis
+     * (docs/Redis CPU瓶颈分析.md 9).
+     */
+    private static int doneTtlSeconds() {
+        long ttlSeconds = positiveLongProperty("CoreOutboundOutboxDoneTTLSeconds", DEFAULT_DONE_TTL_SECONDS, 60L);
+        return ttlSeconds > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) ttlSeconds;
     }
 
     private static int payloadTtlSeconds() {

@@ -210,7 +210,8 @@ public class CoreMQMStreamConsumer {
                 } finally {
                     processingMap.remove(streamKey);
                     boolean hadPendingDoorbell = pendingDoorbellMap.remove(streamKey) != null;
-                    long remaining = queueManager.streamLength(streamKey, submitMq);
+                    // unread entries only (see StreamQueueManager.unreadEntries): the pending ones are the auto-claim's
+                    long remaining = hadPendingDoorbell ? 1 : queueManager.unreadEntries(streamKey, groupName, submitMq);
                     if (remaining > 0) {
                         queueManager.triggerDoorbell(streamKey, submitMq);
                         if (logger.isDebugEnabled()) {

@@ -132,6 +132,8 @@ public class Batch6IT extends ItSupport {
 		boot();
 		q = StreamQueueManager.getInstance();
 		props.setProperty("CoreMtLeaseMs", "800");
+		// these checks read the vendor DR stream by its name: the key without a shard
+		props.setProperty("CoreInboundDRShardEnable", "false");
 
 		// ---- B6-01 vendor DR: done, ack lost -> redelivery only acks ----
 		GmmsMessage a = inboundDr("B601");

@@ -378,16 +378,28 @@ public final class RouteCase {
 	volatile long soakMeasureFrom;
 	final Map<String, Long> soakSentAt = new ConcurrentHashMap<>(), soakDrSentAt = new ConcurrentHashMap<>();
 	final Set<String> soakFirstSeen = ConcurrentHashMap.newKeySet();
-	final Queue<Long> soakLatMt = new ConcurrentLinkedQueue<>(), soakLatDr = new ConcurrentLinkedQueue<>(), soakLatFull = new ConcurrentLinkedQueue<>();
+	final Hist soakLatMt = new Hist(), soakLatDr = new Hist(), soakLatFull = new Hist();
 
-	static String percentiles(Queue<Long> q) {
-		List<Long> v = new ArrayList<>(q);
-		if (v.isEmpty()) return "count=0";
-		Collections.sort(v);
-		long sum = 0;
-		for (long x : v) sum += x;
-		return String.format("count=%d avg=%d p50=%d p95=%d p99=%d max=%d", v.size(), sum / v.size(), v.get(v.size() / 2),
-				v.get(Math.min(v.size() - 1, (int) (v.size() * 0.95))), v.get(Math.min(v.size() - 1, (int) (v.size() * 0.99))), v.get(v.size() - 1));
+	/** latencies in ms: 1 ms buckets up to 60 s, so the memory stays the same at any TPS and length */
+	static final class Hist {
+		final java.util.concurrent.atomic.AtomicLongArray b = new java.util.concurrent.atomic.AtomicLongArray(60001);
+		final java.util.concurrent.atomic.LongAdder n = new java.util.concurrent.atomic.LongAdder(), sum = new java.util.concurrent.atomic.LongAdder();
+		final java.util.concurrent.atomic.AtomicLong max = new java.util.concurrent.atomic.AtomicLong();
+		void add(long ms) {
+			if (ms < 0) ms = 0;
+			b.incrementAndGet((int) Math.min(ms, 60000)); n.increment(); sum.add(ms); max.accumulateAndGet(ms, Math::max);
+		}
+		long at(double q) {
+			long want = (long) Math.ceil(n.sum() * q), c = 0;
+			for (int i = 0; i < b.length(); i++) { c += b.get(i); if (c >= want && c > 0) return i; }
+			return max.get();
+		}
+	}
+
+	static String percentiles(Hist h) {
+		long n = h.n.sum();
+		if (n == 0) return "count=0";
+		return String.format("count=%d avg=%d p50=%d p95=%d p99=%d max=%d", n, h.sum.sum() / n, h.at(0.5), h.at(0.95), h.at(0.99), h.max.get());
 	}
 	final AtomicLong soakRespOk = new AtomicLong(), soakRespErr = new AtomicLong(), soakDr = new AtomicLong();
 
@@ -410,13 +422,29 @@ public final class RouteCase {
 			for (int i = 0; i < w; i++) pick.add(specs.get(n - 1));
 		}
 		soak = true;
-		soakPattern = Pattern.compile(Pattern.quote(p.getProperty("case.id", "S")) + "-S[0-9]+(?![0-9])");
+		// RT_SOAK_TAG (bin/run_hightps.sh: the start time): the markers of one run differ from the ones of an earlier run,
+		// whose late DRs (RDQ resends) may still come in
+		String mark = p.getProperty("case.id", "S") + (System.getenv("RT_SOAK_TAG") == null ? "" : System.getenv("RT_SOAK_TAG")) + "-S";
+		soakPattern = Pattern.compile(Pattern.quote(mark) + "[0-9]+(?![0-9])");
 		Path phases = System.getenv("RT_MEMDIR") == null ? out.resolve("phases.txt") : Paths.get(System.getenv("RT_MEMDIR"), "phases.txt");
 		long start = System.currentTimeMillis();
 		Files.write(phases, ("loadStart=" + start + "\nwarmupEnd=" + (start + warmup) + "\n").getBytes(StandardCharsets.UTF_8));
 		Random rnd = new Random();
 		long sent = 0, sendErr = 0, segs = 0, reconnects = 0, reloadsDone = 0, nextReconnect = start + reconnectEvery, nextReload = start + reloadEvery;
 		List<String> users = new ArrayList<>(new TreeSet<>(customers.keySet()));
+		// soak.binds: binds per customer (the first is customers.get(user), re-bound by soak.reconnectSec), round robin
+		int binds = Integer.parseInt(p.getProperty("soak.binds", "1").trim());
+		Map<String, List<Customer>> extra = new HashMap<>();
+		for (String u : users) {
+			List<Customer> l = new ArrayList<>();
+			for (int i = 1; i < binds; i++) {
+				Customer nc = new Customer(u);
+				nc.bind(p.getProperty("server.host"), Integer.parseInt(p.getProperty("customer." + u + ".port", p.getProperty("server.port")).trim()), p.getProperty("customer.password"));
+				l.add(nc);
+			}
+			extra.put(u, l);
+		}
+		long sendTurn = 0;
 		Map<String, Long> bySpec = new TreeMap<>();
 		StringBuilder events = new StringBuilder();
 		while (true) {
@@ -430,17 +458,21 @@ public final class RouteCase {
 				StringBuilder r = new StringBuilder(t.recipient);
 				while (r.length() < rlen) r.append(rnd.nextInt(10));
 				s.recipient = r.toString();
-				Copy c = new Copy(s, t.label, p.getProperty("case.id", "S") + "-S" + (sent + 1));
+				Copy c = new Copy(s, t.label, mark + (sent + 1));
 				c.text = c.marker + " " + t.label;
 				if (now >= start + warmup) soakSentAt.put(c.marker, now);     // latency after the warm-up only
 				if (s.parts > 1) {
 					StringBuilder x = new StringBuilder(c.text);
-					while (x.length() < 134 * (s.parts - 1) + 100) x.append(" long sms segment test");
+					// the marker again and again: every segment (also after the Client splits it again) holds a whole one
+					while (x.length() < 134 * (s.parts - 1) + 100) x.append(' ').append(c.marker).append(' ').append(t.label);
 					c.text = x.substring(0, 134 * (s.parts - 1) + 100);
 				}
 				sent++;
 				bySpec.merge(t.label, 1L, Long::sum);
-				try { customers.get(s.customer).submit(c, s.parts); segs += Math.max(1, s.parts); } catch (Exception e) { sendErr++; }
+				List<Customer> more = extra.get(s.customer);
+				int turn = (int) (sendTurn++ % (more.size() + 1));
+				Customer to = turn == 0 ? customers.get(s.customer) : more.get(turn - 1);
+				try { to.submit(c, s.parts); segs += Math.max(1, s.parts); } catch (Exception e) { sendErr++; }
 			}
 			if (reconnectEvery > 0 && now >= nextReconnect && !users.isEmpty()) {
 				String u = users.get((int) (reconnects % users.size()));
@@ -464,7 +496,7 @@ public final class RouteCase {
 				reloadsDone++;
 				nextReload += reloadEvery;
 			}
-			Thread.sleep(50);
+			Thread.sleep(tps > 500 ? 5 : 50);
 		}
 		long loadEnd = System.currentTimeMillis();
 		Files.write(phases, ("loadEnd=" + loadEnd + "\n").getBytes(StandardCharsets.UTF_8), StandardOpenOption.APPEND);
@@ -497,6 +529,7 @@ public final class RouteCase {
 		System.out.print(sum);
 		System.out.println("result: " + out);
 		for (Customer c : customers.values()) try { c.cs.close(); } catch (IOException e) { }
+		for (List<Customer> l : extra.values()) for (Customer c : l) try { c.cs.close(); } catch (IOException e) { }
 		return pass;
 	}
 	final Map<String, Copy> byMarker = new ConcurrentHashMap<>();

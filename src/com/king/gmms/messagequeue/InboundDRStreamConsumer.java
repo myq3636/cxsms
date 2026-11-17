@@ -174,9 +174,9 @@ public class InboundDRStreamConsumer {
                 logger.error("Error processing inbound DR stream: " + streamKey, e);
             } finally {
                 processingMap.remove(streamKey);
-                pendingDoorbellMap.remove(streamKey);
-                // re-ring whenever entries remain (the task may have stopped on its budget)
-                if (queueManager.streamLength(streamKey, false) > 0) {
+                boolean rung = pendingDoorbellMap.remove(streamKey) != null;
+                // re-ring for unread entries (also after the budget); the pending ones are the auto-claim's
+                if (rung || queueManager.unreadEntries(streamKey, groupName, false) > 0) {
                     queueManager.triggerDoorbell(streamKey, false);
                 }
             }

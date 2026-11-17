@@ -183,58 +183,59 @@ public class SmppServerSessionRegistry {
 		}
 		int removed = 0;
 		try {
-			String pattern = DETAIL_PREFIX + "*:" + safePart(module) + "|*";
-			int scanCount = Math.max(10, intProperty("SmppServerRegistryLegacyCleanupScanCount", 200));
-			int maxKeys = Math.max(1, intProperty("SmppServerRegistryLegacyCleanupMaxKeysPerRun", 5000));
 			boolean legacyCleanupEnabled = booleanProperty("SmppServerRegistryLegacyCleanupEnable", true);
 			long now = System.currentTimeMillis();
 			boolean allowLegacyCleanup = legacyCleanupEnabled && now - lastLegacyCleanupMs >= legacyCleanupIntervalMs();
+			// every round: the detail keys of this module from its index (no SCAN of the keyspace, docs/Redis CPU瓶颈分析.md 5, item 3)
+			String index = moduleIndexKey(module);
+			Set<String> indexed = redis.getStateRedis().smembers(index);
 			int scanned = 0;
-			String cursor = isBlank(moduleCleanupCursor) ? "0" : moduleCleanupCursor;
-			while (scanned < maxKeys) {
-				ScanResult<String> result = redis.getStateRedis().scanKeys(cursor, pattern, scanCount);
-				if (result == null) {
-					break;
-				}
-				cursor = result.getCursor();
-				List<String> keys = result.getResult();
-				if (keys != null) {
-					for (String key : keys) {
-						if (scanned >= maxKeys) {
-							break;
-						}
-						scanned++;
-						ParsedDetailKey parsedKey = parseDetailKey(key);
-						if (parsedKey == null) {
-							continue;
-						}
-						boolean live = liveSessionKeys != null && liveSessionKeys.contains(parsedKey.sessionKey);
-						if (live && !allowLegacyCleanup) {
-							continue;
-						}
-						String detail = redis.getString(key);
-						Map<String, String> detailMap = parse(detail);
-						String detailModule = detailMap.get("module");
-						if (!isBlank(detailModule) && !module.equalsIgnoreCase(detailModule)) {
-							continue;
-						}
-						SessionSnapshot snapshot = snapshotFromDetail(parsedKey.ossid, parsedKey.sessionKey, detailMap);
-						boolean stale = !live && !writtenSince(detailMap, roundStartMs);
-						boolean legacy = allowLegacyCleanup && snapshot != null
-								&& !parsedKey.sessionKey.equals(snapshot.slotKey);
-						if (!stale && !legacy) {
-							continue;
-						}
-						removeSessionKey(redis, parsedKey.ossid, parsedKey.sessionKey, snapshot);
-						removed++;
+			if (indexed != null) {
+				for (String key : indexed) {
+					scanned++;
+					int r = examine(redis, key, module, liveSessionKeys, roundStartMs, allowLegacyCleanup, index);
+					if (r > 0) {
+						removed += r;
 					}
 				}
-				if ("0".equals(cursor)) {
-					break;
-				}
 			}
-			moduleCleanupCursor = cursor == null ? "0" : cursor;
+			// every SmppServerRegistryLegacyCleanupIntervalMs: the SCAN, for detail keys not in the index (written before it)
 			if (allowLegacyCleanup) {
+				String pattern = DETAIL_PREFIX + "*:" + safePart(module) + "|*";
+				int scanCount = Math.max(10, intProperty("SmppServerRegistryLegacyCleanupScanCount", 200));
+				int maxKeys = Math.max(1, intProperty("SmppServerRegistryLegacyCleanupMaxKeysPerRun", 5000));
+				int seen = 0;
+				String cursor = isBlank(moduleCleanupCursor) ? "0" : moduleCleanupCursor;
+				while (seen < maxKeys) {
+					ScanResult<String> result = redis.getStateRedis().scanKeys(cursor, pattern, scanCount);
+					if (result == null) {
+						break;
+					}
+					cursor = result.getCursor();
+					List<String> keys = result.getResult();
+					if (keys != null) {
+						for (String key : keys) {
+							if (seen >= maxKeys) {
+								break;
+							}
+							seen++;
+							if (indexed != null && indexed.contains(key)) {
+								continue;
+							}
+							int r = examine(redis, key, module, liveSessionKeys, roundStartMs, true, index);
+							if (r > 0) {
+								removed += r;
+							} else if (r == 0) {
+								redis.getStateRedis().sadd(index, key);          // kept: in the index from now on
+							}
+						}
+					}
+					if ("0".equals(cursor)) {
+						break;
+					}
+				}
+				scanned += seen;
+				moduleCleanupCursor = cursor == null ? "0" : cursor;
 				lastLegacyCleanupMs = now;
 			}
 			if (removed > 0) {
@@ -246,6 +247,43 @@ public class SmppServerSessionRegistry {
 			log.warn("Failed to reconcile SMPP server bind registry.", e);
 		}
 		return removed;
+	}
+
+	/**
+	 * One detail key of this module: removed when its session is not live here and was not written in this round, or
+	 * (legacy cleanup) its slot holds another session. Returns 1 removed, 0 kept, -1 not this module's / not a detail key
+	 * / gone (a gone one leaves the index).
+	 */
+	private int examine(RedisClient redis, String key, String module, Set<String> liveSessionKeys, long roundStartMs,
+			boolean allowLegacyCleanup, String index) {
+		ParsedDetailKey parsedKey = parseDetailKey(key);
+		if (parsedKey == null) {
+			redis.getStateRedis().srem(index, key);
+			return -1;
+		}
+		boolean live = liveSessionKeys != null && liveSessionKeys.contains(parsedKey.sessionKey);
+		if (live && !allowLegacyCleanup) {
+			return 0;
+		}
+		String detail = redis.getString(key);
+		if (detail == null) {
+			redis.getStateRedis().srem(index, key);                    // expired or removed elsewhere
+			return -1;
+		}
+		Map<String, String> detailMap = parse(detail);
+		String detailModule = detailMap.get("module");
+		if (!isBlank(detailModule) && !module.equalsIgnoreCase(detailModule)) {
+			return -1;
+		}
+		SessionSnapshot snapshot = snapshotFromDetail(parsedKey.ossid, parsedKey.sessionKey, detailMap);
+		boolean stale = !live && !writtenSince(detailMap, roundStartMs);
+		boolean legacy = allowLegacyCleanup && snapshot != null
+				&& !parsedKey.sessionKey.equals(snapshot.slotKey);
+		if (!stale && !legacy) {
+			return 0;
+		}
+		removeSessionKey(redis, parsedKey.ossid, parsedKey.sessionKey, snapshot);
+		return 1;
 	}
 
 	private static boolean writtenSince(Map<String, String> detailMap, long ms) {
@@ -427,6 +465,7 @@ public class SmppServerSessionRegistry {
 				for (SessionSnapshot snapshot : snapshots) {
 					List<Response<?>> r = new ArrayList<Response<?>>(7);
 					r.add(p.setex(detailKey(snapshot.ossid, snapshot.sessionKey), (long) ttlSeconds, detail(snapshot, now, ttlSeconds)));
+					r.add(p.sadd(moduleIndexKey(snapshot.module), detailKey(snapshot.ossid, snapshot.sessionKey)));
 					r.add(p.setex(slotKey(snapshot), (long) ttlSeconds, snapshot.sessionKey));
 					r.add(p.zadd(activeKey(snapshot.ossid), now, snapshot.sessionKey));
 					r.add(p.zadd(activeModuleKey(snapshot.ossid, snapshot.module), now, snapshot.sessionKey));
@@ -550,6 +589,8 @@ public class SmppServerSessionRegistry {
 		} catch (Exception ignored) {
 		}
 		redis.del(detailKey);
+		redis.getStateRedis().srem(moduleIndexKey(snapshot != null && !isBlank(snapshot.module) ? snapshot.module
+				: safe(System.getProperty("module", ""))), detailKey);
 		redis.zrem(activeKey(ossid), new String[] { sessionKey });
 		if (snapshot != null) {
 			redis.zrem(activeModuleKey(ossid, snapshot.module), new String[] { sessionKey });
@@ -664,6 +705,11 @@ public class SmppServerSessionRegistry {
 		} catch (Exception e) {
 			return defaultValue;
 		}
+	}
+
+	/** the detail keys a Server module wrote (a SET): its reconcile reads them instead of a SCAN */
+	private String moduleIndexKey(String module) {
+		return "smpp:server:idx:" + safePart(module);
 	}
 
 	private String detailKey(int ossid, String sessionKey) {

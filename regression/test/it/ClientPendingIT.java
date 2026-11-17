@@ -73,7 +73,7 @@ public class ClientPendingIT extends ItSupport {
 			try (Jedis j = new Jedis("127.0.0.1", 16379)) {
 				j.monitor(new JedisMonitor() {
 					public void onCommand(String command) {
-						if (command.contains(" \"EVAL\" ") && command.contains("smpp:pending:submit:")) pendingCalls.incrementAndGet();
+						if ((command.contains(" \"EVAL\" ") || command.contains(" \"EVALSHA\" ")) && command.contains("smpp:pending:submit:")) pendingCalls.incrementAndGet();
 					}
 				});
 			} catch (Exception e) { }
