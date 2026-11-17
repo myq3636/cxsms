@@ -17,6 +17,7 @@ ConfigReloadIT it.ConfigReloadIT it
 Batch4IT it.Batch4IT it
 Batch5IT it.Batch5IT it
 Batch6IT it.Batch6IT it
+AttemptBatchIT it.AttemptBatchIT it
 Batch7IT it.Batch7IT it
 ClientBatch1IT it.ClientBatch1IT it
 ClientBatch2IT it.ClientBatch2IT it

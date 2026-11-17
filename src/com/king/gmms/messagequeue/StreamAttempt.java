@@ -80,12 +80,6 @@ public final class StreamAttempt {
 			+ "table.insert(all, 1, 'RUN') "
 			+ "return all";
 
-	// KEYS[1]=marker ARGV[1]=releaseLease(1/0) ARGV[2..]=field,value...
-	private static final String FLUSH_LUA =
-			"if #ARGV > 1 then redis.call('HSET', KEYS[1], unpack(ARGV, 2)) end "
-			+ "if ARGV[1] == '1' then redis.call('HDEL', KEYS[1], '" + LEASE + "') end "
-			+ "return 1";
-
 	// KEYS[1]=marker ARGV[1]=field
 	private static final String FORGET_LUA = "return redis.call('HDEL', KEYS[1], ARGV[1])";
 
@@ -417,9 +411,241 @@ public final class StreamAttempt {
 			args.add(DONE);
 			args.add("1");
 		}
-		redis.evalScript(FLUSH_LUA, Arrays.asList(markerKey), args);
+		// HSET of the fields, HDEL of the lease when it is given up: plain commands on one pipeline, in this order
+		// (the earlier FLUSH Lua did the same two steps; docs/StreamAttempt按批处理设计.md 2.4). An error is thrown as before.
+		final Map<String, String> fields = new LinkedHashMap<String, String>();
+		for (int i = 1; i + 1 < args.size(); i += 2) {
+			fields.put(args.get(i), args.get(i + 1));
+		}
+		final List<redis.clients.jedis.Response<?>> responses = new ArrayList<redis.clients.jedis.Response<?>>(2);
+		redis.runPipeline(pl -> {
+			if (!fields.isEmpty()) {
+				responses.add(pl.hset(markerKey, fields));
+			}
+			if (releaseLease) {
+				responses.add(pl.hdel(markerKey, LEASE));
+			}
+		});
+		for (redis.clients.jedis.Response<?> r : responses) {
+			r.get();
+		}
 		recorded.putAll(pending);
 		pending.clear();
+	}
+
+	// ---------------------------------------------------------------- one batch of entries (docs/StreamAttempt按批处理设计.md)
+
+	/** CoreStreamAttemptBatch: claim and ack a batch of stream entries in one Lua each */
+	public static boolean batchEnabled() {
+		return !"false".equalsIgnoreCase(GmmsUtility.getInstance().getCommonProperty("CoreStreamAttemptBatch", "true").trim());
+	}
+
+	// KEYS = markers; ARGV as CLAIM_LUA. For each marker the CLAIM_LUA decision: {'DONE'}, {'BUSY'} or {'RUN', fields...}
+	private static final String CLAIM_BATCH_LUA =
+			"local out = {} "
+			+ "for i = 1, #KEYS do "
+			+ "  local k = KEYS[i] "
+			+ "  if redis.call('HEXISTS', k, '" + DONE + "') == 1 then out[i] = {'DONE'} "
+			+ "  else "
+			+ "    local busy = false "
+			+ "    local lease = redis.call('HGET', k, '" + LEASE + "') "
+			+ "    if lease then "
+			+ "      local sep = string.find(lease, '|', 1, true) "
+			+ "      if sep then "
+			+ "        local owner = string.sub(lease, 1, sep - 1) "
+			+ "        local at = tonumber(string.sub(lease, sep + 1)) "
+			+ "        if owner ~= ARGV[1] and at and tonumber(ARGV[2]) - at < tonumber(ARGV[3]) then busy = true end "
+			+ "      end "
+			+ "    end "
+			+ "    if busy then out[i] = {'BUSY'} "
+			+ "    else "
+			+ "      redis.call('HSET', k, '" + LEASE + "', ARGV[1] .. '|' .. ARGV[2]) "
+			+ "      redis.call('EXPIRE', k, ARGV[4]) "
+			+ "      local all = redis.call('HGETALL', k) "
+			+ "      table.insert(all, 1, 'RUN') "
+			+ "      out[i] = all "
+			+ "    end "
+			+ "  end "
+			+ "end "
+			+ "return out";
+
+	// KEYS[1]=stream KEYS[2..]=markers ARGV[1]=group ARGV[2..]=ids: ACK_LUA for each entry, returns the XACK results
+	private static final String ACK_BATCH_LUA =
+			"local r = {} "
+			+ "for i = 2, #KEYS do "
+			+ "  local acked = redis.call('XACK', KEYS[1], ARGV[1], ARGV[i]) "
+			+ "  if acked > 0 then redis.call('XDEL', KEYS[1], ARGV[i]) end "
+			+ "  redis.call('DEL', KEYS[i]) "
+			+ "  r[#r + 1] = acked "
+			+ "end "
+			+ "return r";
+
+	/** Called for each entry acked at the end of a batch: its stream id (as read) and whether its XACK removed it. */
+	public interface AckListener {
+		void acked(GmmsMessage msg, String redisId, boolean acked);
+	}
+
+	/**
+	 * The attempts of one batch read from a stream: claimed in one Lua ({@link #claim}), each entry bound to the thread
+	 * when it is processed ({@link #begin}), its flags and _done written when it is done ({@link #finished}, as
+	 * {@link StreamAttempt#finish} does), all acked in one Lua at the end ({@link #ackAll}). The side effects, their
+	 * flags and when they are written are those of one entry at a time; only the claim and the ack are shared.
+	 */
+	public static final class Batch {
+		private final String streamKey;
+		private final String group;
+		private final RedisConnection redis;
+		private final boolean trackDone;
+		private final String owner;
+		private final long claimedAt;
+		/** stream entry id -> its claim; an entry whose marker repeats in the batch is not here */
+		private final Map<String, Object[]> claims = new HashMap<String, Object[]>();
+		/**
+		 * The entry id of each message as read: processing changes it (a produce sets the id of the new entry on the
+		 * same object, e.g. the MT written to stream:mt:routed), the ack needs the id in this stream.
+		 */
+		private final Map<GmmsMessage, String> readIds = new java.util.IdentityHashMap<GmmsMessage, String>();
+		private final List<GmmsMessage> toAck = new ArrayList<GmmsMessage>();
+		private final List<String> toAckIds = new ArrayList<String>();
+		private final List<String> toAckMarkers = new ArrayList<String>();
+
+		private Batch(String streamKey, String group, RedisConnection redis, boolean trackDone, String owner, long claimedAt) {
+			this.streamKey = streamKey;
+			this.group = group;
+			this.redis = redis;
+			this.trackDone = trackDone;
+			this.owner = owner;
+			this.claimedAt = claimedAt;
+		}
+
+		/**
+		 * Claim the entries of a batch in one Lua. entries=true: vendor DRs, results (marker per entry, _done);
+		 * false: MTs (marker per msgId). An entry whose marker comes again in the batch is left out ({@link #covers}
+		 * false): the caller processes it on its own after {@link #ackAll}, when the first one's marker is gone.
+		 * Redis errors are thrown: nothing of the batch may be processed.
+		 */
+		public static Batch claim(String streamKey, String group, List<GmmsMessage> msgs, RedisConnection redis,
+				boolean entries, String owner) {
+			long now = System.currentTimeMillis();
+			Batch b = new Batch(streamKey, group, redis, entries, owner, now);
+			List<String> keys = new ArrayList<String>();
+			List<String> ids = new ArrayList<String>();
+			java.util.Set<String> seen = new java.util.HashSet<String>();
+			for (GmmsMessage m : msgs) {
+				String id = m.getRedisStreamID();
+				String key = entries ? entryMarkerKey(streamKey, id) : markerKey(m);
+				if (id == null || !seen.add(key)) {
+					continue;
+				}
+				b.readIds.put(m, id);
+				keys.add(key);
+				ids.add(id);
+			}
+			if (keys.isEmpty()) {
+				return b;
+			}
+			List<String> args = Arrays.asList(owner, String.valueOf(now),
+					String.valueOf(longProperty("CoreMtLeaseMs", 60000L)),
+					String.valueOf(longProperty("CoreMtMarkerTtlSeconds", 7L * 24 * 3600)));
+			List<?> out = (List<?>) redis.evalScript(CLAIM_BATCH_LUA, keys, args);
+			for (int i = 0; i < keys.size(); i++) {
+				List<?> one = (List<?>) out.get(i);
+				String state = String.valueOf(one.get(0));
+				Map<String, String> recorded = new HashMap<String, String>();
+				for (int j = 1; j + 1 < one.size(); j += 2) {
+					recorded.put(String.valueOf(one.get(j)), String.valueOf(one.get(j + 1)));
+				}
+				b.claims.put(ids.get(i), new Object[] { keys.get(i), Start.valueOf(state), recorded });
+			}
+			return b;
+		}
+
+		/** Whether the entry was claimed by this batch (false: its marker came again, process it on its own) */
+		public boolean covers(GmmsMessage msg) {
+			return msg != null && readIds.containsKey(msg);
+		}
+
+		/**
+		 * The claim of this entry, as {@link StreamAttempt#begin} returns it; on RUN the attempt is bound to the
+		 * thread. After half the lease (CoreMtLeaseMs) since the batch claim the entry is claimed again on its own,
+		 * so that the lease is fresh when its processing starts.
+		 */
+		public Start begin(GmmsMessage msg) {
+			Object[] c = claims.get(readIds.get(msg));
+			String key = (String) c[0];
+			if (System.currentTimeMillis() - claimedAt > longProperty("CoreMtLeaseMs", 60000L) / 2) {
+				return StreamAttempt.claim(key, redis, trackDone, owner, msg);
+			}
+			Start state = (Start) c[1];
+			if (state == Start.BUSY) {
+				return Start.BUSY;
+			}
+			if (state == Start.DONE) {
+				log.info(msg, "Redelivered entry already processed completely, only acked. marker={}", key);
+				return Start.DONE;
+			}
+			@SuppressWarnings("unchecked")
+			Map<String, String> recorded = new HashMap<String, String>((Map<String, String>) c[2]);
+			current.set(new StreamAttempt(key, redis, trackDone, recorded));
+			if (recorded.size() > 1) {
+				log.info(msg, "Redelivered, skipping side effects already done: {}", recorded.keySet());
+			}
+			return Start.RUN;
+		}
+
+		/**
+		 * The entry is processed: its flags (and _done for entries) are written and its after-done actions run now, as
+		 * {@link StreamAttempt#finish} does; the ack waits for {@link #ackAll}.
+		 */
+		public void finished(GmmsMessage msg) {
+			StreamAttempt a = current.get();
+			current.remove();
+			String id = readIds.get(msg);
+			Object[] c = claims.get(id);
+			if (a != null) {
+				a.flush(false, a.trackDone);
+				for (Runnable action : a.afterDone) {
+					try {
+						action.run();
+					} catch (Exception e) {
+						log.warn("Attempt after-done action failed. marker={}", a.markerKey, e);
+					}
+				}
+			}
+			toAck.add(msg);
+			toAckIds.add(id);
+			toAckMarkers.add(a != null ? a.markerKey : (String) c[0]);
+		}
+
+		/** An entry an earlier attempt finished (Start.DONE): only acked, with the batch */
+		public void done(GmmsMessage msg) {
+			String id = readIds.get(msg);
+			Object[] c = claims.get(id);
+			toAck.add(msg);
+			toAckIds.add(id);
+			toAckMarkers.add((String) c[0]);
+		}
+
+		/** XACK+XDEL+DEL marker of the finished entries in one Lua; listener gets each entry's result. Errors are thrown. */
+		public void ackAll(AckListener listener) {
+			if (toAck.isEmpty()) {
+				return;
+			}
+			List<String> keys = new ArrayList<String>(toAckMarkers.size() + 1);
+			keys.add(streamKey);
+			keys.addAll(toAckMarkers);
+			List<String> args = new ArrayList<String>(toAck.size() + 1);
+			args.add(group);
+			args.addAll(toAckIds);
+			List<?> r = (List<?>) redis.evalScript(ACK_BATCH_LUA, keys, args);
+			for (int i = 0; i < toAck.size(); i++) {
+				Object v = i < r.size() ? r.get(i) : null;
+				listener.acked(toAck.get(i), toAckIds.get(i), v instanceof Long && (Long) v > 0);
+			}
+			toAck.clear();
+			toAckIds.clear();
+			toAckMarkers.clear();
+		}
 	}
 
 	private static long longProperty(String key, long defaultValue) {

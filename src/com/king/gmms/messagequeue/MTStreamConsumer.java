@@ -156,9 +156,22 @@ public class MTStreamConsumer {
                     }
 
                     long claimIdleMs = queueManager.getAutoClaimIdleMs();
+                    StreamAttempt.Batch batch = claimBatch(streamKey, messages);
+                    if (batch == null && StreamAttempt.enabled() && StreamAttempt.batchEnabled()) {
+                        break; // the batch claim failed: the entries stay pending for the auto-claim
+                    }
+                    List<GmmsMessage> later = new java.util.ArrayList<GmmsMessage>();
                     for (GmmsMessage msg : messages) {
+                        if (batch != null && !batch.covers(msg)) {
+                            later.add(msg);  // its marker came again in the batch: on its own, after the ack
+                            continue;
+                        }
                         // older than the idle time: auto-claim may have taken this entry too
-                        processMessage(streamKey, msg, System.currentTimeMillis() - readAt >= claimIdleMs);
+                        processMessage(streamKey, msg, System.currentTimeMillis() - readAt >= claimIdleMs, batch);
+                    }
+                    ackBatch(streamKey, batch);
+                    for (GmmsMessage msg : later) {
+                        processMessage(streamKey, msg, System.currentTimeMillis() - readAt >= claimIdleMs, null);
                     }
                     if (budget.spent()) {
                         break; // give the stream back, the finally re-rings it
@@ -188,10 +201,55 @@ public class MTStreamConsumer {
     }
 
     private void processMessage(String streamKey, GmmsMessage msg) {
-        processMessage(streamKey, msg, false);
+        processMessage(streamKey, msg, false, null);
     }
 
     private void processMessage(String streamKey, GmmsMessage msg, boolean mayBeClaimed) {
+        processMessage(streamKey, msg, mayBeClaimed, null);
+    }
+
+    /**
+     * The attempts of a batch claimed in one Lua (CoreStreamAttemptBatch, docs/StreamAttempt按批处理设计.md), null when
+     * the entries are claimed one by one. A Redis error is logged and null returned with batches on: the caller
+     * leaves the entries pending.
+     */
+    private StreamAttempt.Batch claimBatch(String streamKey, List<GmmsMessage> messages) {
+        if (!StreamAttempt.enabled() || !StreamAttempt.batchEnabled()) {
+            return null;
+        }
+        try {
+            return StreamAttempt.Batch.claim(streamKey, groupName, messages,
+                    com.king.redis.RedisClient.getInstance().getSubmitMqRedis(), false,
+                    consumerName + ":" + Thread.currentThread().getId());
+        } catch (Exception e) {
+            logger.error("MT batch claim failed, {} entries left pending for the auto-claim. streamKey={}",
+                    messages.size(), streamKey, e);
+            return null;
+        }
+    }
+
+    /** XACK+XDEL+DEL marker of the batch's finished entries in one Lua; a failure leaves them pending */
+    private void ackBatch(final String streamKey, StreamAttempt.Batch batch) {
+        if (batch == null) {
+            return;
+        }
+        try {
+            batch.ackAll(new StreamAttempt.AckListener() {
+                public void acked(GmmsMessage msg, String redisId, boolean acked) {
+                    queueManager.traceAck(streamKey, groupName, redisId, msg, true, acked);
+                    if (!acked) {
+                        logger.warn(msg, "MT stream ack failed after process success. streamKey={}, sourceRedisId={}",
+                                streamKey, redisId);
+                    }
+                }
+            });
+        } catch (Exception e) {
+            logger.error("MT batch ack failed, the entries stay pending (redelivered, their side effects are flagged). streamKey={}",
+                    streamKey, e);
+        }
+    }
+
+    private void processMessage(String streamKey, GmmsMessage msg, boolean mayBeClaimed, StreamAttempt.Batch batch) {
         long start = System.nanoTime();
         String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
         try {
@@ -200,7 +258,7 @@ public class MTStreamConsumer {
             MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
                     MetricsNames.STAGE_IN_SUBMIT, msg, false, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
             boolean attempt = StreamAttempt.enabled();
-            if (attempt && StreamAttempt.begin(msg, consumerName + ":" + Thread.currentThread().getId())
+            if (attempt && (batch != null ? batch.begin(msg) : StreamAttempt.begin(msg, consumerName + ":" + Thread.currentThread().getId()))
                     == StreamAttempt.Start.BUSY) {
                 logger.info(msg, "MT is being processed by another consumer, left pending. streamKey={}, redisId={}",
                         streamKey, sourceRedisId);
@@ -220,7 +278,9 @@ public class MTStreamConsumer {
                     StreamAttempt.abandon();
                 }
             }
-            if (processed) {
+            if (processed && attempt && batch != null) {
+                batch.finished(msg);   // flags written now, acked with the batch
+            } else if (processed) {
                 // with an attempt the ack also removes its marker
                 boolean acked = attempt ? StreamAttempt.finish(streamKey, groupName, sourceRedisId)
                         : queueManager.ackById(streamKey, groupName, sourceRedisId, msg, true);

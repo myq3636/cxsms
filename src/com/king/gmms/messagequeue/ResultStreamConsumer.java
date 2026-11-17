@@ -161,10 +161,16 @@ public class ResultStreamConsumer {
                     }
 
                     long claimIdleMs = queueManager.getAutoClaimIdleMs();
+                    StreamAttempt.Batch batch = claimBatch(streamKey, messages);
+                    if (batch == null && StreamAttempt.drResultEnabled() && StreamAttempt.batchEnabled()) {
+                        break; // the batch claim failed: the entries stay pending for the auto-claim
+                    }
                     for (GmmsMessage msg : messages) {
                         // older than the idle time: auto-claim may have taken this entry too
-                        processResult(streamKey, msg, System.currentTimeMillis() - readAt >= claimIdleMs);
+                        processResult(streamKey, msg, System.currentTimeMillis() - readAt >= claimIdleMs,
+                                batch != null && batch.covers(msg) ? batch : null);
                     }
+                    ackBatch(streamKey, batch);
                     if (budget.spent()) {
                         break; // give the stream back, the finally re-rings it
                     }
@@ -197,10 +203,51 @@ public class ResultStreamConsumer {
     }
 
     private void processResult(String streamKey, GmmsMessage msg) {
-        processResult(streamKey, msg, false);
+        processResult(streamKey, msg, false, null);
     }
 
     private void processResult(String streamKey, GmmsMessage msg, boolean mayBeClaimed) {
+        processResult(streamKey, msg, mayBeClaimed, null);
+    }
+
+    /** The attempts of a batch claimed in one Lua (CoreStreamAttemptBatch), null when claimed one by one or on a Redis error */
+    private StreamAttempt.Batch claimBatch(String streamKey, List<GmmsMessage> messages) {
+        if (!StreamAttempt.drResultEnabled() || !StreamAttempt.batchEnabled()) {
+            return null;
+        }
+        try {
+            return StreamAttempt.Batch.claim(streamKey, groupName, messages,
+                    com.king.redis.RedisClient.getInstance().getReportMqRedis(), true,
+                    consumerName + ":" + Thread.currentThread().getId());
+        } catch (Exception e) {
+            logger.error("Result batch claim failed, {} entries left pending for the auto-claim. streamKey={}",
+                    messages.size(), streamKey, e);
+            return null;
+        }
+    }
+
+    /** XACK+XDEL+DEL marker of the batch's finished entries in one Lua; a failure leaves them pending (_done: only acked later) */
+    private void ackBatch(final String streamKey, StreamAttempt.Batch batch) {
+        if (batch == null) {
+            return;
+        }
+        try {
+            batch.ackAll(new StreamAttempt.AckListener() {
+                public void acked(GmmsMessage msg, String redisId, boolean acked) {
+                    queueManager.traceAck(streamKey, groupName, redisId, msg, false, acked);
+                    if (!acked) {
+                        logger.warn(msg, "Result stream ack failed after process success. streamKey={}, sourceRedisId={}",
+                                streamKey, redisId);
+                    }
+                }
+            });
+        } catch (Exception e) {
+            logger.error("Result batch ack failed, the entries stay pending (done, only acked when redelivered). streamKey={}",
+                    streamKey, e);
+        }
+    }
+
+    private void processResult(String streamKey, GmmsMessage msg, boolean mayBeClaimed, StreamAttempt.Batch batch) {
         long start = System.nanoTime();
         String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
         boolean attempt = false;
@@ -209,7 +256,7 @@ public class ResultStreamConsumer {
             attempt = StreamAttempt.drResultEnabled();
             com.king.redis.RedisConnection streamRedis = com.king.redis.RedisClient.getInstance().getReportMqRedis();
             if (attempt) {
-                StreamAttempt.Start state = StreamAttempt.beginEntry(streamKey, msg, streamRedis,
+                StreamAttempt.Start state = batch != null ? batch.begin(msg) : StreamAttempt.beginEntry(streamKey, msg, streamRedis,
                         consumerName + ":" + Thread.currentThread().getId());
                 if (state == StreamAttempt.Start.BUSY) {
                     attempt = false;
@@ -219,8 +266,12 @@ public class ResultStreamConsumer {
                 }
                 if (state == StreamAttempt.Start.DONE) {
                     attempt = false;
-                    queueManager.traceAck(streamKey, groupName, sourceRedisId, msg, false,
-                            StreamAttempt.ackDone(streamKey, groupName, msg, streamRedis));
+                    if (batch != null) {
+                        batch.done(msg);
+                    } else {
+                        queueManager.traceAck(streamKey, groupName, sourceRedisId, msg, false,
+                                StreamAttempt.ackDone(streamKey, groupName, msg, streamRedis));
+                    }
                     return;
                 }
             }
@@ -243,7 +294,9 @@ public class ResultStreamConsumer {
                 // this outbound attempt already has its result (e.g. a submit_resp after the timeout): expected, INFO
                 logger.info(msg, "[RESULT-DROPPED] late or duplicate submit result for an attempt that already has one");
                 processed = true;
-                if (attempt) {
+                if (attempt && batch != null) {
+                    batch.finished(msg);
+                } else if (attempt) {
                     queueManager.traceAck(streamKey, groupName, sourceRedisId, msg, false,
                             StreamAttempt.finish(streamKey, groupName, sourceRedisId));
                 } else {
@@ -264,6 +317,10 @@ public class ResultStreamConsumer {
             } else if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP.equalsIgnoreCase(resultType)) {
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
                         MetricsNames.STAGE_OUT_DR, msg, false, MetricsNames.ACTION_PROCESSED));
+            }
+            if (attempt && batch != null) {
+                batch.finished(msg);   // _done written now, acked with the batch
+                return;
             }
             // with an attempt: _done first, then XACK+XDEL+DEL marker
             boolean acked = attempt ? StreamAttempt.finish(streamKey, groupName, sourceRedisId)

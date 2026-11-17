@@ -17,6 +17,7 @@ ConfigReloadIT
 Batch4IT
 Batch5IT
 Batch6IT
+AttemptBatchIT
 Batch7IT
 ClientBatch1IT
 ClientBatch2IT

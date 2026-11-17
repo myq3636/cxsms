@@ -1076,7 +1076,7 @@ public class GmmsUtility {
 			"CoreHoldReleaseTickMs", "CoreHoldRecoverIntervalMs", "CoreHoldRecoverIdleMs",
 			"ServerDrStreamShardFilter", "CoreInboundDRShardEnable",
 			"RedisStreamMaxDeliveries", "RedisStreamIndexFullScanMinutes", "CoreStreamTaskMaxBatches", "CoreStreamTaskMaxMs",
-			"CoreResultStreamSharded", "CoreDrResultIdempotency",
+			"CoreResultStreamSharded", "CoreDrResultIdempotency", "CoreStreamAttemptBatch",
 			"CoreDbFallbackInline", "CsmReassembleMode", "CoreCsmExpirySweep",
 			"CoreCsmExpiryIntervalSec", "CoreCsmExpiryBatch", "CoreCsmExpiryLeaseMs",
 			"ClientSendIdempotency", "ClientSendLeaseMs", "ClientStreamTaskMaxBatches", "ClientStreamTaskMaxMs",
@@ -1249,6 +1249,7 @@ public class GmmsUtility {
 				|| "CoreInboundDRShardEnable".equals(key)
 				|| "CoreResultStreamSharded".equals(key)
 				|| "CoreDrResultIdempotency".equals(key)
+				|| "CoreStreamAttemptBatch".equals(key)
 				|| "CoreDbFallbackInline".equals(key)
 				|| "CoreCsmExpirySweep".equals(key)
 				|| "ClientSendIdempotency".equals(key)

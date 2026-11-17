@@ -144,6 +144,7 @@ public class Batch4IT extends ItSupport {
 		Pipeline d = jedis.pipelined();
 		for (int i = 0; i < 20000; i++) {
 			d.del("stream:mt:pending:" + (100000 + i) + ":0");
+			d.srem(StreamQueueManager.STREAM_INDEX_KEY, "stream:mt:pending:" + (100000 + i) + ":0");   // as the index refresh drops gone streams
 		}
 		d.sync();
 	}
