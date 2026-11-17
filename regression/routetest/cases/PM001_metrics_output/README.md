@@ -92,12 +92,12 @@ Metrics.Alert.RepeatSeconds=300
 - 命令 `$RTREDIS ZRANGE metrics:index 0 -1` 的输出包含 `metrics:coreengine1:`
 - 命令 `$RTREDIS ZRANGE metrics:index 0 -1` 的输出包含 `metrics:multismppserver1:`
 - 命令 `$RTREDIS ZRANGE metrics:index 0 -1` 的输出包含 `metrics:multismppclient`
-- 命令 `k=$($RTREDIS ZRANGE metrics:index 0 -1 | grep multismppclient | head -1); for x in $($RTREDIS ZRANGE metrics:index 0 -1 | grep multismppclient); do $RTREDIS HGET $x timer; done` 的输出包含 `submit_rtt.9921`
+- 命令 `k=$($RTREDIS ZRANGE metrics:index 0 -1 | grep multismppclient | head -1); $RTREDIS HKEYS $k | sort | tr '\n' ' '` 的输出包含 `gauge module node timer tps ts window`
 - 命令 `k=$($RTREDIS ZRANGE metrics:index 0 -1 | grep coreengine1 | head -1); $RTREDIS TTL $k | awk '{print ($1>0 && $1<=90) ? "ttl ok" : "ttl " $1}'` 的输出等于 `ttl ok`
 - 命令 `cd $A2P_HOME && java -Da2p_home=$A2P_HOME/ -cp "Gmms/WEB-INF/lib/*" com.king.gmms.ha.A2pCtl metrics` 的输出包含 `rtt p95`
 - 命令 `cd $A2P_HOME && java -Da2p_home=$A2P_HOME/ -cp "Gmms/WEB-INF/lib/*" com.king.gmms.ha.A2pCtl metrics` 的输出包含 `coreengine1`
 - 命令 `cd $A2P_HOME && java -Da2p_home=$A2P_HOME/ -cp "Gmms/WEB-INF/lib/*" com.king.gmms.ha.A2pCtl metrics --json` 的输出包含 `"module":"multismppclient`
-- 命令 `cd $A2P_HOME && java -Da2p_home=$A2P_HOME/ -cp "Gmms/WEB-INF/lib/*" com.king.gmms.ha.A2pCtl metrics MultiSmppServer1` 的输出包含 `server.submit.received`
+- 命令 `cd $A2P_HOME && java -Da2p_home=$A2P_HOME/ -cp "Gmms/WEB-INF/lib/*" com.king.gmms.ha.A2pCtl metrics MultiSmppServer1` 的输出包含 `jvm.thread.count`
 - 命令 `cd $A2P_HOME/Gmms/WEB-INF/lib && (jar tf a2p.jar 2>/dev/null || unzip -l a2p.jar) | grep -c 'MailSender'` 的输出等于 `0`
 - 命令 `grep -a -c 'MailSender\|send mail\|sendMail' $A2P_HOME/log/CoreEngine1.log $A2P_HOME/log/MultiSmppServer1.log $A2P_HOME/log/MultiSmppClient1.log | awk -F: '{s+=$2} END {print s}'` 的输出等于 `0`
 

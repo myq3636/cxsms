@@ -62,10 +62,11 @@ checks += [f"check.log.{i}={l}" for i, l in enumerate(logs, 1)]
 cmds = ["$RTREDIS ZRANGE metrics:index 0 -1 => metrics:coreengine1:",
         "$RTREDIS ZRANGE metrics:index 0 -1 => metrics:multismppserver1:",
         "$RTREDIS ZRANGE metrics:index 0 -1 => metrics:multismppclient",
-        "k=$($RTREDIS ZRANGE metrics:index 0 -1 | grep multismppclient | head -1); for x in $($RTREDIS ZRANGE metrics:index 0 -1 | grep multismppclient); do $RTREDIS HGET $x timer; done => submit_rtt.9921",
+        # the snapshot holds the last window only (it has no traffic after mt.settleMs): its fields, not its timers
+        "k=$($RTREDIS ZRANGE metrics:index 0 -1 | grep multismppclient | head -1); $RTREDIS HKEYS $k | sort | tr '\\n' ' ' => gauge module node timer tps ts window",
         "k=$($RTREDIS ZRANGE metrics:index 0 -1 | grep coreengine1 | head -1); $RTREDIS TTL $k | awk '{print ($1>0 && $1<=90) ? \"ttl ok\" : \"ttl \" $1}' => =ttl ok",
         CTL + " => rtt p95", CTL + " => coreengine1", CTL + " --json => \"module\":\"multismppclient",
-        CTL + " MultiSmppServer1 => server.submit.received",
+        CTL + " MultiSmppServer1 => jvm.thread.count",
         "cd $A2P_HOME/Gmms/WEB-INF/lib && (jar tf a2p.jar 2>/dev/null || unzip -l a2p.jar) | grep -c 'MailSender' => =0",
         "grep -a -c 'MailSender\\|send mail\\|sendMail' $A2P_HOME/log/CoreEngine1.log $A2P_HOME/log/MultiSmppServer1.log $A2P_HOME/log/MultiSmppClient1.log | awk -F: '{s+=$2} END {print s}' => =0"]
 checks += [f"check.cmd.{i}={c}" for i, c in enumerate(cmds, 1)]

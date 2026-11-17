@@ -62,4 +62,38 @@
 
 ## 5. 结果和原因
 
-（执行后补充）
+### 5.1 2026-11-17 第一次执行（`report/20261117_081329`）
+
+50 TPS、5 分钟测量；B 是 wdq 503207 行、rdq 502385 行（插 50 万行用了 82 秒）。
+
+| | A（现有数据：wdq 3207、rdq 1142） | B（+50 万行） |
+|---|---|---|
+| 客户提交 → 客户收到 DR，p95 | 706 ms | 719 ms |
+| 通道回 DR → 客户收到，p95 | 134 ms | 139 ms |
+| MySQL `Table_locks_waited`（测量期间） | 30 | **493** |
+| 0.2 秒以上的慢语句 | 0 | **115** |
+| 同时等表锁的语句（最多） | 0 | 2 |
+
+**结论：50 TPS、50 万行时，消息流程的延迟没有明显变化（`RESULT: PASS`），但数据库已经出现了锁等待，原因确定如下：**
+
+1. **MQM 的 `ReSendDRTask` 每 10 秒对 rdq 全表扫描两次**：`SELECT * FROM RDQ WHERE ActionCode != 0 AND now() > NextRetryTime AND O_A2P [NOT] IN (...) AND ... < ExpiryDate ORDER BY DateIn LIMIT 500`。EXPLAIN 是 `type=ALL`、`rows=502385`、`Using filesort`，一次约 0.3 秒。慢语句里它占 95 条、共 27 秒。即使没有一条到了重发时间也照样扫。
+2. **`ExpiredMessageTask` 每 60 秒对 wdq 全表扫描两次**（同样 `type=ALL`、`Using filesort`，约 0.3 秒，18 条）。
+3. **两张表是 MyISAM（表级锁）**：扫描期间，对同一张表的写入要等。看到在等的是 `INSERT INTO RDQ`（异步写库线程写入要重发的 DR）和 `DELETE FROM RDQ WHERE ID=...`（DR 重发成功后的删除）。
+4. 原来推测的“每条 DR 的 `DELETE FROM WDQ WHERE OutMsgID=...` 卡住 Core”这次没有出现：这条 DELETE 用 `OutMsgID` 索引（`type=ref`、1 行），wdq 只每 60 秒扫一次；流量中间 3 个 Core 的线程栈里各只有 1 个线程在 MySQL 驱动里。
+
+**为什么线上会变慢**：扫描时间和行数成正比，这里 50 万行约 0.3 秒，每 10 秒 2 次，rdq 大约 6% 的时间被锁着。行数到几百万，或者磁盘、缓存不如测试机（这台机器的数据都在内存缓存里）时，一次扫描几秒，rdq 大部分时间被锁着：
+- 异步写库线程卡在 `INSERT INTO RDQ` 上，写库队列（`db.async_sql.queued`）积压，后面所有表的写入都跟着排队；
+- DR 重发成功后的 `DELETE FROM RDQ` 是同步的，执行它的线程也会卡住。
+
+整个流程就跟着变慢。
+
+### 5.2 建议的修改（需要确认后再做）
+
+| 修改 | 作用 |
+|---|---|
+| rdq 加索引 `(NextRetryTime)`（或 `(ActionCode, NextRetryTime)`） | `now() > NextRetryTime` 只读到期的行，没有到期的不扫；排序的行数也只有到期的这些 |
+| wdq 加索引 `(ExpiryDate)` | `ExpiredMessageTask` 只读这段时间过期的行 |
+| wdq、rdq（以及其他队列表）改成 InnoDB | 行级锁：扫描不再挡住写入 |
+| 没有到期的行时不扫（例如先 `SELECT 1 ... LIMIT 1` 再取） | 有了索引后自然很快，可以不做 |
+
+加索引、改引擎都是 DB 变更，要先在测试库上量一下建索引的时间（50 万行的 MyISAM 表很快，上千万行要停写），再用 PF001 对比修改前后。
