@@ -1,10 +1,11 @@
-# suite pass known: baseline of 99_全量回归 from result/20261117_102652 (2026-11-17, MySQL 8.0, the code of this day); BindRateIT from a run of its own (the full run had PF001 traffic at the same time)
+# suite pass known: baseline of 99_全量回归 from result/20261117_102652 (2026-11-17, MySQL 8.0, the code of this day); BindRateIT from a run of its own (the full run had PF001 traffic at the same time); ServerConnectionRaceCheck added 2026-11-17 (9 from its own run)
 Batch1Check 10 0
 InlineDrCheck 7 0
 MessageIdCheck 57 0
 ShardPlanCheck 11 0
 DataManagerCheck 9 0
 DrShardCheck 10 0
+ServerConnectionRaceCheck 9 0
 CoreDrFlowIT 26 0
 CsmCdrIT 24 0
 Gsm7LengthIT 26 0

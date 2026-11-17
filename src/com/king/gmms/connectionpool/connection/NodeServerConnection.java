@@ -92,29 +92,29 @@ public class NodeServerConnection extends AbstractMultiConnection implements
 			}
 			removeSessionFURIMap(session.getTransactionURI());
 
-		}
-
-		switch (getStatus()) {
-		case INITIAL:
-			if (connectedSessions.size() <= 0) {
-				if(log.isInfoEnabled()){
-					log.info("The connection({}) status is modified DISCONNECT from INITIAL",
-								info.getConnectionName());
+			// in the lock with the remove (see MultiServerConnectionImpl.handleDisconnect)
+			switch (getStatus()) {
+			case INITIAL:
+				if (connectedSessions.size() <= 0) {
+					if(log.isInfoEnabled()){
+						log.info("The connection({}) status is modified DISCONNECT from INITIAL",
+									info.getConnectionName());
+					}
+					setStatus(ConnectionStatus.DISCONNECT);
 				}
-				setStatus(ConnectionStatus.DISCONNECT);
-			}
-			break;
-		case CONNECT:
-			if (connectedSessions.size() <= 0) {
-				if(log.isInfoEnabled()){
-					log.info("The connection({}) status is modified DISCONNECT from CONNECT",
-								info.getConnectionName());
+				break;
+			case CONNECT:
+				if (connectedSessions.size() <= 0) {
+					if(log.isInfoEnabled()){
+						log.info("The connection({}) status is modified DISCONNECT from CONNECT",
+									info.getConnectionName());
+					}
+					setStatus(ConnectionStatus.DISCONNECT);
 				}
-				setStatus(ConnectionStatus.DISCONNECT);
+				break;
+			case DISCONNECT:
+				break;
 			}
-			break;
-		case DISCONNECT:
-			break;
 		}
 	}
 
@@ -131,32 +131,33 @@ public class NodeServerConnection extends AbstractMultiConnection implements
 
 	private void handleConnection(Session session) {
 		String sessionName = session.getSessionName();
-		if (!connectedSessions.containsKey(sessionName)) {
-			synchronized (mutex) {
+		synchronized (mutex) {
+			if (!connectedSessions.containsKey(sessionName)) {
 				recoverSessions.remove(sessionName);
 				connectedSessions.put(sessionName, session);
 			}
-		}
 
-		switch (getStatus()) {
-		case INITIAL:
-			setStatus(ConnectionStatus.CONNECT);
-			if(log.isInfoEnabled()){
-				log.info("The connection({}) status is set:  CONNECT and the original status is INITIAL",
-								info.getConnectionName());
-			}
-			break;
-		case CONNECT:
-			break;
-		case DISCONNECT:
-			if (recoverSessions.size() <= 0) {
+			// in the lock with the put (see MultiServerConnectionImpl.handleDisconnect)
+			switch (getStatus()) {
+			case INITIAL:
+				setStatus(ConnectionStatus.CONNECT);
 				if(log.isInfoEnabled()){
-					log.info("The connection({}) status is set:  CONNECT and the original status is DISCONNECT",
+					log.info("The connection({}) status is set:  CONNECT and the original status is INITIAL",
 									info.getConnectionName());
 				}
-				setStatus(ConnectionStatus.CONNECT);
+				break;
+			case CONNECT:
+				break;
+			case DISCONNECT:
+				if (recoverSessions.size() <= 0) {
+					if(log.isInfoEnabled()){
+						log.info("The connection({}) status is set:  CONNECT and the original status is DISCONNECT",
+										info.getConnectionName());
+					}
+					setStatus(ConnectionStatus.CONNECT);
+				}
+				break;
 			}
-			break;
 		}
 	}
 

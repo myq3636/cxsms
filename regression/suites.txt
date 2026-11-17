@@ -4,6 +4,7 @@ MessageIdCheck com.king.message.gmms.MessageIdCheck unit
 ShardPlanCheck com.king.gmms.ha.ShardPlanCheck unit
 DataManagerCheck com.king.db.DataManagerCheck unit
 DrShardCheck com.king.gmms.messagequeue.DrShardCheck unit
+ServerConnectionRaceCheck com.king.gmms.connectionpool.connection.ServerConnectionRaceCheck unit
 CoreDrFlowIT it.CoreDrFlowIT it
 CsmCdrIT it.CsmCdrIT it
 Gsm7LengthIT it.Gsm7LengthIT it

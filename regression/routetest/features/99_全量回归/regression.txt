@@ -4,6 +4,7 @@ MessageIdCheck
 ShardPlanCheck
 DataManagerCheck
 DrShardCheck
+ServerConnectionRaceCheck
 CoreDrFlowIT
 CsmCdrIT
 Gsm7LengthIT

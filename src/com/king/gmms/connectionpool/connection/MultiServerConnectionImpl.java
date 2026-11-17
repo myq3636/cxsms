@@ -84,29 +84,31 @@ public class MultiServerConnectionImpl extends AbstractMultiConnection
 				session.deleteObserver(this);
 			}
 			this.removeSessionFURIMap(session.getTransactionURI());
-		}
 
-		switch (getStatus()) {
-		case INITIAL:
-			if (connectedSessions.size() <= 0) {
-				if(log.isInfoEnabled()){
-					log.info("The connection({}) status is modified DISCONNECT from INITIAL",
-								info.getConnectionName());
+			// in the lock with the remove: a session added by another thread (a rebind at the same time) is
+			// either seen here or sets CONNECT after this, never overwritten by a DISCONNECT decided before it
+			switch (getStatus()) {
+			case INITIAL:
+				if (connectedSessions.size() <= 0) {
+					if(log.isInfoEnabled()){
+						log.info("The connection({}) status is modified DISCONNECT from INITIAL",
+									info.getConnectionName());
+					}
+					setStatus(ConnectionStatus.DISCONNECT);
 				}
-				setStatus(ConnectionStatus.DISCONNECT);
-			}
-			break;
-		case CONNECT:
-			if (connectedSessions.size() <= 0) {
-				if(log.isInfoEnabled()){
-					log.info("The connection({}) status is modified DISCONNECT from CONNECT",
-								info.getConnectionName());
+				break;
+			case CONNECT:
+				if (connectedSessions.size() <= 0) {
+					if(log.isInfoEnabled()){
+						log.info("The connection({}) status is modified DISCONNECT from CONNECT",
+									info.getConnectionName());
+					}
+					setStatus(ConnectionStatus.DISCONNECT);
 				}
-				setStatus(ConnectionStatus.DISCONNECT);
+				break;
+			case DISCONNECT:
+				break;
 			}
-			break;
-		case DISCONNECT:
-			break;
 		}
 	}
 
@@ -123,7 +125,12 @@ public class MultiServerConnectionImpl extends AbstractMultiConnection
 				}
 				connectedSessions.put(sessionName, session);
 				sessionNum += 1;
-				if (connectedSessions.size() == 1) {
+				// not only for the first session: a connection left DISCONNECT with live sessions is set right
+				if (!ConnectionStatus.CONNECT.equals(getStatus())) {
+					if(log.isInfoEnabled()){
+						log.info("The connection({}) status is set:  CONNECT and the original status is {}, sessions={}",
+									info.getConnectionName(), getStatus(), connectedSessions.size());
+					}
 					setStatus(ConnectionStatus.CONNECT);
 				}
 				putSession2URIMap(session);
