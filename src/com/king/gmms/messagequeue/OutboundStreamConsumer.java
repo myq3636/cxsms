@@ -135,8 +135,13 @@ public class OutboundStreamConsumer {
         while (running) {
             try {
                 refreshWorkerPoolConfig();
-                String streamKey = queueManager.popResponsibleDoorbell(StreamQueueManager.ZSET_MT_ROUTED_ACTIVE, true);
-                if (streamKey != null) {
+                List<String> streams = popStreams();
+                if (streams.isEmpty()) {
+                    Thread.sleep(consumerConfig.dispatcherIdleSleepMs());
+                    continue;
+                }
+                for (int i = 0; i < streams.size(); i++) {
+                    String streamKey = streams.get(i);
                     if (isDeferred(streamKey)) {
                         // its put-off entries go first; the task started for them re-rings afterwards
                         pendingDoorbellMap.put(streamKey, true);
@@ -144,16 +149,17 @@ public class OutboundStreamConsumer {
                         try {
                             workerPool.submit(new FetchAndProcessTask(streamKey, null));
                         } catch (RejectedExecutionException full) {
-                            // all workers busy: give the stream back instead of running it on the dispatcher
+                            // all workers busy: give this stream and the rest back instead of running them on the dispatcher
                             processingMap.remove(streamKey);
-                            queueManager.triggerDoorbell(streamKey, true);
+                            for (String back : streams.subList(i, streams.size())) {
+                                queueManager.triggerDoorbell(back, true);
+                            }
                             Thread.sleep(consumerConfig.dispatcherIdleSleepMs());
+                            break;
                         }
                     } else {
                         pendingDoorbellMap.put(streamKey, true);
                     }
-                } else {
-                    Thread.sleep(consumerConfig.dispatcherIdleSleepMs());
                 }
             } catch (InterruptedException ie) {
                 break;
@@ -162,6 +168,25 @@ public class OutboundStreamConsumer {
                 try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
             }
         }
+    }
+
+    /**
+     * The streams to start now: ClientDispatchBatch (default 32) at most, and no more than the idle workers, popped in
+     * one round trip per MQ master (docs/5000TPS多主测试慢的环节分析.md 10.1); 1: one by one as before.
+     */
+    private List<String> popStreams() {
+        int batch = 32;
+        try {
+            batch = Integer.parseInt(GmmsUtility.getInstance().getCommonProperty("ClientDispatchBatch", "32").trim());
+        } catch (Exception ignored) {
+        }
+        if (batch <= 1) {
+            String one = queueManager.popResponsibleDoorbell(StreamQueueManager.ZSET_MT_ROUTED_ACTIVE, true);
+            return one == null ? java.util.Collections.<String>emptyList() : java.util.Collections.singletonList(one);
+        }
+        int idle = workerPool.getMaximumPoolSize() - workerPool.getActiveCount();
+        return queueManager.popResponsibleDoorbells(StreamQueueManager.ZSET_MT_ROUTED_ACTIVE, true,
+                Math.max(1, Math.min(batch, idle)));
     }
 
     private class FetchAndProcessTask implements Runnable {

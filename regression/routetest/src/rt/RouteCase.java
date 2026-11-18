@@ -213,7 +213,12 @@ public final class RouteCase {
 			if (x.find()) {
 				sub.marker = x.group();
 				Long sent = soakSentAt.get(sub.marker);
-				if (sent != null && soakFirstSeen.add(sub.marker)) soakLatMt.add(System.currentTimeMillis() - sent);
+				if (sent != null && soakFirstSeen.add(sub.marker)) {
+					long ms = System.currentTimeMillis() - sent;
+					soakLatMt.add(ms);
+					String label = soakLabelOf.get(sub.marker);
+					if (label != null) soakLatMtBy.computeIfAbsent(label, k -> new Hist()).add(ms);
+				}
 			}
 		}
 		return sub;
@@ -295,7 +300,11 @@ public final class RouteCase {
 							if (x.find()) {
 								long now = System.currentTimeMillis();
 								Long sent = soakSentAt.remove(x.group()), dr = soakDrSentAt.remove(x.group());
-								if (sent != null) soakLatFull.add(now - sent);
+								if (sent != null) {
+									soakLatFull.add(now - sent);
+									String label = soakLabelOf.get(x.group());
+									if (label != null) soakLatFullBy.computeIfAbsent(label, k -> new Hist()).add(now - sent);
+								}
 								if (dr != null) soakLatDr.add(now - dr);
 								soakFirstSeen.remove(x.group());
 							}
@@ -379,6 +388,9 @@ public final class RouteCase {
 	final Map<String, Long> soakSentAt = new ConcurrentHashMap<>(), soakDrSentAt = new ConcurrentHashMap<>();
 	final Set<String> soakFirstSeen = ConcurrentHashMap.newKeySet();
 	final Hist soakLatMt = new Hist(), soakLatDr = new Hist(), soakLatFull = new Hist();
+	/** the template of each MT sent after the warm-up, and the latencies by template (a customer per template: by customer) */
+	final Map<String, String> soakLabelOf = new ConcurrentHashMap<>();
+	final Map<String, Hist> soakLatMtBy = new ConcurrentHashMap<>(), soakLatFullBy = new ConcurrentHashMap<>();
 
 	/** latencies in ms: 1 ms buckets up to 60 s, so the memory stays the same at any TPS and length */
 	static final class Hist {
@@ -460,7 +472,10 @@ public final class RouteCase {
 				s.recipient = r.toString();
 				Copy c = new Copy(s, t.label, mark + (sent + 1));
 				c.text = c.marker + " " + t.label;
-				if (now >= start + warmup) soakSentAt.put(c.marker, now);     // latency after the warm-up only
+				if (now >= start + warmup) {     // latency after the warm-up only
+					soakSentAt.put(c.marker, now);
+					soakLabelOf.put(c.marker, t.label + "(" + t.customer + ")");
+				}
 				if (s.parts > 1) {
 					StringBuilder x = new StringBuilder(c.text);
 					// the marker again and again: every segment (also after the Client splits it again) holds a whole one
@@ -521,6 +536,11 @@ public final class RouteCase {
 		sum.append("                                vendor DR -> customer: ").append(percentiles(soakLatDr)).append('\n');
 		sum.append("                                customer submit -> customer DR: ").append(percentiles(soakLatFull)).append('\n');
 		sum.append("MTs after the warm-up without a DR at the end: ").append(soakSentAt.size()).append('\n');
+		sum.append("latency after the warm-up by template (ms):\n");
+		for (String label : new TreeSet<>(soakLatMtBy.keySet())) {
+			sum.append("  ").append(label).append(" submit -> vendor: ").append(percentiles(soakLatMtBy.get(label)))
+					.append(" | submit -> DR: ").append(soakLatFullBy.containsKey(label) ? percentiles(soakLatFullBy.get(label)) : "-").append('\n');
+		}
 		Files.write(out.resolve("soak.txt"), ("sent=" + sent + "\nsegments=" + segs + "\nrespOk=" + ok + "\nrespErr=" + err + "\ndr=" + soakDr.get()
 				+ "\nlatMt=" + percentiles(soakLatMt) + "\nlatDr=" + percentiles(soakLatDr) + "\nlatFull=" + percentiles(soakLatFull)
 				+ "\nnoDr=" + soakSentAt.size() + "\n").getBytes(StandardCharsets.UTF_8));

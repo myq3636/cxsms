@@ -104,22 +104,28 @@ public class MTStreamConsumer {
         while (running) {
             try {
                 refreshWorkerPoolConfig();
-                String streamKey = queueManager.popResponsibleDoorbell(StreamQueueManager.ZSET_MT_PENDING_ACTIVE, true);
-                if (streamKey != null) {
-                    if (processingMap.putIfAbsent(streamKey, true) == null) {
-                        try {
-                            workerPool.submit(new FetchAndProcessTask(streamKey));
-                        } catch (java.util.concurrent.RejectedExecutionException full) {
-                            // all workers busy: give the stream back instead of running it on the dispatcher
-                            processingMap.remove(streamKey);
-                            queueManager.triggerDoorbell(streamKey, true);
-                            Thread.sleep(consumerConfig.dispatcherIdleSleepMs());
-                        }
-                    } else {
-                        pendingDoorbellMap.put(streamKey, true);
-                    }
-                } else {
+                List<String> streams = popStreams();
+                if (streams.isEmpty()) {
                     Thread.sleep(consumerConfig.dispatcherIdleSleepMs());
+                    continue;
+                }
+                for (int i = 0; i < streams.size(); i++) {
+                    String streamKey = streams.get(i);
+                    if (processingMap.putIfAbsent(streamKey, true) != null) {
+                        pendingDoorbellMap.put(streamKey, true);
+                        continue;
+                    }
+                    try {
+                        workerPool.submit(new FetchAndProcessTask(streamKey));
+                    } catch (java.util.concurrent.RejectedExecutionException full) {
+                        // all workers busy: give this stream and the rest back instead of running them on the dispatcher
+                        processingMap.remove(streamKey);
+                        for (String back : streams.subList(i, streams.size())) {
+                            queueManager.triggerDoorbell(back, true);
+                        }
+                        Thread.sleep(consumerConfig.dispatcherIdleSleepMs());
+                        break;
+                    }
                 }
             } catch (InterruptedException ie) {
                 break;
@@ -128,6 +134,25 @@ public class MTStreamConsumer {
                 try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
             }
         }
+    }
+
+    /**
+     * The streams to start now: CoreMTDispatchBatch (default 32) at most, and no more than the idle workers, popped in
+     * one round trip per MQ master (docs/5000TPS多主测试慢的环节分析.md 10); 1: one by one as before.
+     */
+    private List<String> popStreams() {
+        int batch = 32;
+        try {
+            batch = Integer.parseInt(GmmsUtility.getInstance().getCommonProperty("CoreMTDispatchBatch", "32").trim());
+        } catch (Exception ignored) {
+        }
+        if (batch <= 1) {
+            String one = queueManager.popResponsibleDoorbell(StreamQueueManager.ZSET_MT_PENDING_ACTIVE, true);
+            return one == null ? java.util.Collections.<String>emptyList() : java.util.Collections.singletonList(one);
+        }
+        int idle = workerPool.getCorePoolSize() - workerPool.getActiveCount();
+        return queueManager.popResponsibleDoorbells(StreamQueueManager.ZSET_MT_PENDING_ACTIVE, true,
+                Math.max(1, Math.min(batch, idle)));
     }
 
     private class FetchAndProcessTask implements Runnable {

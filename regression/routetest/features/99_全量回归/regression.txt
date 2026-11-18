@@ -22,6 +22,7 @@ ThrottleSyncIT
 MultiMasterIT
 ClientMarkerBatchIT
 EarlyDrIT
+DoorbellBatchIT
 Batch7IT
 ClientBatch1IT
 ClientBatch2IT

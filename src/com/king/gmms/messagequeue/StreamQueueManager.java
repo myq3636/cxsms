@@ -674,6 +674,56 @@ public class StreamQueueManager {
 		return popped instanceof String ? (String) popped : null;
 	}
 
+	/**
+	 * Up to max streams this node is responsible for from the doorbell, in its order (longest waiting first), of each MQ
+	 * master in turn until max: one round trip per master instead of one per stream (CoreMTDispatchBatch,
+	 * docs/5000TPS多主测试慢的环节分析.md 10).
+	 */
+	public List<String> popResponsibleDoorbells(String doorbellKey, boolean isSubmitMq, int max) {
+		List<String> out = new ArrayList<String>();
+		com.king.redis.RedisConnection[] masters = redisClient.mqs(isSubmitMq);
+		if (masters.length == 0 || max <= 0) {
+			return out;
+		}
+		int first = masters.length == 1 ? 0 : (doorbellTurn.getAndIncrement() & Integer.MAX_VALUE) % masters.length;
+		for (int i = 0; i < masters.length && out.size() < max; i++) {
+			com.king.redis.RedisConnection c = masters[(first + i) % masters.length];
+			Set<String> candidates = c.zrangeDoorbell(doorbellKey, 0, getDoorbellScanLimit() - 1);
+			if (candidates == null || candidates.isEmpty()) {
+				continue;
+			}
+			List<String> keys = new ArrayList<String>();
+			keys.add(doorbellKey);
+			for (String streamKey : candidates) {
+				if (isResponsibleForStream(streamKey)) {
+					keys.add(streamKey);
+				}
+			}
+			if (keys.size() == 1) {
+				continue;
+			}
+			Object popped = c.evalScript(POP_DOORBELLS_LUA, keys, Arrays.asList(String.valueOf(max - out.size())));
+			if (popped instanceof List) {
+				for (Object k : (List<?>) popped) {
+					out.add(String.valueOf(k));
+				}
+			}
+		}
+		return out;
+	}
+
+	// POP_DOORBELL_LUA for up to ARGV[1] streams: KEYS 1 doorbell zset, 2.. candidates in the zset's order
+	private static final String POP_DOORBELLS_LUA =
+			"local out = {} "
+			+ "for i = 2, #KEYS do "
+			+ "  if redis.call('XLEN', KEYS[i]) == 0 then redis.call('ZREM', KEYS[1], KEYS[i]) "
+			+ "  elseif redis.call('ZREM', KEYS[1], KEYS[i]) == 1 then "
+			+ "    out[#out + 1] = KEYS[i] "
+			+ "    if #out >= tonumber(ARGV[1]) then return out end "
+			+ "  end "
+			+ "end "
+			+ "return out";
+
 	// KEYS: 1 doorbell zset, 2.. candidate streams (the ones this node is responsible for), in the zset's order.
 	// XLEN and ZREM in the same Lua: an entry produced in between rings again, it is never left without a doorbell.
 	private static final String POP_DOORBELL_LUA =
