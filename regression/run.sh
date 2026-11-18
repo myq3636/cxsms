@@ -2,7 +2,7 @@
 # Long-term regression: run.sh [suite ...]   (no argument: every suite in suites.txt; manual-suites.txt only by name)
 #   SUITE_TIMEOUT seconds one suite may take (default 400); SUITE_JAVA_OPTS more options for the suite JVM
 #   JAVA_HOME     JDK 17 (default: java on PATH)
-#   REDIS_SERVER  redis-server to start when nothing answers on 127.0.0.1:16379 (default: redis-server on PATH)
+#   REDIS_SERVER  redis-server to start when nothing answers on 127.0.0.1:16379 (and 16382, 16383) (default: redis-server on PATH)
 #   REDIS_CLI     redis-cli (default: redis-cli on PATH)
 #   REG_WORK      build and run directory, kept out of git (default: regression/.work)
 # Exit code 0 when no check failed. Checks in known-defects.txt print KNOWN and do not fail the run.
@@ -11,6 +11,10 @@ W=${REG_WORK:-$REG/.work}; OUT=$W/results; rm -rf "$OUT"; mkdir -p "$OUT"
 if [ -n "$JAVA_HOME" ]; then J=$JAVA_HOME/bin; else J=$(dirname "$(readlink -f "$(command -v javac)")"); fi
 RS=${REDIS_SERVER:-redis-server}; RC=${REDIS_CLI:-redis-cli}
 timeout 5 "$RC" -p 16379 ping >/dev/null 2>&1 || { "$RS" --port 16379 --bind 127.0.0.1 --daemonize yes --dir "$W" --save "" --appendonly no --logfile "$W/redis.log"; sleep 1; }
+# the second submit and report MQ masters of MultiMasterIT
+for RP in 16382 16383; do
+  timeout 5 "$RC" -p $RP ping >/dev/null 2>&1 || { "$RS" --port $RP --bind 127.0.0.1 --daemonize yes --dir "$W" --save "" --appendonly no --logfile "$W/redis-$RP.log"; sleep 1; }
+done
 
 rm -rf "$W/out" "$W/testall"; mkdir -p "$W/out" "$W/testall"
 find "$ROOT/src" -name '*.java' > "$W/srcs.txt"

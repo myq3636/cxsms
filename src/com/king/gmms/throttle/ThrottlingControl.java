@@ -50,6 +50,9 @@ public class ThrottlingControl {
 
 	private static ThrottlingControl instance = new ThrottlingControl();
 
+	/** the customers' incoming counts, in memory and synced to Redis every ThrottleInSyncIntervalMs */
+	private final ClusterSecondCounter incomingCounter = new ClusterSecondCounter("throttle:in:");
+
 	/**
 	 * constructor
 	 */
@@ -88,10 +91,13 @@ public class ThrottlingControl {
 				return true;
 			}
 			
-			long currentSecond = System.currentTimeMillis() / 1000;
-			String limitKey = "throttle:in:" + ssid + ":" + currentSecond;
 			Long currentCount = 1L;
-			if (gmmsUtility.getRedisClient() != null && gmmsUtility.getRedisClient().getStateRedis() != null) {
+			if (ClusterSecondCounter.syncIntervalMs() > 0) {
+				// counted in memory, all nodes' counts synced every ThrottleInSyncIntervalMs (docs/Redis消息操作次数统计.md)
+				currentCount = incomingCounter.acquire(ssid, throttlingNum, System.currentTimeMillis());
+			} else if (gmmsUtility.getRedisClient() != null && gmmsUtility.getRedisClient().getStateRedis() != null) {
+				long currentSecond = System.currentTimeMillis() / 1000;
+				String limitKey = "throttle:in:" + ssid + ":" + currentSecond;
 				// H-6: 原子 INCR+EXPIRE，避免计数 key 丢失 TTL 导致该 ssid:秒 桶永久限流。
 				currentCount = gmmsUtility.getRedisClient().getStateRedis().incrWithExpire(limitKey, 2);
 			}

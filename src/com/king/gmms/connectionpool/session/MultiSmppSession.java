@@ -10,7 +10,6 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import com.king.framework.SystemLogger;
-import com.king.gmms.GmmsUtility;
 import com.king.gmms.PhoneUtils;
 import com.king.gmms.connectionpool.BindMode;
 import com.king.gmms.connectionpool.ConnectionStatus;
@@ -906,36 +905,9 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
 
     }
     
-    private static volatile String cachedThcon = "1";
-    private static volatile long lastThconCheckTime = 0;
-
-    private String getThconStatus() {
-        long now = System.currentTimeMillis();
-        if (now - lastThconCheckTime > 50000) {
-            try {
-                String value = GmmsUtility.getInstance().getRedisClient().getString("thcon");
-                if (value != null) {
-                    cachedThcon = value;
-                } else {
-                    cachedThcon = "";
-                }
-                lastThconCheckTime = now;
-            } catch (Exception e) {
-                // Ignore transient Redis errors; reuse last cached value
-            }
-        }
-        return cachedThcon;
-    }
-    
     private boolean checkThrottlingControl(Request request){
         try {
             if (customerInfo != null) {
-            	if(!StringUtility.stringIsNotEmpty(getThconStatus())){
-            		Response response = request.getResponse();
-                	response.setCommandStatus(com.king.gmms.protocol.smpp.util.Data.ESME_RTHROTTLED);
-                	connection.send(response.getData().getBuffer());
-                	return true;
-            	}
                 if (!ThrottlingControl.getInstance().isAllowedToReceive(customerInfo.getSSID())) {
                 	Response response = request.getResponse();
                 	response.setCommandStatus(com.king.gmms.protocol.smpp.util.Data.ESME_RTHROTTLED);

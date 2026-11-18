@@ -213,7 +213,7 @@ public class InboundDRStreamConsumer {
         }
         try {
             return StreamAttempt.Batch.claim(streamKey, groupName, messages,
-                    com.king.redis.RedisClient.getInstance().getReportMqRedis(), true,
+                    com.king.redis.RedisClient.getInstance().reportMq(streamKey), true,
                     consumerName + ":" + Thread.currentThread().getId());
         } catch (Exception e) {
             logger.error("Inbound DR batch claim failed, {} entries left pending for the auto-claim. streamKey={}",
@@ -248,7 +248,7 @@ public class InboundDRStreamConsumer {
         String sourceRedisId = msg == null ? null : msg.getRedisStreamID();
         try {
             boolean attempt = StreamAttempt.drResultEnabled();
-            com.king.redis.RedisConnection streamRedis = com.king.redis.RedisClient.getInstance().getReportMqRedis();
+            com.king.redis.RedisConnection streamRedis = com.king.redis.RedisClient.getInstance().reportMq(streamKey);
             if (attempt) {
                 StreamAttempt.Start state = batch != null ? batch.begin(msg) : StreamAttempt.beginEntry(streamKey, msg, streamRedis,
                         consumerName + ":" + Thread.currentThread().getId());
@@ -291,7 +291,7 @@ public class InboundDRStreamConsumer {
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
                         MetricsNames.STAGE_IN_DR, msg, true, MetricsNames.ACTION_PROCESSED));
                 if (attempt && batch != null) {
-                    batch.finished(msg);   // _done written now, acked with the batch
+                    batch.finished(msg);   // acked with the batch; _done written now or kept in memory (Batch.finished)
                     return;
                 }
                 // with an attempt: _done first, then XACK+XDEL+DEL marker

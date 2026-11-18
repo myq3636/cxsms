@@ -133,10 +133,36 @@ public class CoreOutboundOutboxManager {
             return Claim.UNTRACKED;
         }
         String resultId = msg.getRedisStreamID() == null ? "-" : msg.getRedisStreamID();
-        Object r = redis().evalScript(CLAIM_LUA,
-                Arrays.asList(key, OUTBOX_TIMEOUT_ZSET, metaKey(key), key + OUTBOX_DONE_SUFFIX),
-                Arrays.asList(resultId, String.valueOf(doneTtlSeconds())));
-        return Claim.valueOf(String.valueOf(r));
+        List<String> keys = Arrays.asList(key, OUTBOX_TIMEOUT_ZSET, metaKey(key), key + OUTBOX_DONE_SUFFIX);
+        List<String> args = Arrays.asList(resultId, String.valueOf(doneTtlSeconds()));
+        // the outbox is on the master of the MT's outbound stream (written with it); with several submit MQ masters the
+        // others are tried when it is not there (e.g. the address changed after the produce)
+        RedisConnection first = redisFor(msg);
+        Claim claim = Claim.valueOf(String.valueOf(first.evalScript(CLAIM_LUA, keys, args)));
+        if (claim == Claim.UNTRACKED) {
+            for (RedisConnection other : RedisClient.getInstance().mqs(true)) {
+                if (other != first) {
+                    claim = Claim.valueOf(String.valueOf(other.evalScript(CLAIM_LUA, keys, args)));
+                    if (claim != Claim.UNTRACKED) {
+                        break;
+                    }
+                }
+            }
+        }
+        return claim;
+    }
+
+    /** The submit MQ master of the MT's outbound stream */
+    private static RedisConnection redisFor(GmmsMessage msg) {
+        RedisClient rc = RedisClient.getInstance();
+        if (rc.submitMqCount() <= 1) {
+            return rc.getSubmitMqRedis();
+        }
+        try {
+            return rc.submitMq(StreamQueueManager.getInstance().outboundTargetKey(msg));
+        } catch (Exception e) {
+            return rc.getSubmitMqRedis();
+        }
     }
 
     private void startScanner() {
@@ -159,7 +185,13 @@ public class CoreOutboundOutboxManager {
         if (!enabled() || RedisClient.getInstance().getSubmitMqRedis() == null) {
             return;
         }
-        RedisConnection redis = redis();
+        for (RedisConnection redis : RedisClient.getInstance().mqs(true)) {
+            scanTimeouts(redis);
+        }
+    }
+
+    /** The timed-out entries of one submit MQ master (their meta and stream are on it too) */
+    private void scanTimeouts(RedisConnection redis) {
         int batchSize = intProperty("CoreOutboundOutboxScanBatchSize", 100);
         for (int i = 0; i < batchSize; i++) {
             long now = System.currentTimeMillis();
@@ -339,9 +371,6 @@ public class CoreOutboundOutboxManager {
         return OUTBOX_PREFIX + id + ":" + msg.getSplitStatus() + ":" + msg.getRetriedNumber();
     }
 
-    private static RedisConnection redis() {
-        return RedisClient.getInstance().getSubmitMqRedis();
-    }
 
     private boolean enabled() {
         return Boolean.parseBoolean(GmmsUtility.getInstance().getCommonProperty("CoreOutboundOutboxEnable", "true"));

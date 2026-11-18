@@ -1665,6 +1665,13 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 					}
 					return processed;
 				} else {
+					// usually the DR came before its submit result was processed (the lookup entry is written then):
+					// tried again in a few seconds through the MQM job instead of SDQ (docs/5000TPS多主测试慢的环节分析.md 7.3);
+					// the same entry again (a redelivery) is one queue entry
+					if (isRedisEnable && com.king.gmms.messagequeue.EarlyDrQueue.enabled()
+							&& com.king.gmms.messagequeue.EarlyDrQueue.offer(finalMsg)) {
+						return true;
+					}
 					if (log.isInfoEnabled()) {
 						log.info(finalMsg, "[VDR-STORE] outMsgId={} status={} rssid={} has no original yet, stored for later matching",
 								finalMsg.getOutMsgID(), finalMsg.getStatusCode(), finalMsg.getRSsID());

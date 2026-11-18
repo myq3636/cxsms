@@ -238,6 +238,9 @@ public class OutboundStreamConsumer {
 
         /** false when the rest was put off (window full / no permit): the task ends. */
         private boolean processAll(List<GmmsMessage> messages, long readAt) {
+            if (ClientSendMarker.enabled() && ClientSendMarker.batchEnabled()) {
+                return processInBatches(streamKey, messages, readAt);
+            }
             long claimIdleMs = queueManager.getAutoClaimIdleMs();
             for (int i = 0; i < messages.size(); i++) {
                 GmmsMessage msg = messages.get(i);
@@ -251,6 +254,87 @@ public class OutboundStreamConsumer {
             }
             return true;
         }
+    }
+
+    /**
+     * processAll with ClientSendMarkerBatch: the MTs that have their window and permits now are sent together
+     * ({@link #sendReady}); the first that has none puts off itself and the rest, as one by one. Entries that
+     * auto-claim may have taken too (read longer ago than its idle time) and MTs without a connected session go
+     * one by one.
+     */
+    private boolean processInBatches(String streamKey, List<GmmsMessage> messages, long readAt) {
+        long claimIdleMs = queueManager.getAutoClaimIdleMs();
+        ProcessResult[] why = new ProcessResult[1];
+        int i = 0;
+        while (i < messages.size()) {
+            List<Ready> ready = new ArrayList<Ready>();
+            ProcessResult stop = null;
+            boolean single = false;
+            long start = System.nanoTime();
+            int j = i;
+            while (j < messages.size()) {
+                if (System.currentTimeMillis() - readAt >= claimIdleMs) {
+                    single = true;
+                    break;
+                }
+                GmmsMessage msg = messages.get(j);
+                Ready r;
+                try {
+                    r = prepare(msg, streamKey, why);
+                } catch (Exception e) {
+                    single = true;   // the one-by-one path handles it as before
+                    break;
+                }
+                if (r == null && why[0] == null) {
+                    single = true;   // no connected session: the one-by-one path reports the failure
+                    break;
+                }
+                countReceived(msg);
+                if (r == null) {
+                    stop = why[0];
+                    break;
+                }
+                ready.add(r);
+                j++;
+            }
+            int windowFullAt = ready.isEmpty() ? -1 : sendReady(streamKey, ready);
+            if (!ready.isEmpty()) {
+                long each = (System.nanoTime() - start) / ready.size();
+                for (int k = 0; k < ready.size(); k++) {
+                    MetricsCollector.getInstance().recordTime(MetricsNames.consumer(MetricsNames.CONSUMER_CLIENT_OUT), each);
+                }
+            }
+            if (windowFullAt >= 0) {
+                int from = i + windowFullAt;
+                defer(streamKey, new ArrayList<GmmsMessage>(messages.subList(from, messages.size())),
+                        getWindowFullRetryMs(), ProcessResult.WINDOW_FULL);
+                return false;
+            }
+            i = j;
+            if (stop != null) {
+                defer(streamKey, new ArrayList<GmmsMessage>(messages.subList(i, messages.size())),
+                        retryDelayMs(stop, messages.get(i)), stop);
+                return false;
+            }
+            if (single) {
+                GmmsMessage msg = messages.get(i);
+                ProcessResult r = processMessage(streamKey, msg, System.currentTimeMillis() - readAt >= claimIdleMs);
+                if (r != ProcessResult.DONE) {
+                    defer(streamKey, new ArrayList<GmmsMessage>(messages.subList(i, messages.size())),
+                            retryDelayMs(r, msg), r);
+                    return false;
+                }
+                i++;
+            }
+        }
+        return true;
+    }
+
+    private void countReceived(GmmsMessage msg) {
+        MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                MetricsNames.FLOW_CLIENT, msg, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
+        MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
     }
 
     /** Batch read per stream: at most about one second of the channel rate when it is limited. */
@@ -329,15 +413,86 @@ public class OutboundStreamConsumer {
     private ProcessResult processMessage(String streamKey, GmmsMessage msg, boolean mayBeClaimed) {
         long start = System.nanoTime();
         try {
-            MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
-                    MetricsNames.FLOW_CLIENT, msg, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
-            MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
-                    MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
+            countReceived(msg);
             return handleMessageSending(msg, streamKey, mayBeClaimed);
         } finally {
             MetricsCollector.getInstance().recordTime(MetricsNames.consumer(MetricsNames.CONSUMER_CLIENT_OUT),
                     System.nanoTime() - start);
         }
+    }
+
+    /** An MT with its window and permits, to be sent now on this session */
+    private static final class Ready {
+        final GmmsMessage msg;
+        final String sourceRedisId;
+        final Session session;
+        final MultiSmppSession smppSession;
+
+        Ready(GmmsMessage msg, Session session, MultiSmppSession smppSession) {
+            this.msg = msg;
+            this.sourceRedisId = msg.getRedisStreamID();
+            this.session = session;
+            this.smppSession = smppSession;
+        }
+    }
+
+    /**
+     * The session, window and permits (account and bind) for msg. null when it is not sent now: why[0] is the result to
+     * put it off with, or null when it has no connected session (the single path reports the failure).
+     */
+    private Ready prepare(GmmsMessage msg, String streamKey, ProcessResult[] why) {
+        why[0] = null;
+        Session session = MultiSmppClientFactory.getInstance().getSession(msg);
+        if (session == null || !isConnected(session)) {
+            return null;
+        }
+        int ssid = msg.getRSsID();
+        MultiSmppSession smppSession = session instanceof MultiSmppSession ? (MultiSmppSession) session : null;
+        int bindTps = smppSession != null ? smppSession.bindTps() : 0;
+        if (bindTps > 0) {
+            // the first bind of the connection, from the one picked, with room in its window and due
+            MultiSmppSession due = dueBind(smppSession, bindTps);
+            if (due == null) {
+                if (BIND_WAIT_MS.get()[0] < 0) {
+                    recordWindowFull(msg);
+                    queueManager.logNack(streamKey, groupName, consumerName, msg, true, "client_submit_window_full");
+                    why[0] = ProcessResult.WINDOW_FULL;
+                } else {
+                    why[0] = bindThrottled(msg, bindTps);
+                }
+                return null;
+            }
+            smppSession = due;
+            session = due;
+        } else if (smppSession != null && !smppSession.hasClientSubmitWindow()) {
+            recordWindowFull(msg);
+            queueManager.logNack(streamKey, groupName, consumerName, msg, true, "client_submit_window_full");
+            why[0] = ProcessResult.WINDOW_FULL;
+            return null;
+        }
+        if (!DistributedThrottlingManager.getInstance().tryAcquire(ssid)) {
+            why[0] = ProcessResult.THROTTLED;
+            return null;
+        }
+        if (bindTps > 0 && !smppSession.bindRate().take(bindTps, System.nanoTime())) {
+            // another worker took this bind's permit first: the account permit is lost, at most one
+            BIND_WAIT_MS.get()[0] = Math.max(1L, smppSession.bindRate().waitMs(bindTps, System.nanoTime()));
+            why[0] = bindThrottled(msg, bindTps);
+            return null;
+        }
+        return new Ready(msg, session, smppSession);
+    }
+
+    private SmppSubmitResult submit(Ready r) throws java.io.IOException {
+        return r.smppSession != null ? r.smppSession.submitClientOutbound(r.msg)
+                : (r.session.submit(r.msg) ? SmppSubmitResult.SENT : SmppSubmitResult.FAILED);
+    }
+
+    private void countSent(GmmsMessage msg) {
+        MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
+                MetricsNames.FLOW_CLIENT, msg, MetricsNames.ACTION_SMPP_SENT));
+        MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+                MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_SMPP_SENT));
     }
 
     private ProcessResult handleMessageSending(GmmsMessage msg, String streamKey, boolean mayBeClaimed) {
@@ -346,8 +501,12 @@ public class OutboundStreamConsumer {
         boolean markerHeld = false;
         boolean sent = false;
         try {
-            Session session = MultiSmppClientFactory.getInstance().getSession(msg);
-            if (session == null || !isConnected(session)) {
+            ProcessResult[] why = new ProcessResult[1];
+            Ready ready = prepare(msg, streamKey, why);
+            if (ready == null && why[0] != null) {
+                return why[0];
+            }
+            if (ready == null) {
                 if (useMarker) {
                     ClientSendMarker.Claim c = ClientSendMarker.claim(msg, ClientSendMarker.owner(consumerName), streamKey, sourceRedisId, mayBeClaimed);
                     if (c != ClientSendMarker.Claim.SEND) {
@@ -358,35 +517,6 @@ public class OutboundStreamConsumer {
                 handleFailure(msg, "Session disconnected", streamKey, markerHeld);
                 return ProcessResult.DONE;
             }
-            int ssid = msg.getRSsID();
-            MultiSmppSession smppSession = session instanceof MultiSmppSession ? (MultiSmppSession) session : null;
-            int bindTps = smppSession != null ? smppSession.bindTps() : 0;
-            if (bindTps > 0) {
-                // the first bind of the connection, from the one picked, with room in its window and due
-                MultiSmppSession due = dueBind(smppSession, bindTps);
-                if (due == null) {
-                    if (BIND_WAIT_MS.get()[0] < 0) {
-                        recordWindowFull(msg);
-                        queueManager.logNack(streamKey, groupName, consumerName, msg, true, "client_submit_window_full");
-                        return ProcessResult.WINDOW_FULL;
-                    }
-                    return bindThrottled(msg, bindTps);
-                }
-                smppSession = due;
-                session = due;
-            } else if (smppSession != null && !smppSession.hasClientSubmitWindow()) {
-                recordWindowFull(msg);
-                queueManager.logNack(streamKey, groupName, consumerName, msg, true, "client_submit_window_full");
-                return ProcessResult.WINDOW_FULL;
-            }
-            if (!DistributedThrottlingManager.getInstance().tryAcquire(ssid)) {
-                return ProcessResult.THROTTLED;
-            }
-            if (bindTps > 0 && !smppSession.bindRate().take(bindTps, System.nanoTime())) {
-                // another worker took this bind's permit first: the account permit is lost, at most one
-                BIND_WAIT_MS.get()[0] = Math.max(1L, smppSession.bindRate().waitMs(bindTps, System.nanoTime()));
-                return bindThrottled(msg, bindTps);
-            }
             if (useMarker) {
                 ClientSendMarker.Claim c = ClientSendMarker.claim(msg, ClientSendMarker.owner(consumerName), streamKey, sourceRedisId, mayBeClaimed);
                 if (c != ClientSendMarker.Claim.SEND) {
@@ -394,8 +524,7 @@ public class OutboundStreamConsumer {
                 }
                 markerHeld = true;
             }
-            SmppSubmitResult submitResult = smppSession != null ? smppSession.submitClientOutbound(msg)
-                    : (session.submit(msg) ? SmppSubmitResult.SENT : SmppSubmitResult.FAILED);
+            SmppSubmitResult submitResult = submit(ready);
             if (submitResult == SmppSubmitResult.WINDOW_FULL) {
                 if (markerHeld) {
                     ClientSendMarker.release(msg);
@@ -407,10 +536,7 @@ public class OutboundStreamConsumer {
             }
             if (submitResult == SmppSubmitResult.SENT) {
                 sent = true;
-                MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
-                        MetricsNames.FLOW_CLIENT, msg, MetricsNames.ACTION_SMPP_SENT));
-                MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
-                        MetricsNames.STAGE_OUT_SUBMIT, msg, true, MetricsNames.ACTION_SMPP_SENT));
+                countSent(msg);
                 boolean acked = useMarker ? ClientSendMarker.ackSent(streamKey, groupName, sourceRedisId, msg)
                         : queueManager.ackById(streamKey, groupName, sourceRedisId, msg, true);
                 if (!acked) {
@@ -435,6 +561,79 @@ public class OutboundStreamConsumer {
             }
         }
         return ProcessResult.DONE;
+    }
+
+    /**
+     * ClientSendMarkerBatch: MTs of one stream that have their window and permits (prepared in order, up to the first
+     * that has not) are claimed in one Lua, sent, and acked in one Lua. Returns the index in ready of the MT that met
+     * a full window at the submit (it and the rest are put off, their markers released), or -1. The MTs are claimed
+     * only when they are about to be sent, as one by one: a marker still means "being sent now"
+     * (docs/5000TPS多主测试慢的环节分析.md).
+     */
+    private int sendReady(String streamKey, List<Ready> ready) {
+        List<GmmsMessage> msgs = new ArrayList<GmmsMessage>(ready.size());
+        for (Ready r : ready) {
+            msgs.add(r.msg);
+        }
+        List<ClientSendMarker.Claim> claims;
+        try {
+            claims = ClientSendMarker.claimBatch(streamKey, msgs, ClientSendMarker.owner(consumerName));
+        } catch (Exception e) {
+            // the markers could not be checked (Redis error): the entries stay pending, retried by auto-claim
+            for (Ready r : ready) {
+                logger.error(r.msg, "Outbound send marker not available, left pending", e);
+                queueManager.logNack(streamKey, groupName, consumerName, r.msg, true, "send_marker_error");
+            }
+            return -1;
+        }
+        List<GmmsMessage> sentMsgs = new ArrayList<GmmsMessage>(ready.size());
+        List<String> sentIds = new ArrayList<String>(ready.size());
+        int windowFullAt = -1;
+        for (int k = 0; k < ready.size(); k++) {
+            Ready r = ready.get(k);
+            ClientSendMarker.Claim c = claims.get(k);
+            if (c != ClientSendMarker.Claim.SEND) {
+                settle(c, r.msg, streamKey, r.sourceRedisId);
+                continue;
+            }
+            try {
+                SmppSubmitResult result = submit(r);
+                if (result == SmppSubmitResult.WINDOW_FULL) {
+                    windowFullAt = k;
+                    List<GmmsMessage> release = new ArrayList<GmmsMessage>();
+                    for (int x = k; x < ready.size(); x++) {
+                        if (claims.get(x) == ClientSendMarker.Claim.SEND) {
+                            release.add(ready.get(x).msg);
+                        }
+                    }
+                    ClientSendMarker.releaseBatch(streamKey, release);
+                    recordWindowFull(r.msg);
+                    queueManager.logNack(streamKey, groupName, consumerName, r.msg, true, "client_submit_window_full");
+                    break;
+                }
+                if (result == SmppSubmitResult.SENT) {
+                    countSent(r.msg);
+                    sentMsgs.add(r.msg);
+                    sentIds.add(r.sourceRedisId);
+                } else {
+                    handleFailure(r.msg, "Session submit rejected", streamKey, true);
+                }
+            } catch (Exception e) {
+                logger.error(r.msg, "Error invoking MultiSmppSession submit", e);
+                handleFailure(r.msg, "Internal error during submit", streamKey, true);
+            }
+        }
+        if (!sentMsgs.isEmpty()) {
+            try {
+                ClientSendMarker.ackSentBatch(streamKey, groupName, sentIds, sentMsgs);
+            } catch (Exception e) {
+                // sent: never report a failure for them; a redelivery finds the markers and only acks
+                for (GmmsMessage m : sentMsgs) {
+                    logger.error(m, "Outbound MT sent, ack failed; the redelivery will not send it again", e);
+                }
+            }
+        }
+        return windowFullAt;
     }
 
     /** Not this consumer's to send: ack an entry sent before, leave one another consumer is sending. */

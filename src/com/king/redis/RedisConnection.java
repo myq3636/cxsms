@@ -977,7 +977,9 @@ public class RedisConnection {
 			+ "for i=5,#ARGV do args[#args+1] = ARGV[i] end "
 			+ "local id = redis.call('XADD', unpack(args)) "
 			+ "redis.call('SADD', 'idx:streams', KEYS[1]) "                 // StreamQueueManager.STREAM_INDEX_KEY
-			+ "redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4]) "
+			// NX: the doorbell keeps the time it was first rung, so a stream written often is not put behind the others
+			// (docs/5000TPS多主测试慢的环节分析.md 7.2); a consumer re-rings with the current time when its turn is over
+			+ "redis.call('ZADD', KEYS[2], 'NX', ARGV[3], ARGV[4]) "
 			+ "return id";
 		try (Jedis jedis = pool.getResource()) {
 			java.util.List<String> argv = new java.util.ArrayList<String>();

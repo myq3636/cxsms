@@ -1,6 +1,8 @@
 package com.king.gmms.messagequeue;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
@@ -24,7 +26,8 @@ import com.king.redis.RedisConnection;
  * </ul>
  * After a send, {@link #ackSent} marks it sent, acks and deletes the marker in one Lua; if not sent
  * (window full, no permit, rejected) {@link #release} or {@link #ackFailed} remove it.
- * ClientSendIdempotency=false sends without a marker.
+ * ClientSendIdempotency=false sends without a marker. ClientSendMarkerBatch: the MTs of one stream that have their
+ * window and permits are claimed in one Lua ({@link #claimBatch}), sent, and acked in one Lua ({@link #ackSentBatch}).
  */
 public final class ClientSendMarker {
 	private static final SystemLogger log = SystemLogger.getSystemLogger(ClientSendMarker.class);
@@ -97,14 +100,30 @@ public final class ClientSendMarker {
 		return PREFIX + id + ":" + msg.getSplitStatus() + ":" + msg.getRetriedNumber();
 	}
 
-	private static RedisConnection redis() {
-		return RedisClient.getInstance().getSubmitMqRedis();
+	/**
+	 * The marker is on the submit MQ master of the stream the MT was read from (its ack is one Lua with the stream);
+	 * one master: that one. Not read from a stream (or unknown): the master of its outbound stream.
+	 */
+	private static RedisConnection redis(GmmsMessage msg) {
+		RedisClient rc = RedisClient.getInstance();
+		if (rc.submitMqCount() <= 1) {
+			return rc.getSubmitMqRedis();
+		}
+		String stream = msg == null ? null : msg.getRedisStreamKey();
+		if (stream == null && msg != null) {
+			try {
+				stream = StreamQueueManager.getInstance().outboundTargetKey(msg);
+			} catch (Exception e) {
+				// master 0
+			}
+		}
+		return rc.submitMq(stream);
 	}
 
 	/** Claim the send of msg for owner. Redis errors are thrown: the caller must not send. */
 	public static Claim claim(GmmsMessage msg, String owner) {
 		String key = key(msg);
-		Object r = redis().evalScript(CLAIM_LUA, Arrays.asList(key), Arrays.asList(owner,
+		Object r = redis(msg).evalScript(CLAIM_LUA, Arrays.asList(key), Arrays.asList(owner,
 				String.valueOf(System.currentTimeMillis()), String.valueOf(longProperty("ClientSendLeaseMs", 60000L)),
 				String.valueOf(TTL_SECONDS)));
 		String state = String.valueOf(r);
@@ -138,7 +157,7 @@ public final class ClientSendMarker {
 		boolean gone;
 		try {
 			// through evalScript: a Redis error must not look like a missing entry
-			gone = ((java.util.List<?>) redis().evalScript("return redis.call('XRANGE', KEYS[1], ARGV[1], ARGV[1], 'COUNT', 1)",
+			gone = ((java.util.List<?>) RedisClient.getInstance().submitMq(streamKey).evalScript("return redis.call('XRANGE', KEYS[1], ARGV[1], ARGV[1], 'COUNT', 1)",
 					Arrays.asList(streamKey), Arrays.asList(redisId))).isEmpty();
 		} catch (RuntimeException e) {
 			release(msg);
@@ -163,7 +182,7 @@ public final class ClientSendMarker {
 	}
 
 	private static boolean ack(String streamKey, String group, String redisId, GmmsMessage msg, boolean sent) {
-		Object r = redis().evalScript(ACK_LUA, Arrays.asList(streamKey, key(msg)),
+		Object r = RedisClient.getInstance().submitMq(streamKey).evalScript(ACK_LUA, Arrays.asList(streamKey, key(msg)),
 				Arrays.asList(group, redisId, sent ? "1" : "0"));
 		boolean acked = r instanceof Long && (Long) r > 0;
 		StreamQueueManager.getInstance().traceAck(streamKey, group, redisId, msg, true, acked);
@@ -176,7 +195,7 @@ public final class ClientSendMarker {
 	/** Sent, the entry not settled yet (its result is still to be written): a redelivery only acks. */
 	public static boolean markSent(GmmsMessage msg) {
 		try {
-			redis().evalScript("return redis.call('SET', KEYS[1], 'D', 'EX', tonumber(ARGV[1]))", Arrays.asList(key(msg)),
+			redis(msg).evalScript("return redis.call('SET', KEYS[1], 'D', 'EX', tonumber(ARGV[1]))", Arrays.asList(key(msg)),
 					Arrays.asList(String.valueOf(TTL_SECONDS)));
 			return true;
 		} catch (Exception e) {
@@ -185,10 +204,125 @@ public final class ClientSendMarker {
 		}
 	}
 
+	/** ClientSendMarkerBatch (default true): claim and ack the MTs a Client task sends together in one Lua each */
+	public static boolean batchEnabled() {
+		return !"false".equalsIgnoreCase(GmmsUtility.getInstance().getCommonProperty("ClientSendMarkerBatch", "true").trim());
+	}
+
+	// KEYS = markers; ARGV as CLAIM_LUA. For each marker the CLAIM_LUA answer.
+	private static final String CLAIM_BATCH_LUA =
+			"local out = {} "
+			+ "for i = 1, #KEYS do "
+			+ "  local v = redis.call('GET', KEYS[i]) "
+			+ "  if not v then "
+			+ "    redis.call('SET', KEYS[i], 'S|' .. ARGV[1] .. '|' .. ARGV[2], 'EX', tonumber(ARGV[4])) out[i] = 'SEND' "
+			+ "  elseif v == 'D' then out[i] = 'SENT' "
+			+ "  else "
+			+ "    local a = string.find(v, '|', 3, true) "
+			+ "    local owner = a and string.sub(v, 3, a - 1) or '' "
+			+ "    local at = a and tonumber(string.sub(v, a + 1)) or 0 "
+			+ "    if owner == ARGV[1] then "
+			+ "      redis.call('SET', KEYS[i], 'S|' .. ARGV[1] .. '|' .. ARGV[2], 'EX', tonumber(ARGV[4])) out[i] = 'SEND' "
+			+ "    elseif at and tonumber(ARGV[2]) - at < tonumber(ARGV[3]) then out[i] = 'BUSY' "
+			+ "    else out[i] = 'STALE' end "
+			+ "  end "
+			+ "end "
+			+ "return out";
+
+	// KEYS[1]=stream KEYS[2..]=markers ARGV[1]=group ARGV[2..]=ids: ACK_LUA with markSent for each (acked: the marker
+	// deleted; not acked: kept as sent, so a redelivery only acks)
+	private static final String ACK_SENT_BATCH_LUA =
+			"local r = {} "
+			+ "for i = 2, #KEYS do "
+			+ "  local acked = redis.call('XACK', KEYS[1], ARGV[1], ARGV[i]) "
+			+ "  if acked > 0 then "
+			+ "    redis.call('XDEL', KEYS[1], ARGV[i]) redis.call('DEL', KEYS[i]) "
+			+ "  elseif redis.call('EXISTS', KEYS[i]) == 1 then "
+			+ "    redis.call('SET', KEYS[i], 'D', 'KEEPTTL') "
+			+ "  end "
+			+ "  r[#r + 1] = acked "
+			+ "end "
+			+ "return r";
+
+	/**
+	 * {@link #claim} for MTs of one stream, about to be sent now (their window and permits taken), in one Lua.
+	 * Redis errors are thrown: none of them may be sent.
+	 */
+	public static List<Claim> claimBatch(String streamKey, List<GmmsMessage> msgs, String owner) {
+		List<String> keys = new ArrayList<String>(msgs.size());
+		for (GmmsMessage m : msgs) {
+			keys.add(key(m));
+		}
+		List<?> r = (List<?>) RedisClient.getInstance().submitMq(streamKey).evalScript(CLAIM_BATCH_LUA, keys,
+				Arrays.asList(owner, String.valueOf(System.currentTimeMillis()),
+						String.valueOf(longProperty("ClientSendLeaseMs", 60000L)), String.valueOf(TTL_SECONDS)));
+		List<Claim> out = new ArrayList<Claim>(msgs.size());
+		for (int i = 0; i < msgs.size(); i++) {
+			String state = String.valueOf(r.get(i));
+			GmmsMessage msg = msgs.get(i);
+			if ("SEND".equals(state)) {
+				out.add(Claim.SEND);
+			} else if ("BUSY".equals(state)) {
+				log.info(msg, "Outbound MT is being sent by another consumer, left pending. marker={}", keys.get(i));
+				out.add(Claim.BUSY);
+			} else {
+				if ("SENT".equals(state)) {
+					log.info(msg, "Outbound MT redelivered after it was sent, acked without sending. marker={}", keys.get(i));
+				} else {
+					log.warn(msg, "Outbound MT redelivered after its sender stopped while sending, not sent again "
+							+ "(the Core outbox reports it). marker={}", keys.get(i));
+				}
+				out.add(Claim.ACK_ONLY);
+			}
+		}
+		return out;
+	}
+
+	/** {@link #ackSent} for MTs of one stream in one Lua; redisIds: their entries as read. Errors are thrown. */
+	public static List<Boolean> ackSentBatch(String streamKey, String group, List<String> redisIds, List<GmmsMessage> msgs) {
+		List<String> keys = new ArrayList<String>(msgs.size() + 1);
+		keys.add(streamKey);
+		for (GmmsMessage m : msgs) {
+			keys.add(key(m));
+		}
+		List<String> args = new ArrayList<String>(redisIds.size() + 1);
+		args.add(group);
+		args.addAll(redisIds);
+		List<?> r = (List<?>) RedisClient.getInstance().submitMq(streamKey).evalScript(ACK_SENT_BATCH_LUA, keys, args);
+		List<Boolean> out = new ArrayList<Boolean>(msgs.size());
+		for (int i = 0; i < msgs.size(); i++) {
+			Object v = i < r.size() ? r.get(i) : null;
+			boolean acked = v instanceof Long && (Long) v > 0;
+			StreamQueueManager.getInstance().traceAck(streamKey, group, redisIds.get(i), msgs.get(i), true, acked);
+			if (!acked) {
+				log.warn(msgs.get(i), "Outbound stream ack returned 0 (ack_returned_zero). streamKey={}, redisId={}", streamKey, redisIds.get(i));
+			}
+			out.add(acked);
+		}
+		return out;
+	}
+
+	/** {@link #release} for MTs of one stream, claimed and then not sent (window full) */
+	public static void releaseBatch(String streamKey, List<GmmsMessage> msgs) {
+		if (msgs.isEmpty()) {
+			return;
+		}
+		List<String> keys = new ArrayList<String>(msgs.size());
+		for (GmmsMessage m : msgs) {
+			keys.add(key(m));
+		}
+		try {
+			RedisClient.getInstance().submitMq(streamKey).evalScript("return redis.call('DEL', unpack(KEYS))", keys,
+					java.util.Collections.<String>emptyList());
+		} catch (Exception e) {
+			log.warn("Outbound send markers not released ({}). streamKey={}", keys, streamKey, e);
+		}
+	}
+
 	/** Not sent, entry stays pending for a retry: remove the marker so the retry can send. */
 	public static void release(GmmsMessage msg) {
 		try {
-			redis().evalScript("return redis.call('DEL', KEYS[1])", Arrays.asList(key(msg)),
+			redis(msg).evalScript("return redis.call('DEL', KEYS[1])", Arrays.asList(key(msg)),
 					java.util.Collections.<String>emptyList());
 		} catch (Exception e) {
 			// the retry by this consumer reclaims its own marker; another consumer waits for the lease

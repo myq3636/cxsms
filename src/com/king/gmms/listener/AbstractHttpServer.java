@@ -35,7 +35,6 @@ import com.king.gmms.protocol.smpp.pdu.Response;
 import com.king.gmms.throttle.ReportInMsgCountTimer;
 import com.king.gmms.throttle.ThrottlingControl;
 import com.king.message.gmms.GmmsMessage;
-import com.king.rest.util.StringUtility;
 
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
@@ -586,10 +585,6 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 	
 	protected boolean checkIncomingThrottlingControl(int ssid, GmmsMessage msg) {
 		boolean ret = false;
-		
-		if(!StringUtility.stringIsNotEmpty(GmmsUtility.getInstance().getRedisClient().getString("thcon"))){    		
-        	return ret;
-    	}
 		
 		if (ThrottlingControl.getInstance().isAllowedToReceive(ssid)) {
 			ret = true;

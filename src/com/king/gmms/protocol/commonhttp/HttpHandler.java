@@ -21,7 +21,6 @@ import com.king.gmms.domain.http.HttpParam;
 import com.king.gmms.throttle.ThrottlingControl;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
-import com.king.rest.util.StringUtility;
 
 public abstract class HttpHandler {
 	private static SystemLogger log = SystemLogger.getSystemLogger(HttpHandler.class);
@@ -373,10 +372,6 @@ public abstract class HttpHandler {
 	
 	protected boolean checkIncomingThrottlingControl(int ssid, String args) {
 		boolean ret = false;
-		
-		if(!StringUtility.stringIsNotEmpty(GmmsUtility.getInstance().getRedisClient().getString("thcon"))){    		
-        	return ret;
-    	}
 		
 		if (ThrottlingControl.getInstance().isAllowedToReceive(ssid)) {
 			ret = true;

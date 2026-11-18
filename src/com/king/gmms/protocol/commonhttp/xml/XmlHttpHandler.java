@@ -9,7 +9,6 @@ import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 
 import com.king.framework.SystemLogger;
-import com.king.gmms.GmmsUtility;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.http.HttpInterface;
 import com.king.gmms.domain.http.HttpParam;
@@ -19,7 +18,6 @@ import com.king.gmms.throttle.ThrottlingControl;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
 import com.king.message.gmms.MessageIdGenerator;
-import com.king.rest.util.StringUtility;
 
 public class XmlHttpHandler extends XmlMessageConverter {
 	private static SystemLogger log = SystemLogger
@@ -240,10 +238,6 @@ public class XmlHttpHandler extends XmlMessageConverter {
 	
 	protected boolean checkIncomingThrottlingControl(int ssid, GmmsMessage msg) {
 		boolean ret = false;
-		
-		if(!StringUtility.stringIsNotEmpty(GmmsUtility.getInstance().getRedisClient().getString("thcon"))){    		
-        	return ret;
-    	}
 		
 		if (ThrottlingControl.getInstance().isAllowedToReceive(ssid)) {
 			ret = true;

@@ -91,7 +91,7 @@ public final class DrTransfer {
 				from = new StreamEntryID(last.getTime(), last.getSequence() + 1);
 			}
 			if (!dryRun && redis.xlenReportMq(key) == 0) {
-				try (Jedis j = redis.getReportMqRedis().getJedis()) {
+				try (Jedis j = redis.reportMq(key).getJedis()) {
 					j.del(key);
 				}
 				redis.zremReportMq(StreamQueueManager.ZSET_DR_PENDING_ACTIVE, key);
@@ -105,7 +105,7 @@ public final class DrTransfer {
 
 	private static List<String> groups(RedisClient redis, String key) {
 		List<String> names = new ArrayList<String>();
-		try (Jedis j = redis.getReportMqRedis().getJedis()) {
+		try (Jedis j = redis.reportMq(key).getJedis()) {
 			for (StreamGroupInfo g : j.xinfoGroups(key)) {
 				names.add(g.getName());
 			}
@@ -116,7 +116,7 @@ public final class DrTransfer {
 	}
 
 	private static List<StreamEntry> range(RedisClient redis, String key, StreamEntryID from) {
-		try (Jedis j = redis.getReportMqRedis().getJedis()) {
+		try (Jedis j = redis.reportMq(key).getJedis()) {
 			return j.xrange(key, from, (StreamEntryID) null, PAGE);
 		}
 	}

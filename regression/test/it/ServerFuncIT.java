@@ -260,10 +260,10 @@ public class ServerFuncIT extends ItSupport {
 	static void limits() throws Exception {
 		try (R r = new R()) { r.bind("f71", "pw71"); Thread.sleep(1100); int ok = 0, th = 0, other = 0; for (int i = 0; i < 60; i++) { r.send(4, 800 + i, sub("t" + i)); } for (int i = 0; i < 60; i++) { Pdu p = r.read(); if (p == null) other++; else if (p.status == 0) ok++; else if (p.status == 0x58) th++; else other++; }
 			check(th > 0 && ok > 0 && ok < 30 && other == 0, "T-01 SMSOptionIncomingThrottlingNum=5, burst 60: ok=" + ok + " throttled=" + th + " other=" + other); }
-		java.lang.reflect.Field tc = com.king.gmms.connectionpool.session.MultiSmppSession.class.getDeclaredField("lastThconCheckTime"); tc.setAccessible(true);
-		try (R r = new R()) { r.bind("f70", "pw70"); jedis.del("thcon"); tc.set(null, 0L); Pdu p = r.submit(sub("off")); check(p != null && p.status == 0x58, "T-02a thcon key missing -> all submits throttled: " + p);
-			r.send(0x15, 901, new byte[0]); Pdu e = r.read(); check(e != null && e.status == 0, "T-02b enquire_link still answered");
-			jedis.set("thcon", "1"); tc.set(null, 0L); Pdu q = r.submit(sub("on")); check(q != null && q.status == 0, "T-02c thcon back: accepted"); }
+		// the Redis switch thcon is no longer read (docs/Redis消息操作次数统计.md): submits are taken with or without it
+		try (R r = new R()) { r.bind("f70", "pw70"); jedis.del("thcon"); Pdu p = r.submit(sub("off")); check(p != null && p.status == 0, "T-02a thcon key missing -> still accepted: " + p);
+			r.send(0x15, 901, new byte[0]); Pdu e = r.read(); check(e != null && e.status == 0, "T-02b enquire_link answered");
+			jedis.set("thcon", "1"); Pdu q = r.submit(sub("on")); check(q != null && q.status == 0, "T-02c thcon set: accepted"); }
 		try (R r = new R()) { r.bind("f72", "pw72"); jedis.set("stock:72", "2"); int[] st = new int[3]; for (int i = 0; i < 3; i++) st[i] = r.submit(sub("c" + i)).status;
 			check(st[0] == 0 && st[1] == 0 && st[2] == 0x59, "T-03a SMSOptionChargeByGateWay, stock 2: " + Arrays.toString(st) + " stock=" + jedis.get("stock:72"));
 			jedis.del("stock:72"); Pdu p = r.submit(sub("nostock")); check(p != null && p.status == 0x59, "T-03b no stock key: refused " + p); }

@@ -219,7 +219,7 @@ public class MTStreamConsumer {
         }
         try {
             return StreamAttempt.Batch.claim(streamKey, groupName, messages,
-                    com.king.redis.RedisClient.getInstance().getSubmitMqRedis(), false,
+                    com.king.redis.RedisClient.getInstance().submitMq(streamKey), false,
                     consumerName + ":" + Thread.currentThread().getId());
         } catch (Exception e) {
             logger.error("MT batch claim failed, {} entries left pending for the auto-claim. streamKey={}",
@@ -265,7 +265,7 @@ public class MTStreamConsumer {
                 return;
             }
             if (mayBeClaimed && StreamAttempt.entryGoneAfterBegin(streamKey, sourceRedisId,
-                    com.king.redis.RedisClient.getInstance().getSubmitMqRedis())) {
+                    com.king.redis.RedisClient.getInstance().submitMq(streamKey))) {
                 logger.info(msg, "MT already acked by another consumer, this copy dropped. streamKey={}, redisId={}",
                         streamKey, sourceRedisId);
                 return;
@@ -279,7 +279,7 @@ public class MTStreamConsumer {
                 }
             }
             if (processed && attempt && batch != null) {
-                batch.finished(msg);   // flags written now, acked with the batch
+                batch.finished(msg);   // acked with the batch; flags written now or kept in memory (Batch.finished)
             } else if (processed) {
                 // with an attempt the ack also removes its marker
                 boolean acked = attempt ? StreamAttempt.finish(streamKey, groupName, sourceRedisId)

@@ -142,7 +142,8 @@ public final class StreamAttempt {
 	 * thread until {@link #finish} or {@link #abandon}. Redis errors are thrown: the caller must not process.
 	 */
 	public static Start begin(GmmsMessage msg, String owner) {
-		return claim(markerKey(msg), RedisClient.getInstance().getSubmitMqRedis(), false, owner, msg);
+		// on the master of the stream it was read from (stream:mt:pending), as the batch claim
+		return claim(markerKey(msg), RedisClient.getInstance().submitMq(msg.getRedisStreamKey()), false, owner, msg);
 	}
 
 	/**
@@ -318,6 +319,19 @@ public final class StreamAttempt {
 			action.run();
 		} else {
 			a.afterDone.add(action);
+		}
+	}
+
+	/** Write the pending flags now (e.g. after a produce to another Redis); on an error they stay for the final flush. */
+	public static void flushNow() {
+		StreamAttempt a = current.get();
+		if (a == null) {
+			return;
+		}
+		try {
+			a.flush(false, false);
+		} catch (Exception e) {
+			log.warn("Attempt flags not written now, kept for the final flush. marker={}", a.markerKey, e);
 		}
 	}
 
@@ -508,6 +522,8 @@ public final class StreamAttempt {
 		private final List<GmmsMessage> toAck = new ArrayList<GmmsMessage>();
 		private final List<String> toAckIds = new ArrayList<String>();
 		private final List<String> toAckMarkers = new ArrayList<String>();
+		/** after-done actions of the entries whose flags stay in memory ({@link #finished}): run once they are acked */
+		private final List<Runnable> afterAck = new ArrayList<Runnable>();
 
 		private Batch(String streamKey, String group, RedisConnection redis, boolean trackDone, String owner, long claimedAt) {
 			this.streamKey = streamKey;
@@ -594,15 +610,18 @@ public final class StreamAttempt {
 		}
 
 		/**
-		 * The entry is processed: its flags (and _done for entries) are written and its after-done actions run now, as
-		 * {@link StreamAttempt#finish} does; the ack waits for {@link #ackAll}.
+		 * The entry is processed; the ack waits for {@link #ackAll}. Its flags (and _done for entries) are written and its
+		 * after-done actions run now, as {@link StreamAttempt#finish} does, unless they can stay in memory
+		 * ({@link #flagsInMemory}): the ack deletes the marker anyway, and the after-done actions run after the ack.
 		 */
 		public void finished(GmmsMessage msg) {
 			StreamAttempt a = current.get();
 			current.remove();
 			String id = readIds.get(msg);
 			Object[] c = claims.get(id);
-			if (a != null) {
+			if (a != null && flagsInMemory(a)) {
+				afterAck.addAll(a.afterDone);
+			} else if (a != null) {
 				a.flush(false, a.trackDone);
 				for (Runnable action : a.afterDone) {
 					try {
@@ -615,6 +634,25 @@ public final class StreamAttempt {
 			toAck.add(msg);
 			toAckIds.add(id);
 			toAckMarkers.add(a != null ? a.markerKey : (String) c[0]);
+		}
+
+		/**
+		 * CoreStreamAttemptBatchFlagsInMemory (default true): the flags of a finished entry are not written when it is
+		 * acked within half the lease and none of them guards a message written out (a produce, p:; a delivery to a
+		 * customer session; a reroute or resend mark, x:). A crash before the ack then repeats the rest (CDR, statistics,
+		 * a DR to the customer); a message is never written out twice (docs/Redis消息操作次数统计.md).
+		 */
+		private boolean flagsInMemory(StreamAttempt a) {
+			if ("false".equalsIgnoreCase(GmmsUtility.getInstance().getCommonProperty("CoreStreamAttemptBatchFlagsInMemory", "true").trim())
+					|| System.currentTimeMillis() - claimedAt > longProperty("CoreMtLeaseMs", 60000L) / 2) {
+				return false;
+			}
+			for (String field : a.pending.keySet()) {
+				if (field.startsWith(PART_PREFIX) || field.startsWith(MARK_PREFIX) || field.startsWith("delivery#")) {
+					return false;
+				}
+			}
+			return true;
 		}
 
 		/** An entry an earlier attempt finished (Start.DONE): only acked, with the batch */
@@ -645,6 +683,14 @@ public final class StreamAttempt {
 			toAck.clear();
 			toAckIds.clear();
 			toAckMarkers.clear();
+			for (Runnable action : afterAck) {
+				try {
+					action.run();
+				} catch (Exception e) {
+					log.warn("Attempt after-done action failed after the batch ack. stream={}", streamKey, e);
+				}
+			}
+			afterAck.clear();
 		}
 	}
 

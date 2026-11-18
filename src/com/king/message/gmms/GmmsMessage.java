@@ -85,6 +85,7 @@ public class GmmsMessage extends MessageBase {
 	protected String redisStreamID = null; // V4.0 Redis Stream ID for ACK
 	protected long redisFence = -1L; // C-9: 该消息所属 MQM 任期纪元(来自 stream 字段, 非序列化); -1=缺失
 	protected transient String redisStreamMessageType = null; // metrics hint: original type read from Redis
+	protected transient String redisStreamKey = null; // the stream it was read from: its MQ master (docs/Redis多主分片设计.md)
 	
 	
 //	protected boolean inClientPull = false;
@@ -472,6 +473,7 @@ public class GmmsMessage extends MessageBase {
 		this.routingSsIDs = oneMsg.getRoutingSsIDs();
 		this.outsender = oneMsg.getOutsender();
 		this.redisStreamID = oneMsg.redisStreamID;
+		this.redisStreamKey = oneMsg.redisStreamKey;
 	}
 
 	// public String getOwnerA2P() {
@@ -846,6 +848,15 @@ public class GmmsMessage extends MessageBase {
 
 	public void setRedisStreamID(String redisStreamID) {
 		this.redisStreamID = redisStreamID;
+	}
+
+	/** The stream this message was read from (not serialized), null if it was not read from one */
+	public String getRedisStreamKey() {
+		return redisStreamKey;
+	}
+
+	public void setRedisStreamKey(String redisStreamKey) {
+		this.redisStreamKey = redisStreamKey;
 	}
 
 	public long getRedisFence() {

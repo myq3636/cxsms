@@ -1076,10 +1076,13 @@ public class GmmsUtility {
 			"CoreHoldReleaseTickMs", "CoreHoldRecoverIntervalMs", "CoreHoldRecoverIdleMs",
 			"ServerDrStreamShardFilter", "CoreInboundDRShardEnable",
 			"RedisStreamMaxDeliveries", "RedisStreamIndexFullScanMinutes", "CoreStreamTaskMaxBatches", "CoreStreamTaskMaxMs",
-			"CoreResultStreamSharded", "CoreDrResultIdempotency", "CoreStreamAttemptBatch",
+			"CoreResultStreamSharded", "CoreDrResultIdempotency", "CoreStreamAttemptBatch", "CoreStreamAttemptBatchFlagsInMemory",
+			"ThrottleInSyncIntervalMs",
 			"CoreDbFallbackInline", "CsmReassembleMode", "CoreCsmExpirySweep",
 			"CoreCsmExpiryIntervalSec", "CoreCsmExpiryBatch", "CoreCsmExpiryLeaseMs",
-			"ClientSendIdempotency", "ClientSendLeaseMs", "ClientStreamTaskMaxBatches", "ClientStreamTaskMaxMs",
+			"ClientSendIdempotency", "ClientSendMarkerBatch", "ClientSendLeaseMs",
+			"EarlyDr.Enable", "EarlyDr.DelayMs", "EarlyDr.MaxTries", "EarlyDr.TtlSeconds", "EarlyDr.BatchSize",
+			"EarlyDr.ClaimTimeoutMs", "EarlyDr.IntervalMs", "ClientStreamTaskMaxBatches", "ClientStreamTaskMaxMs",
 			"SmppServerBindTimeoutMs", "SmppServerMaxConnections", "SmppServerMaxConnectionsPerIp",
 			"ServerStreamTaskMaxBatches", "ServerStreamTaskMaxMs",
 			"SmppPduLogEnable", "SmppServerSessionKeeperShared", "SmppServerSendQueueMax",
@@ -1250,9 +1253,12 @@ public class GmmsUtility {
 				|| "CoreResultStreamSharded".equals(key)
 				|| "CoreDrResultIdempotency".equals(key)
 				|| "CoreStreamAttemptBatch".equals(key)
+				|| "CoreStreamAttemptBatchFlagsInMemory".equals(key)
 				|| "CoreDbFallbackInline".equals(key)
 				|| "CoreCsmExpirySweep".equals(key)
 				|| "ClientSendIdempotency".equals(key)
+				|| "ClientSendMarkerBatch".equals(key)
+				|| "EarlyDr.Enable".equals(key)
 				|| "SmppPduLogEnable".equals(key)
 				|| "SmppServerSessionKeeperShared".equals(key)
 				|| "ServerDrAckOnResp".equals(key)

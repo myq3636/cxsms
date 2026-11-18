@@ -200,6 +200,14 @@ public class StreamQueueManager {
 	private int calculateDrShardId(GmmsMessage msg, int targetSsid) {
 		int totalShards = GmmsUtility.getInstance().getTotalShards();
 		if (totalShards <= 1 || msg == null) return 0;
+		if (redisClient.reportMqCount() > 1 && isResultStreamSharded()) {
+			// several report MQ masters: the shard of its result stream (resultStreamKey), so that the Server writes the
+			// customer's result and acks the DR on one master in one Lua (docs/Redis多主分片设计.md 8.2)
+			String id = !isBlank(msg.getMsgID()) ? msg.getMsgID() : msg.getInMsgID();
+			if (!isBlank(id)) {
+				return (id.hashCode() & Integer.MAX_VALUE) % totalShards;
+			}
+		}
 		String hashKey;
 		if (!isBlank(msg.getMsgID())) {
 			hashKey = targetSsid + "_" + msg.getMsgID();
@@ -372,7 +380,7 @@ public class StreamQueueManager {
 			+ "args[#args+1] = ARGV[1] args[#args+1] = '*' args[#args+1] = 'body' args[#args+1] = ARGV[4] "
 			+ "local id = redis.call('XADD', unpack(args)) "
 			+ "redis.call('SADD', '" + STREAM_INDEX_KEY + "', KEYS[1]) "
-			+ "redis.call('ZADD', KEYS[2], ARGV[3], KEYS[1]) "
+			+ "redis.call('ZADD', KEYS[2], 'NX', ARGV[3], KEYS[1]) "
 			+ "local acked = redis.call('XACK', KEYS[3], ARGV[5], ARGV[6]) "
 			+ "if acked > 0 then redis.call('XDEL', KEYS[3], ARGV[6]) end "
 			+ "return {id, acked}";
@@ -386,8 +394,10 @@ public class StreamQueueManager {
 		String key = resultStreamKey(msg);
 		String zsetKey = getDoorbellZSet(key);
 		try {
-			if (zsetKey == null || isBackPressureBlocked(key, false)) {
-				// unusual: the two separate steps (produce reports a blocked stream itself)
+			if (zsetKey == null || isBackPressureBlocked(key, false)
+					|| redisClient.reportMq(key) != redisClient.reportMq(drStream)) {
+				// unusual: the two separate steps (produce reports a blocked stream itself; with several report MQ
+				// masters the two streams are on one master, docs/Redis多主分片设计.md 8.2, unless their shards differ)
 				if (!produce(key, msg, false)) {
 					return false;
 				}
@@ -395,7 +405,7 @@ public class StreamQueueManager {
 				return true;
 			}
 			long opStart = System.nanoTime();
-			List<?> r = (List<?>) redisClient.getReportMqRedis().evalScript(RESULT_AND_ACK_LUA,
+			List<?> r = (List<?>) redisClient.reportMq(key).evalScript(RESULT_AND_ACK_LUA,
 					Arrays.asList(key, zsetKey, drStream),
 					Arrays.asList(String.valueOf(getStreamMaxLen()), isApproximateTrimming() ? "~" : "",
 							String.valueOf(System.currentTimeMillis()),
@@ -434,7 +444,7 @@ public class StreamQueueManager {
 			+ "args[#args+1] = ARGV[1] args[#args+1] = '*' args[#args+1] = 'body' args[#args+1] = ARGV[5] "
 			+ "local id = redis.call('XADD', unpack(args)) "
 			+ "redis.call('SADD', '" + STREAM_INDEX_KEY + "', KEYS[1]) "
-			+ "redis.call('ZADD', KEYS[2], ARGV[3], KEYS[1]) "
+			+ "redis.call('ZADD', KEYS[2], 'NX', ARGV[3], KEYS[1]) "
 			+ "if KEYS[4] ~= '' then "
 			+ "  redis.call('SETEX', KEYS[4], ARGV[6], ARGV[5]) "
 			+ "  redis.call('ZADD', KEYS[5], ARGV[7], KEYS[4]) "
@@ -487,7 +497,7 @@ public class StreamQueueManager {
 				incrementStreamCounter(MetricsNames.FLOW_OUT, key, msg, MetricsNames.ACTION_WRITE_FAIL);
 				return false;
 			}
-			com.king.redis.RedisConnection target = isSubmitMq ? redisClient.getSubmitMqRedis() : redisClient.getReportMqRedis();
+			com.king.redis.RedisConnection target = redisClient.mq(key, isSubmitMq);
 			String marker = StreamAttempt.currentMarkerOn(target);
 			CoreOutboundOutboxManager.OutboxWrite outbox = CoreOutboundOutboxManager.getInstance().outboxWrite(msg, key);
 			List<String> flags = marker == null ? new ArrayList<String>() : StreamAttempt.pendingFlags();
@@ -515,6 +525,11 @@ public class StreamQueueManager {
 				StreamAttempt.produced(partField, id, flags);
 			} else {
 				StreamAttempt.producedElsewhere(partField, id);
+				if (redisClient.isMultiMaster()) {
+					// the usual case with several masters (the MT's marker and the stream it is written to on two): the
+					// produce recorded at once, not with the next flush, so a crash in between cannot write it again
+					StreamAttempt.flushNow();
+				}
 			}
 			if ("DUP".equals(String.valueOf(r.get(0)))) {
 				logger.info(msg, "{} already produced to {} as {}, not produced again", partField, key, id);
@@ -620,11 +635,27 @@ public class StreamQueueManager {
 		return null;
 	}
 
+	private final java.util.concurrent.atomic.AtomicInteger doorbellTurn = new java.util.concurrent.atomic.AtomicInteger();
+
+	/** The first stream this node is responsible for on the doorbell, of each MQ master in turn (one master: as before) */
 	public String popResponsibleDoorbell(String doorbellKey, boolean isSubmitMq) {
+		com.king.redis.RedisConnection[] masters = redisClient.mqs(isSubmitMq);
+		if (masters.length <= 1) {
+			return masters.length == 0 ? null : popResponsibleDoorbell(doorbellKey, masters[0]);
+		}
+		int first = (doorbellTurn.getAndIncrement() & Integer.MAX_VALUE) % masters.length;
+		for (int i = 0; i < masters.length; i++) {
+			String streamKey = popResponsibleDoorbell(doorbellKey, masters[(first + i) % masters.length]);
+			if (streamKey != null) {
+				return streamKey;
+			}
+		}
+		return null;
+	}
+
+	private String popResponsibleDoorbell(String doorbellKey, com.king.redis.RedisConnection c) {
 		int scanLimit = getDoorbellScanLimit();
-		Set<String> candidates = isSubmitMq
-			? redisClient.zrangeSubmitMq(doorbellKey, 0, scanLimit - 1)
-			: redisClient.zrangeReportMq(doorbellKey, 0, scanLimit - 1);
+		Set<String> candidates = c.zrangeDoorbell(doorbellKey, 0, scanLimit - 1);
 		if (candidates == null || candidates.isEmpty()) {
 			return null;
 		}
@@ -639,7 +670,6 @@ public class StreamQueueManager {
 			return null;
 		}
 		// one Lua for the candidates in order: an empty stream loses its doorbell, the first one with entries is popped
-		com.king.redis.RedisConnection c = isSubmitMq ? redisClient.getSubmitMqRedis() : redisClient.getReportMqRedis();
 		Object popped = c.evalScript(POP_DOORBELL_LUA, keys, new ArrayList<String>());
 		return popped instanceof String ? (String) popped : null;
 	}
@@ -668,7 +698,7 @@ public class StreamQueueManager {
 	 * tasks busy-looped on a stream with an entry in flight).
 	 */
 	public long unreadEntries(String streamKey, String groupName, boolean isSubmitMq) {
-		com.king.redis.RedisConnection c = isSubmitMq ? redisClient.getSubmitMqRedis() : redisClient.getReportMqRedis();
+		com.king.redis.RedisConnection c = redisClient.mq(streamKey, isSubmitMq);
 		try {
 			Object r = c.evalScript(UNREAD_ENTRIES_LUA, Arrays.asList(streamKey), Arrays.asList(groupName));
 			if (r instanceof Number) {
@@ -685,7 +715,7 @@ public class StreamQueueManager {
 
 	/** XLEN + ZREM in one Lua: a separate check would drop the doorbell of an entry produced in between. */
 	boolean removeDoorbellIfEmpty(String doorbellKey, String streamKey, boolean isSubmitMq) {
-		com.king.redis.RedisConnection c = isSubmitMq ? redisClient.getSubmitMqRedis() : redisClient.getReportMqRedis();
+		com.king.redis.RedisConnection c = redisClient.mq(streamKey, isSubmitMq);
 		try {
 			Object r = c.evalScript(REMOVE_DOORBELL_IF_EMPTY_LUA, Arrays.asList(doorbellKey, streamKey),
 					new ArrayList<String>());
@@ -988,6 +1018,7 @@ public class StreamQueueManager {
 				GmmsMessage msg = SerializableHandler.convertRedisMssage2GmmsMessage(body);
 				if (msg != null) {
 					msg.setRedisStreamID(se.getID().toString());
+					msg.setRedisStreamKey(entry.getKey());
 					msg.setRedisFence(parseStreamFence(se.getFields().get("fence"))); // C-9
 					msg.setRedisStreamMessageType(msg.getMessageType());
 					messages.add(msg);
@@ -1306,7 +1337,7 @@ public class StreamQueueManager {
 			+ "args[#args+1] = ARGV[3] args[#args+1] = '*' args[#args+1] = 'body' args[#args+1] = ARGV[6] "
 			+ "local id = redis.call('XADD', unpack(args)) "
 			+ "redis.call('SADD', '" + STREAM_INDEX_KEY + "', KEYS[3]) "
-			+ "redis.call('ZADD', KEYS[4], ARGV[5], KEYS[3]) "
+			+ "redis.call('ZADD', KEYS[4], 'NX', ARGV[5], KEYS[3]) "
 			+ "if KEYS[5] ~= '' then "
 			+ "  redis.call('SETEX', KEYS[5], ARGV[7], ARGV[6]) "
 			+ "  redis.call('ZADD', KEYS[6], ARGV[8], KEYS[5]) "
@@ -1314,6 +1345,22 @@ public class StreamQueueManager {
 			+ "end "
 			+ "if redis.call('XLEN', KEYS[1]) == 0 then redis.call('ZREM', KEYS[2], KEYS[1]) end "
 			+ "return {'OK', id}";
+
+	// RELEASE_LUA without the hold stream, for a target on another submit MQ master than the hold streams:
+	// KEYS: 1 target, 2 its doorbell, 3..5 outbox (or ''); ARGV: 1 maxLen, 2 '~'|'', 3 nowMs, 4 body, 5 outbox ttl, 6 first check
+	private static final String RELEASE_TO_LUA =
+			"local args = {KEYS[1], 'MAXLEN'} "
+			+ "if ARGV[2] == '~' then args[#args+1] = '~' end "
+			+ "args[#args+1] = ARGV[1] args[#args+1] = '*' args[#args+1] = 'body' args[#args+1] = ARGV[4] "
+			+ "local id = redis.call('XADD', unpack(args)) "
+			+ "redis.call('SADD', '" + STREAM_INDEX_KEY + "', KEYS[1]) "
+			+ "redis.call('ZADD', KEYS[2], 'NX', ARGV[3], KEYS[1]) "
+			+ "if KEYS[3] ~= '' then "
+			+ "  redis.call('SETEX', KEYS[3], ARGV[5], ARGV[4]) "
+			+ "  redis.call('ZADD', KEYS[4], ARGV[6], KEYS[3]) "
+			+ "  redis.call('SETEX', KEYS[5], ARGV[5], KEYS[1] .. '\\n' .. id .. '\\n' .. ARGV[3]) "
+			+ "end "
+			+ "return id";
 
 	// KEYS: 1 hold, 2 holdDoorbell; ARGV: 1 group, 2 holdId
 	private static final String DROP_HOLD_LUA =
@@ -1339,11 +1386,25 @@ public class StreamQueueManager {
 				SerializableHandler.convertGmmsMessage2RedisMessage(msg),
 				String.valueOf(outbox == null ? 0 : outbox.ttlSeconds),
 				String.valueOf(outbox == null ? 0 : outbox.firstCheckAt));
-		List<?> r = (List<?>) redisClient.getSubmitMqRedis().evalScript(RELEASE_LUA, keys, args);
-		if (!"OK".equals(String.valueOf(r.get(0)))) {
-			return null;
+		com.king.redis.RedisConnection holdMq = redisClient.submitMq(holdKey);
+		com.king.redis.RedisConnection targetMq = redisClient.submitMq(target);
+		String id;
+		if (holdMq == targetMq) {
+			List<?> r = (List<?>) holdMq.evalScript(RELEASE_LUA, keys, args);
+			if (!"OK".equals(String.valueOf(r.get(0)))) {
+				return null;
+			}
+			id = String.valueOf(r.get(1));
+		} else {
+			// target on another master (docs/Redis多主分片设计.md 8.2): written there first, then the hold entry acked;
+			// a crash in between leaves the MT in the hold too, never neither
+			if (!redisClient.streamPendingEntryExistsSubmitMq(holdKey, group, holdId)) {
+				return null;
+			}
+			id = String.valueOf(targetMq.evalScript(RELEASE_TO_LUA, keys.subList(2, 7), Arrays.asList(args.get(2),
+					args.get(3), args.get(4), args.get(5), args.get(6), args.get(7))));
+			holdMq.evalScript(DROP_HOLD_LUA, Arrays.asList(holdKey, ZSET_CORE_HOLD_ACTIVE), Arrays.asList(group, holdId));
 		}
-		String id = String.valueOf(r.get(1));
 		msg.setRedisStreamID(id);
 		incrementStreamCounter(MetricsNames.FLOW_OUT, target, msg, MetricsNames.ACTION_WRITE_OK);
 		logStreamTrace("STREAM-PUT", target, null, null, id, msg, true,
@@ -1359,7 +1420,7 @@ public class StreamQueueManager {
 
 	/** Remove a held MT that will not be sent (expired, held too long). */
 	public void dropHeld(String holdKey, String group, String holdId) {
-		redisClient.getSubmitMqRedis().evalScript(DROP_HOLD_LUA, Arrays.asList(holdKey, ZSET_CORE_HOLD_ACTIVE),
+		redisClient.submitMq(holdKey).evalScript(DROP_HOLD_LUA, Arrays.asList(holdKey, ZSET_CORE_HOLD_ACTIVE),
 				Arrays.asList(group, holdId));
 	}
 
@@ -1430,7 +1491,8 @@ public class StreamQueueManager {
 		return max <= 0 ? 1000 : max;
 	}
 
-	private final long[] lastIndexFullScanMs = new long[2];
+	/** per MQ master ("s0", "r1", ...): when the last full scan of its keyspace was */
+	private final Map<String, Long> lastIndexFullScanMs = new HashMap<String, Long>();
 
 	/**
 	 * The stream keys matching pattern (a glob: * and ?): the members of STREAM_INDEX_KEY. The first call and then one
@@ -1438,32 +1500,36 @@ public class StreamQueueManager {
 	 * misses (written before the index existed) and removes the members that no longer exist.
 	 */
 	public Set<String> streamKeys(String pattern, boolean isSubmitMq) {
-		com.king.redis.RedisConnection c = isSubmitMq ? redisClient.getSubmitMqRedis() : redisClient.getReportMqRedis();
-		if (c == null) {
+		com.king.redis.RedisConnection[] masters = redisClient.mqs(isSubmitMq);
+		if (masters.length == 0 || masters[0] == null) {
 			return null;
 		}
-		int slot = isSubmitMq ? 0 : 1;
-		long every = Math.max(1, intProperty("RedisStreamIndexFullScanMinutes", 60)) * 60000L;
-		boolean full;
-		synchronized (lastIndexFullScanMs) {
-			long now = System.currentTimeMillis();
-			full = lastIndexFullScanMs[slot] == 0 || now - lastIndexFullScanMs[slot] >= every;
-			if (full) {
-				lastIndexFullScanMs[slot] = now;
-			}
-		}
-		if (full) {
-			refreshStreamIndex(c, isSubmitMq);
-		}
-		Set<String> members = c.smembers(STREAM_INDEX_KEY);
 		Set<String> out = new java.util.LinkedHashSet<String>();
-		if (members == null) {
-			return out;
-		}
 		java.util.regex.Pattern re = globPattern(pattern);
-		for (String k : members) {
-			if (re.matcher(k).matches()) {
-				out.add(k);
+		long every = Math.max(1, intProperty("RedisStreamIndexFullScanMinutes", 60)) * 60000L;
+		for (int i = 0; i < masters.length; i++) {
+			com.king.redis.RedisConnection c = masters[i];
+			String slot = (isSubmitMq ? "s" : "r") + i;
+			boolean full;
+			synchronized (lastIndexFullScanMs) {
+				long now = System.currentTimeMillis();
+				Long last = lastIndexFullScanMs.get(slot);
+				full = last == null || last == 0 || now - last >= every;
+				if (full) {
+					lastIndexFullScanMs.put(slot, now);
+				}
+			}
+			if (full) {
+				refreshStreamIndex(c, isSubmitMq);
+			}
+			Set<String> members = c.smembers(STREAM_INDEX_KEY);
+			if (members == null) {
+				continue;
+			}
+			for (String k : members) {
+				if (re.matcher(k).matches()) {
+					out.add(k);
+				}
 			}
 		}
 		return out;
@@ -1472,8 +1538,7 @@ public class StreamQueueManager {
 	/** the next streamKeys call (of each MQ Redis) also does the full scan, e.g. after streams were written around the index */
 	public void scheduleStreamIndexFullScan() {
 		synchronized (lastIndexFullScanMs) {
-			lastIndexFullScanMs[0] = 0;
-			lastIndexFullScanMs[1] = 0;
+			lastIndexFullScanMs.clear();
 		}
 	}
 
@@ -1702,14 +1767,23 @@ public class StreamQueueManager {
 			final List<redis.clients.jedis.Response<Long>> xlens = new ArrayList<redis.clients.jedis.Response<Long>>();
 			final List<redis.clients.jedis.Response<StreamPendingSummary>> pendings = new ArrayList<redis.clients.jedis.Response<StreamPendingSummary>>();
 			final List<redis.clients.jedis.Response<Double>> scores = new ArrayList<redis.clients.jedis.Response<Double>>();
-			com.king.redis.RedisConnection c = isSubmitMq ? redisClient.getSubmitMqRedis() : redisClient.getReportMqRedis();
-			c.runPipeline(pl -> {
-				for (String k : keys) {
-					xlens.add(pl.xlen(k));
-					pendings.add(pl.xpending(k, groupName));
-					scores.add(pl.zscore(doorbellKey, k));
-				}
-			});
+			// one pipeline per MQ master, over its streams (each stream's doorbell is on its master); keys sorted to match
+			Map<com.king.redis.RedisConnection, List<String>> byMaster = new java.util.LinkedHashMap<com.king.redis.RedisConnection, List<String>>();
+			for (String k : keys) {
+				byMaster.computeIfAbsent(redisClient.mq(k, isSubmitMq), x -> new ArrayList<String>()).add(k);
+			}
+			keys.clear();
+			for (Map.Entry<com.king.redis.RedisConnection, List<String>> e : byMaster.entrySet()) {
+				final List<String> mine = e.getValue();
+				keys.addAll(mine);
+				e.getKey().runPipeline(pl -> {
+					for (String k : mine) {
+						xlens.add(pl.xlen(k));
+						pendings.add(pl.xpending(k, groupName));
+						scores.add(pl.zscore(doorbellKey, k));
+					}
+				});
+			}
 			for (int i = 0; i < keys.size(); i++) {
 				String streamKey = keys.get(i);
 				long xlen = responseLong(xlens.get(i));
@@ -1865,7 +1939,7 @@ public class StreamQueueManager {
 		if (count <= 0) {
 			return messages;
 		}
-		com.king.redis.RedisConnection c = isSubmitMq ? redisClient.getSubmitMqRedis() : redisClient.getReportMqRedis();
+		com.king.redis.RedisConnection c = redisClient.mq(streamKey, isSubmitMq);
 		int max = getMaxDeliveries();
 		List<StreamEntryID> claim = new ArrayList<StreamEntryID>();
 		for (redis.clients.jedis.resps.StreamPendingEntry p : c.xpendingIdle(streamKey, groupName, minIdleMs, count)) {
@@ -1885,6 +1959,7 @@ public class StreamQueueManager {
 			GmmsMessage msg = SerializableHandler.convertRedisMssage2GmmsMessage(se.getFields().get("body"));
 			if (msg != null) {
 				msg.setRedisStreamID(se.getID().toString());
+				msg.setRedisStreamKey(streamKey);
 				msg.setRedisFence(parseStreamFence(se.getFields().get("fence"))); // C-9
 				msg.setRedisStreamMessageType(msg.getMessageType());
 				messages.add(msg);
@@ -1928,7 +2003,7 @@ public class StreamQueueManager {
 	 */
 	public List<String> keepPending(String streamKey, String groupName, String consumerName,
 			List<String> ids, boolean isSubmitMq) {
-		com.king.redis.RedisConnection c = isSubmitMq ? redisClient.getSubmitMqRedis() : redisClient.getReportMqRedis();
+		com.king.redis.RedisConnection c = redisClient.mq(streamKey, isSubmitMq);
 		return c.xclaimJustIds(streamKey, groupName, consumerName, ids);
 	}
 
@@ -1952,6 +2027,7 @@ public class StreamQueueManager {
 			GmmsMessage msg = SerializableHandler.convertRedisMssage2GmmsMessage(body);
 			if (msg != null) {
 				msg.setRedisStreamID(se.getID().toString());
+				msg.setRedisStreamKey(streamKey);
 				msg.setRedisFence(parseStreamFence(se.getFields().get("fence"))); // C-9
 				msg.setRedisStreamMessageType(msg.getMessageType());
 				messages.add(msg);

@@ -22,8 +22,9 @@ import redis.clients.jedis.StreamEntryID;
 
 /**
  * StreamAttempt by batch (CoreStreamAttemptBatch, docs/StreamAttempt按批处理设计.md): one Lua claims a batch, one acks it,
- * the flags and _done of each entry are written when it is done; RUN, BUSY and DONE in one batch, a marker twice in a
- * batch, the lease renewed after half of it, a crash in the middle of a batch, and the same DRs with the switch off.
+ * the flags and _done of each entry stay in memory until the ack unless they guard a message written out
+ * (CoreStreamAttemptBatchFlagsInMemory, docs/Redis消息操作次数统计.md); RUN, BUSY and DONE in one batch, a marker twice in
+ * a batch, the lease renewed after half of it, a crash in the middle of a batch, and the same DRs with the switch off.
  */
 public class AttemptBatchIT extends ItSupport {
 	static StreamQueueManager q;
@@ -120,16 +121,17 @@ public class AttemptBatchIT extends ItSupport {
 		long hsetBefore = cmd("hset");
 		batch.finished(c);
 		String markerC = StreamAttempt.entryMarkerKey(IDR, c.getRedisStreamID());
-		check("1".equals(jedis.hget(markerC, "_done")) && StreamAttempt.current() == null,
-				"AB-01g finished: _done written at once, before the ack");
-		check(cmd("hset") > hsetBefore, "AB-01h the flags and _done written by HSET");
+		check(!jedis.hexists(markerC, "_done") && StreamAttempt.current() == null && cmd("hset") == hsetBefore,
+				"AB-01g finished: its flags and _done stay in memory, no HSET");
+		check(jedis.exists("OUT-AB1C"), "AB-01h the after-done action (DR lookup entry deleted) waits for the ack");
 		final List<String> acked = new ArrayList<String>();
 		batch.ackAll(new StreamAttempt.AckListener() {
 			public void acked(GmmsMessage m, String id, boolean ok) {
 				if (ok) acked.add(id);
 			}
 		});
-		check(acked.size() == 2, "AB-01i DONE and finished acked together: " + acked.size() + " acked");
+		check(acked.size() == 2 && !jedis.exists("OUT-AB1C"),
+				"AB-01i DONE and finished acked together: " + acked.size() + " acked, then the DR lookup entry deleted");
 		check(!jedis.exists(markerC) && !jedis.exists(StreamAttempt.entryMarkerKey(IDR, a.getRedisStreamID())),
 				"AB-01j their markers deleted with the ack");
 		check(jedis.xpending(IDR, IDR_GROUP).getTotal() == 1 && jedis.exists(StreamAttempt.entryMarkerKey(IDR, b.getRedisStreamID())),
@@ -166,20 +168,61 @@ public class AttemptBatchIT extends ItSupport {
 		b3.ackAll(new StreamAttempt.AckListener() { public void acked(GmmsMessage m, String id, boolean ok) { } });
 		props.remove("CoreMtLeaseMs");
 
-		// ---- AB-04 a crash in the middle of a batch: the redelivery repeats nothing ----
-		List<GmmsMessage> l4 = readDrs("AB4A", "AB4B");
-		StreamAttempt.Batch b4 = StreamAttempt.Batch.claim(IDR, IDR_GROUP, l4, report, true, "crashed:1");
-		b4.begin(l4.get(0));
-		process(l4.get(0));
-		b4.finished(l4.get(0));        // done, then the Core dies: no ack, the second entry never started
-		check(drsOut("AB4A") == 1 && jedis.xpending(IDR, IDR_GROUP).getTotal() == 2, "AB-04a crash after the first entry: both pending, one DR out");
-		props.setProperty("CoreMtLeaseMs", "1");                        // the dead Core's lease is old
-		Thread.sleep(20);
-		for (GmmsMessage m : new ArrayList<GmmsMessage>(l4)) consumeDr(m);  // redelivered one by one (auto-claim)
+		// ---- AB-04 a crash in the middle of a batch: flags in memory, then with the switch off (nothing repeated) ----
+		for (int round = 0; round < 2; round++) {
+			String x = round == 0 ? "AB4A" : "AB4C", y = round == 0 ? "AB4B" : "AB4D";
+			if (round == 1) props.setProperty("CoreStreamAttemptBatchFlagsInMemory", "false");
+			List<GmmsMessage> l4 = readDrs(x, y);
+			StreamAttempt.Batch b4 = StreamAttempt.Batch.claim(IDR, IDR_GROUP, l4, report, true, "crashed:1");
+			b4.begin(l4.get(0));
+			process(l4.get(0));
+			b4.finished(l4.get(0));        // done, then the Core dies: no ack, the second entry never started
+			check(drsOut(x) == 1 && jedis.xpending(IDR, IDR_GROUP).getTotal() == 2,
+					"AB-04a" + round + " crash after the first entry: both pending, one DR out");
+			props.setProperty("CoreMtLeaseMs", "1");                        // the dead Core's lease is old
+			Thread.sleep(20);
+			for (GmmsMessage m : new ArrayList<GmmsMessage>(l4)) consumeDr(m);  // redelivered one by one (auto-claim)
+			props.remove("CoreMtLeaseMs");
+			check(drsOut(x) == 1 && drsOut(y) == 1,
+					"AB-04b" + round + " redelivered: the DR to the customer not produced again (its p: flag is written by the produce), the other once");
+			int cdrs = cdrCount(x, "OUT_DELI_REP");
+			// flags in memory: the CDR flag still came before the crash, written with the DR produce (pendingFlags)
+			check(jedis.xpending(IDR, IDR_GROUP).getTotal() == 0 && cdrs == 1 && cdrCount(y, "OUT_DELI_REP") == 1,
+					"AB-04c" + round + " both acked, one OUT_DELI_REP CDR each" + (round == 0 ? " (the CDR flag went with the DR produce)" : " (switch off)"));
+		}
+		props.remove("CoreStreamAttemptBatchFlagsInMemory");
+
+		// ---- AB-07 flags that guard a message written out are written at once: a produce to another Redis (p:), a delivery ----
+		String[][] guards = { { "AB7P", "p:" }, { "AB7D", "delivery#" } };
+		for (String[] g : guards) {
+			List<GmmsMessage> l7 = readDrs(g[0]);
+			StreamAttempt.Batch b7 = StreamAttempt.Batch.claim(IDR, IDR_GROUP, l7, report, true, "it:1");
+			b7.begin(l7.get(0));
+			if ("p:".equals(g[1])) {
+				StreamAttempt.producedElsewhere(StreamAttempt.partField(0), "9-9");
+			} else {
+				StreamAttempt.once("delivery", "0");
+			}
+			b7.finished(l7.get(0));
+			String marker7 = StreamAttempt.entryMarkerKey(IDR, l7.get(0).getRedisStreamID());
+			boolean flag = false;
+			for (String f : jedis.hkeys(marker7)) flag |= f.startsWith(g[1]);
+			check(flag && jedis.hexists(marker7, "_done"), "AB-07 " + g[1] + " flag: written with _done when finished, before the ack");
+			b7.ackAll(new StreamAttempt.AckListener() { public void acked(GmmsMessage m, String id, boolean ok) { } });
+		}
+
+		// ---- AB-08 a batch older than half the lease: the flags are written when an entry is finished ----
+		props.setProperty("CoreMtLeaseMs", "400");
+		List<GmmsMessage> l8 = readDrs("AB8");
+		StreamAttempt.Batch b8 = StreamAttempt.Batch.claim(IDR, IDR_GROUP, l8, report, true, "it:1");
+		Thread.sleep(260);
+		b8.begin(l8.get(0));
+		process(l8.get(0));
+		b8.finished(l8.get(0));
+		check(jedis.hexists(StreamAttempt.entryMarkerKey(IDR, l8.get(0).getRedisStreamID()), "_done"),
+				"AB-08 finished 260 ms into a 400 ms lease: _done written at once");
+		b8.ackAll(new StreamAttempt.AckListener() { public void acked(GmmsMessage m, String id, boolean ok) { } });
 		props.remove("CoreMtLeaseMs");
-		check(drsOut("AB4A") == 1 && drsOut("AB4B") == 1, "AB-04b redelivered: the finished one only acked, the other processed once");
-		check(jedis.xpending(IDR, IDR_GROUP).getTotal() == 0 && cdrCount("AB4A", "OUT_DELI_REP") == 1 && cdrCount("AB4B", "OUT_DELI_REP") == 1,
-				"AB-04c both acked, one OUT_DELI_REP CDR each");
 
 		// ---- AB-06 processing changes the entry id on the message (a produce sets the new entry's id): acked by the id read ----
 		List<GmmsMessage> l6 = readDrs("AB6");

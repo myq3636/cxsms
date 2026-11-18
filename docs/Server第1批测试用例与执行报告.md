@@ -8,7 +8,7 @@
 - 在测试进程里启动真实的 `MultiSmppServer`（模块名 `MultiSmppServer1`），包括真实的 bind 鉴权、收包、submit 处理和 DR 消费。
 - **测试客户端**：测试代码里写了一个最小的 SMPP 3.4 客户端（`SmppTestClient`），直接走 TCP，支持 bind_transceiver、异步 submit_sm（自带窗口）、enquire_link、应答 deliver_sm（可以设置应答延迟，用来模拟慢客户）。
 - **测试客户**：cm.cfg 中配置了 SMPPCUST20 到 SMPPCUST39，`ConnectionType: MC`，`IncomingConnection` 允许 200 个会话，`WindowSize: 20`。
-- **全局开关**：Redis 的 `thcon` 键必须存在，否则所有 submit 都会被回 `ESME_RTHROTTLED`。测试中设置了它。
+- **全局开关**：Redis 的 `thcon` 键必须存在，否则所有 submit 都会被回 `ESME_RTHROTTLED`。测试中设置了它。（2026-11-18 起不再使用这个开关。）
 
 ## 2. 功能用例（`ServerBatch1IT`）
 

@@ -30,6 +30,7 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 	// #3: 保存 DbHealthDetector 及其线程引用，供 stopService 停止，避免热停/重启残留探测线程。
 	private com.king.gmms.ha.DbHealthDetector dbHealthDetector = null;
 	private Thread dbHealthDetectorThread = null;
+	private EarlyDrDispatcher earlyDrDispatcher = null;
 	//private SystemSession systemSession = null; // system client
 	//private SystemSessionFactory sysFactory = null;
 	private boolean isEnableSysMgt = false;
@@ -66,6 +67,7 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 		startDelayDRMessageSender();
 		startTaskTimers();
 		startRedisRetrieveThread();
+		startEarlyDrDispatcher();
 		startDbHealthDetector();
 		log.info("Message monitor has started in asynchronous mode.");
 		return true;
@@ -101,6 +103,10 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 		if (statusReporter != null) {
 			statusReporter.stop();
 			statusReporter = null;
+		}
+		if (earlyDrDispatcher != null) {
+			earlyDrDispatcher.stop();
+			earlyDrDispatcher = null;
 		}
 		// #3: 停止 DB 健康探测器线程，避免热停/重启残留。
 		if (dbHealthDetector != null) {
@@ -159,6 +165,12 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 		}
 	}
 	
+	/** vendor DRs that came before their submit result, tried again (EarlyDrQueue) */
+	private void startEarlyDrDispatcher() {
+		earlyDrDispatcher = new EarlyDrDispatcher();
+		earlyDrDispatcher.start();
+	}
+
 	private void startRedisRetrieveThread(){
 		if("True".equalsIgnoreCase(gmmsUtility.getCommonProperty("RedisEnable", "True"))){
 			RetrieveRedisDRThread redisRetrieve = new RetrieveRedisDRThread();

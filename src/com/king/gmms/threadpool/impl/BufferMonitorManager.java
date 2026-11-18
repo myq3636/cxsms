@@ -68,7 +68,7 @@ public class BufferMonitorManager implements ExpiredMsgManager {
 	 * @return 积压长度，若失败返回 -1
 	 */
 	public long getStreamBacklogSize(String streamKey) {
-		com.king.redis.RedisConnection redis = com.king.redis.RedisClient.getInstance().getSubmitMqRedis();
+		com.king.redis.RedisConnection redis = com.king.redis.RedisClient.getInstance().submitMq(streamKey);
 		if (redis != null) {
 			try (redis.clients.jedis.Jedis jedis = redis.getJedis()) {
 				return jedis.xlen(streamKey);

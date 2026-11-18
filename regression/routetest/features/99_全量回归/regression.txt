@@ -18,6 +18,10 @@ Batch4IT
 Batch5IT
 Batch6IT
 AttemptBatchIT
+ThrottleSyncIT
+MultiMasterIT
+ClientMarkerBatchIT
+EarlyDrIT
 Batch7IT
 ClientBatch1IT
 ClientBatch2IT

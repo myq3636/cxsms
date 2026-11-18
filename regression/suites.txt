@@ -18,8 +18,12 @@ Batch4IT it.Batch4IT it
 Batch5IT it.Batch5IT it
 Batch6IT it.Batch6IT it
 AttemptBatchIT it.AttemptBatchIT it
+ThrottleSyncIT it.ThrottleSyncIT it
+MultiMasterIT it.MultiMasterIT it
 Batch7IT it.Batch7IT it
 ClientBatch1IT it.ClientBatch1IT it
+ClientMarkerBatchIT it.ClientMarkerBatchIT it
+EarlyDrIT it.EarlyDrIT it
 ClientBatch2IT it.ClientBatch2IT it
 ServerBatch1IT it.ServerBatch1IT it-server
 ServerBatch2IT it.ServerBatch2IT it-server
