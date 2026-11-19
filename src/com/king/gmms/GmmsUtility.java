@@ -1082,7 +1082,7 @@ public class GmmsUtility {
 			"CoreDbFallbackInline", "CsmReassembleMode", "CoreCsmExpirySweep",
 			"CoreCsmExpiryIntervalSec", "CoreCsmExpiryBatch", "CoreCsmExpiryLeaseMs",
 			"ClientSendIdempotency", "ClientSendMarkerBatch", "ClientDispatchBatch", "ClientSendLeaseMs",
-			"EarlyDr.Enable", "EarlyDr.DelayMs", "EarlyDr.MaxTries", "EarlyDr.TtlSeconds", "EarlyDr.BatchSize",
+			"EarlyDr.Enable", "EarlyDr.BatchSize",
 			"EarlyDr.ClaimTimeoutMs", "EarlyDr.IntervalMs", "ClientStreamTaskMaxBatches", "ClientStreamTaskMaxMs",
 			"SmppServerBindTimeoutMs", "SmppServerMaxConnections", "SmppServerMaxConnectionsPerIp",
 			"ServerStreamTaskMaxBatches", "ServerStreamTaskMaxMs",

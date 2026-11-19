@@ -3837,6 +3837,15 @@ public abstract class A2PCustomerInfo {
 		return smppSubmitPendingRedisTimeoutSeconds;
 	}
 
+	/**
+	 * How long the Client waits for the response of a submit sent to this channel (ms): SMPPSubmitPendingRedisTimeoutSeconds
+	 * when set, else BufferTimeout. The Client's pending submits, the Core outbox and the early DRs use it
+	 * (docs/DR早到重试与outbox应答超时改进设计.md).
+	 */
+	public long getSubmitRespTimeoutMs() {
+		return smppSubmitPendingRedisTimeoutSeconds > 0 ? smppSubmitPendingRedisTimeoutSeconds * 1000L : bufferTimeout;
+	}
+
 	public String getSMPPDRPendingMode() {
 		return smppDRPendingMode;
 	}

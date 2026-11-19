@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import com.king.framework.A2PThreadGroup;
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
+import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
 import com.king.redis.RedisClient;
@@ -34,8 +35,8 @@ import redis.clients.jedis.resps.Tuple;
  * <li>still unread in the routed stream and the Client group stopped reading
  * (CoreOutboundUnreadStallMs), or the hard timeout passed: the entry is deleted from the
  * stream first, so it can no longer be sent, and the result is COMMUNICATION_ERROR;</li>
- * <li>read and acked by the Client (sent to the vendor) but no result after
- * CoreOutboundRespTimeoutMs: SUBMIT_RESP_ERROR;</li>
+ * <li>read and acked by the Client (sent to the vendor) but no result {@link #respWaitMs} after the scanner first saw
+ * it sent (the time in the routed stream does not count): SUBMIT_RESP_ERROR;</li>
  * <li>read but not acked (the Client is still on it): SUBMIT_RESP_ERROR at the hard timeout.</li>
  * </ul>
  * The retry policy then decides on a resend, as for any failed submit.
@@ -53,6 +54,8 @@ public class CoreOutboundOutboxManager {
     private static final long DEFAULT_UNREAD_STALL_MS = TimeUnit.MINUTES.toMillis(2);
     private static final long DEFAULT_RESP_TIMEOUT_MS = TimeUnit.MINUTES.toMillis(3);
     private static final long DEFAULT_HARD_TIMEOUT_MS = TimeUnit.HOURS.toMillis(3);
+    /** after the channel's own response timeout, for the Client to write its timeout result */
+    private static final long RESP_MARGIN_MS = TimeUnit.MINUTES.toMillis(1);
     private static final int DEFAULT_PAYLOAD_TTL_SECONDS = (int) TimeUnit.HOURS.toSeconds(4);
     private static final int DEFAULT_DONE_TTL_SECONDS = (int) TimeUnit.MINUTES.toSeconds(30);
 
@@ -79,6 +82,13 @@ public class CoreOutboundOutboxManager {
             + "  return 'STALE' "
             + "end "
             + "return 'UNTRACKED'";
+
+    // KEYS[1]=meta ARGV[1]=now: the time the scanner first saw the attempt sent, appended to the meta (APPEND keeps its
+    // TTL); 0 when there is no meta
+    private static final String SENT_SEEN_LUA =
+            "if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end "
+            + "redis.call('APPEND', KEYS[1], '\\n' .. ARGV[1]) "
+            + "return 1";
 
     // KEYS[1]=stream ARGV[1]=group ARGV[2]=id: 1 deleted unread entry, 0 gone, -1 being read.
     // No group yet (the Client never started) means nobody read it.
@@ -259,12 +269,53 @@ public class CoreOutboundOutboxManager {
                 defer(redis, key, msg, now + recheckMs(), state, age);
             }
         } else {
-            if (hard || age >= respTimeoutMs()) {
-                timeout(redis, key, msg, GmmsStatus.SUBMIT_RESP_ERROR, "sent by the client, no result");
+            // sent: the response wait counts from when the scanner first saw it sent, not from the produce (a long time in
+            // the routed stream is no reason to fail it: docs/DR早到重试与outbox应答超时改进设计.md 1)
+            long wait = respWaitMs(msg);
+            if (hard) {
+                timeout(redis, key, msg, GmmsStatus.SUBMIT_RESP_ERROR, "sent by the client, no result (hard timeout, ageMs="
+                        + age + ")");
+            } else if (meta.sentSeenAt > 0) {
+                long since = now - meta.sentSeenAt;
+                if (since >= wait) {
+                    timeout(redis, key, msg, GmmsStatus.SUBMIT_RESP_ERROR, "sent by the client, no result (ageMs=" + age
+                            + ", sentSeenAgoMs=" + since + ", waitMs=" + wait + ")");
+                } else {
+                    defer(redis, key, msg, meta.sentSeenAt + wait, state, age);
+                }
+            } else if (markSentSeen(redis, key, now)) {
+                defer(redis, key, msg, now + wait, "sent_seen", age);
+            } else if (age >= wait) {
+                // no meta: from the produce, as before
+                timeout(redis, key, msg, GmmsStatus.SUBMIT_RESP_ERROR, "sent by the client, no result (no meta, ageMs="
+                        + age + ", waitMs=" + wait + ")");
             } else {
-                defer(redis, key, msg, meta.createdAt + respTimeoutMs(), state, age);
+                defer(redis, key, msg, meta.createdAt + wait, state, age);
             }
         }
+    }
+
+    private boolean markSentSeen(RedisConnection redis, String key, long now) {
+        Object r = redis.evalScript(SENT_SEEN_LUA, Arrays.asList(metaKey(key)), Arrays.asList(String.valueOf(now)));
+        return r instanceof Long && (Long) r == 1L;
+    }
+
+    /**
+     * How long a sent attempt waits for its result: CoreOutboundRespTimeoutMs, or longer when the channel's Client waits
+     * longer for the response ({@link A2PCustomerInfo#getSubmitRespTimeoutMs} and a minute for its timeout result), so
+     * the Client's own timeout comes first.
+     */
+    public static long respWaitMs(GmmsMessage msg) {
+        long wait = respTimeoutMs();
+        try {
+            A2PCustomerInfo channel = GmmsUtility.getInstance().getCustomerManager().getCustomerBySSID(msg.getRSsID());
+            if (channel != null) {
+                wait = Math.max(wait, channel.getSubmitRespTimeoutMs() + RESP_MARGIN_MS);
+            }
+        } catch (Exception ignored) {
+            // no channel configuration: CoreOutboundRespTimeoutMs
+        }
+        return wait;
     }
 
     /** Produce the timeout result; the entry stays and is claimed by whichever result comes first. */
@@ -299,7 +350,7 @@ public class CoreOutboundOutboxManager {
     private OutboxMeta loadMeta(RedisConnection redis, String key, long now) {
         String value = redis.getString(metaKey(key));
         if (value == null || value.length() == 0) {
-            return new OutboxMeta(null, null, now);
+            return new OutboxMeta(null, null, now, 0L);
         }
         String[] parts = value.split("\n", -1);
         String streamKey = parts.length > 0 ? emptyToNull(parts[0]) : null;
@@ -312,7 +363,15 @@ public class CoreOutboundOutboxManager {
                 createdAt = now;
             }
         }
-        return new OutboxMeta(streamKey, redisId, createdAt);
+        long sentSeenAt = 0L;
+        if (parts.length > 3) {
+            try {
+                sentSeenAt = Long.parseLong(parts[3]);
+            } catch (Exception ignored) {
+                sentSeenAt = 0L;
+            }
+        }
+        return new OutboxMeta(streamKey, redisId, createdAt, sentSeenAt);
     }
 
     private String emptyToNull(String value) {
@@ -323,11 +382,14 @@ public class CoreOutboundOutboxManager {
         private final String streamKey;
         private final String redisId;
         private final long createdAt;
+        /** when the scanner first saw it sent, 0 before */
+        private final long sentSeenAt;
 
-        private OutboxMeta(String streamKey, String redisId, long createdAt) {
+        private OutboxMeta(String streamKey, String redisId, long createdAt, long sentSeenAt) {
             this.streamKey = streamKey;
             this.redisId = redisId;
             this.createdAt = createdAt;
+            this.sentSeenAt = sentSeenAt;
         }
     }
 

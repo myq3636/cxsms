@@ -1616,17 +1616,18 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 							}
 						}
 					}else{
-						// a DR earlier than its submit result, or after the lookup expired: the DB is tried next
-						if (log.isInfoEnabled()) {
-							log.info(finalMsg, "[VDR-MATCH] outMsgId={} status={} rssid={} not in redis, looking up the DB",
+						// a DR earlier than its submit result, or after the lookup was moved to WDQ: the DB is tried next
+						if (log.isDebugEnabled()) {
+							log.debug(finalMsg, "[VDR-MATCH] outMsgId={} status={} rssid={} not in redis, looking up the DB",
 									finalMsg.getOutMsgID(), finalMsg.getStatusCode(), finalMsg.getRSsID());
 						}
 						try {
 							message = msgStoreManager.getGmmsMessageByOutMsgID(finalMsg.getOutMsgID());
 							fromDb = true;
 						} catch (DataManagerException e) {
-							log.error("Can not find the message in message Queue, and out msg id is {}"
-											,finalMsg.getOutMsgID());
+							// the DB is not there: the entry stays pending and is retried
+							log.error(finalMsg, "[VDR-MATCH] outMsgId={} status={} rssid={} not in redis, DB lookup failed: left pending",
+									finalMsg.getOutMsgID(), finalMsg.getStatusCode(), finalMsg.getRSsID());
 							return false;
 						}
 					}
@@ -1636,8 +1637,8 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 						message = msgStoreManager.getGmmsMessageByOutMsgID(finalMsg.getOutMsgID());
 						fromDb = true;
 					} catch (DataManagerException e) {
-						log.error("Can not find the message in message Queue, and out msg id is {}"
-										,finalMsg.getOutMsgID());
+						log.error(finalMsg, "[VDR-MATCH] outMsgId={} status={} rssid={} DB lookup failed: left pending",
+								finalMsg.getOutMsgID(), finalMsg.getStatusCode(), finalMsg.getRSsID());
 						return false;
 					}
 				}
@@ -1666,11 +1667,12 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 					return processed;
 				} else {
 					// usually the DR came before its submit result was processed (the lookup entry is written then):
-					// tried again in a few seconds through the MQM job instead of SDQ (docs/5000TPS多主测试慢的环节分析.md 7.3);
-					// the same entry again (a redelivery) is one queue entry
-					if (isRedisEnable && com.king.gmms.messagequeue.EarlyDrQueue.enabled()
-							&& com.king.gmms.messagequeue.EarlyDrQueue.offer(finalMsg)) {
-						return true;
+					// the MQM job tries it again at t0+T/2 and t0+T, then it is dropped, not stored in SDQ
+					// (docs/DR早到重试与outbox应答超时改进设计.md 4); the same entry again (a redelivery) is one queue entry
+					if (isRedisEnable && com.king.gmms.messagequeue.EarlyDrQueue.enabled()) {
+						// ERROR (Redis): not handled, the entry stays pending and is retried
+						return com.king.gmms.messagequeue.EarlyDrQueue.offer(finalMsg)
+								!= com.king.gmms.messagequeue.EarlyDrQueue.Offer.ERROR;
 					}
 					if (log.isInfoEnabled()) {
 						log.info(finalMsg, "[VDR-STORE] outMsgId={} status={} rssid={} has no original yet, stored for later matching",

@@ -119,13 +119,13 @@ public class LogChainCoreIT extends ItSupport {
 		nomatch.setStatus(GmmsStatus.DELIVERED);
 		q.produceInboundDeliveryReport(nomatch);
 		// no database in the local environment: the lookup fails and the entry stays pending (retried)
-		check(waitFor(() -> logLine("8_LCDR2", "not in redis, looking up the DB") != null, 8000), "L-C4a unmatched DR: lookup logged");
+		check(waitFor(() -> logLine("8_LCDR2", "not in redis, DB lookup failed") != null, 8000), "L-C4a unmatched DR: failed DB lookup logged with the DR");
 		List<String> l4 = lines("8_LCDR2");
 		dump(l4);
 		String miss = logLine("8_LCDR2", "[VDR-MATCH] outMsgId=OUT-LC-NONE");
-		check(miss != null && miss.startsWith("INFO") && inOrder(l4, "[STREAM-GET]", "[VDR-MATCH] outMsgId=OUT-LC-NONE")
+		check(miss != null && l4.stream().filter(l -> l.contains("[VDR-MATCH]")).count() == 1 && inOrder(l4, "[STREAM-GET]", "[VDR-MATCH] outMsgId=OUT-LC-NONE")
 				&& logLine("8_LCDR2", "TMP-DRLOOKUP") == null,
-				"L-C4b unmatched DR: one INFO VDR-MATCH miss line (no TMP-DRLOOKUP WARN with sender/recipient/text)");
+				"L-C4b unmatched DR: one VDR-MATCH line (no TMP-DRLOOKUP WARN with sender/recipient/text)");
 
 		// ---- L-C5 a late result: one INFO line, no WARN ----
 		GmmsMessage late = inStreams("stream:mt:routed:8:*", "8888_LC1").get(0);

@@ -3137,13 +3137,60 @@ public class MessageStoreManager extends DataManager {
 				}
 			}
 			super.closeSession();// add by Levens in Jan.20 2006
-			if (msg == null) {
-				log.warn("Can't find the message from {} by outmsgid:{}",
+			// not found is a normal branch of the DR matching (an early DR): the caller logs the outcome
+			if (msg == null && log.isDebugEnabled()) {
+				log.debug("Can't find the message from {} by outmsgid:{}",
 						tableName, outMsgID);
 			}
 		}
 
 		return msg;
+	}
+
+	/**
+	 * The outMsgIds of outMsgIDs that have a message in WDQ, in one query (the early DRs of the MQM job: only whether
+	 * the original is there, Core reads it when it handles the DR). Errors are thrown.
+	 */
+	public Set<String> existingOutMsgIDs(java.util.Collection<String> outMsgIDs) throws DataManagerException {
+		Set<String> found = new java.util.HashSet<String>();
+		if (outMsgIDs == null || outMsgIDs.isEmpty()) {
+			return found;
+		}
+		StringBuilder sql = new StringBuilder("SELECT OutMsgID FROM ").append(WDQ).append(" WHERE OutMsgID IN (");
+		boolean first = true;
+		for (String id : outMsgIDs) {
+			if (id == null) {
+				continue;
+			}
+			if (!first) {
+				sql.append(',');
+			}
+			sql.append(makeSqlStr(id));
+			first = false;
+		}
+		if (first) {
+			return found;
+		}
+		sql.append(')');
+		ResultSet rs = null;
+		try {
+			rs = doSelect(sql.toString());
+			while (rs.next()) {
+				found.add(rs.getString(1));
+			}
+			return found;
+		} catch (Exception e) {
+			throw new DataManagerException(e);
+		} finally {
+			if (rs != null) {
+				try {
+					rs.close();
+				} catch (Exception ex) {
+					log.error(ex, ex);
+				}
+			}
+			super.closeSession();
+		}
 	}
 
 	/**

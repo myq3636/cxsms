@@ -7,7 +7,8 @@ import com.king.gmms.messagequeue.EarlyDrQueue;
 
 /**
  * MQM job of the early vendor DRs ({@link EarlyDrQueue}): on the active MQM, every EarlyDr.IntervalMs the due ones are
- * written back to stream:core:inbound-dr for Core to match again; while a full batch was due, at once again.
+ * looked up, the matched ones written back to stream:core:inbound-dr for Core, the others due again or dropped; while a
+ * full batch was due, at once again. The counts are in the [VDR-EARLY-STATS] line of each minute.
  */
 public class EarlyDrDispatcher implements Runnable {
 	private static final SystemLogger log = SystemLogger.getSystemLogger(EarlyDrDispatcher.class);
@@ -42,9 +43,6 @@ public class EarlyDrDispatcher implements Runnable {
 				int claimed = 0;
 				if (MqmActiveState.isActive() && EarlyDrQueue.enabled()) {
 					claimed = EarlyDrQueue.dispatchDue();
-					if (claimed > 0 && log.isInfoEnabled()) {
-						log.info("[VDR-EARLY] {} early DR(s) written back to the inbound DR streams", claimed);
-					}
 				}
 				if (claimed < batchSize()) {
 					Thread.sleep(intervalMs());

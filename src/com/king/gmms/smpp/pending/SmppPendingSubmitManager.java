@@ -585,8 +585,8 @@ public class SmppPendingSubmitManager {
 
     private long timeoutMsFor(GmmsMessage message) {
         A2PCustomerInfo customer = currentCustomer(message);
-        if (customer != null && customer.getSMPPSubmitPendingRedisTimeoutSeconds() > 0) {
-            return customer.getSMPPSubmitPendingRedisTimeoutSeconds() * 1000L;
+        if (customer != null && customer.getSubmitRespTimeoutMs() > 0) {
+            return customer.getSubmitRespTimeoutMs();
         }
         return timeoutMs;
     }

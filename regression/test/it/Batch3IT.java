@@ -289,6 +289,36 @@ public class Batch3IT {
 		check(waitFor(() -> results("8888_E4_5").contains(2500) && jedis.xlen(k4) == 0, 8000),
 				"E4: client stopped reading -> the unread entries are pulled back with COMMUNICATION_ERROR");
 
+		// ---- E5. queued longer than the resp timeout, then sent: the wait counts from the send, not the produce ----
+		props.setProperty("CoreOutboundUnreadStallMs", "60000");   // a client that is reading: not pulled back
+		GmmsMessage e5 = mt("8888_E5", 105, 0);
+		q.produceOutboundMessage(e5);
+		String k5 = routedKey(105);
+		jedis.xgroupCreate(k5, CLIENT_GROUP, new StreamEntryID(0, 0), true);
+		Thread.sleep(3200);   // > CoreOutboundRespTimeoutMs (2500) in the stream
+		Map<String, StreamEntryID> rq5 = new HashMap<String, StreamEntryID>();
+		rq5.put(k5, StreamEntryID.UNRECEIVED_ENTRY);
+		StreamEntryID id5 = jedis.xreadGroup(CLIENT_GROUP, "client-1", XReadGroupParams.xReadGroupParams().count(1), rq5)
+				.get(0).getValue().get(0).getID();
+		jedis.xack(k5, CLIENT_GROUP, id5);
+		jedis.xdel(k5, id5);
+		long sent5 = System.currentTimeMillis();
+		Thread.sleep(2000);
+		check(results("8888_E5").isEmpty(), "E5a queued 3.2 s (> resp timeout) then sent: no 2700 right after the send");
+		check(waitFor(() -> results("8888_E5").contains(2700), 8000) && System.currentTimeMillis() - sent5 >= 2500,
+				"E5b no result: 2700 a resp timeout after the scanner saw it sent " + results("8888_E5"));
+		props.setProperty("CoreOutboundUnreadStallMs", "1500");
+
+		// ---- E6. the wait follows the channel's own response timeout when it is longer ----
+		com.king.gmms.domain.A2PCustomerInfo ch8 = gu.getCustomerManager().getCustomerBySSID(8);
+		GmmsMessage m6 = mt("8888_E6", 8, 0), m6x = mt("8888_E6X", 106, 0);
+		int bt8 = ch8 == null ? 0 : ch8.getBufferTimeout();
+		if (ch8 != null) ch8.setBufferTimeout(300000);
+		check(ch8 != null && CoreOutboundOutboxManager.respWaitMs(m6) == 360000L && CoreOutboundOutboxManager.respWaitMs(m6x) == 2500L,
+				"E6 channel 8 BufferTimeout 300 s -> wait 360 s; a channel not configured -> CoreOutboundRespTimeoutMs: "
+						+ CoreOutboundOutboxManager.respWaitMs(m6) + ", " + CoreOutboundOutboxManager.respWaitMs(m6x));
+		if (ch8 != null) ch8.setBufferTimeout(bt8);
+
  		// ---- F. the real MTStreamConsumer runs the attempt end to end ----
 		GmmsMessage f = mt("7777_F", 8, 0);
 		f.setOSsID(7777); // unknown customer: CDR + done, no routing needed
