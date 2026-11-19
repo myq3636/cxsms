@@ -302,7 +302,7 @@ public final class RouteCase {
 								Long sent = soakSentAt.remove(x.group()), dr = soakDrSentAt.remove(x.group());
 								if (sent != null) {
 									soakLatFull.add(now - sent);
-									String label = soakLabelOf.get(x.group());
+									String label = soakLabelOf.remove(x.group());   // removed with the DR: bounded by the MTs in flight
 									if (label != null) soakLatFullBy.computeIfAbsent(label, k -> new Hist()).add(now - sent);
 								}
 								if (dr != null) soakLatDr.add(now - dr);

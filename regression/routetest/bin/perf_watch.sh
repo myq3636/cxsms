@@ -6,8 +6,9 @@
 #   OUT_PREFIX.cpu      %CPU of the a2p modules, Redis, mysqld and the test tools; idle= of the host
 #   OUT_PREFIX.redis    used memory (MB) and ops/s of state and every MQ master
 #   OUT_PREFIX.disk     GB free on / and on the log disk
-# Guard: a Redis above PERF_GUARD_REDIS_PCT (default 90) % of its maxmemory, or under PERF_GUARD_ROOT_GB (default 8) GB
-# free on /, stops the test tool (pkill rt.RouteCase); the reason goes to OUT_PREFIX.guard.
+# Guard: a Redis above PERF_GUARD_REDIS_PCT (default 90) % of its maxmemory, under PERF_GUARD_ROOT_GB (default 8) GB
+# free on /, or under PERF_GUARD_LOG_GB (default 20) GB free on the log disk (logs, CDRs), stops the test tool
+# (pkill rt.RouteCase); the reason goes to OUT_PREFIX.guard.
 set -u
 OUT=$1
 A2P=${A2P_HOME:-/usr/local/a2p}
@@ -16,6 +17,7 @@ C=${REDIS_CLI:-/usr/local/redis-7.4.9/src/redis-cli}
 EVERY=${PERF_WATCH_SEC:-10}
 GUARD_PCT=${PERF_GUARD_REDIS_PCT:-90}
 GUARD_ROOT=${PERF_GUARD_ROOT_GB:-8}
+GUARD_LOG=${PERF_GUARD_LOG_GB:-20}
 gp() { grep -E "^$1=" "$G" | tail -1 | cut -d= -f2- | tr -d '\r'; }
 export REDISCLI_AUTH=$(gp Redis_password)
 STATE="$(gp Redis_master_host | tr -d ' '):$(gp Redis_master_port | tr -d ' ')"
@@ -45,6 +47,10 @@ while [ ! -f "$OUT.stop" ]; do
 	echo "$t rootFreeGB=$rootfree logFreeGB=$logfree" >> "$OUT.disk"
 	if [ "${rootfree:-99}" -lt "$GUARD_ROOT" ] && [ ! -f "$OUT.guard" ]; then
 		echo "$(date '+%F %T') GUARD: / has $rootfree GB free (< $GUARD_ROOT), the test tool stops sending" > "$OUT.guard"
+		pkill -f "rt.RouteCase"
+	fi
+	if [ "${logfree:-99}" -lt "$GUARD_LOG" ] && [ ! -f "$OUT.guard" ]; then
+		echo "$(date '+%F %T') GUARD: the log disk has $logfree GB free (< $GUARD_LOG), the test tool stops sending" > "$OUT.guard"
 		pkill -f "rt.RouteCase"
 	fi
 	sleep "$EVERY"
