@@ -62,11 +62,13 @@ public class ClientConnectionIT extends ItSupport {
 		cm.append(vendor("CV313", 313, "u313", PORT, "EnquireLink: true\nEnquireLinkTime: 8\n", "TRX", 1));      // reconnect, keep-alive
 		cm.append(vendor("CV314", 314, "u314", PORT, "EnquireLink: true\nEnquireLinkTime: 2\n", "TRX", 1));      // keep-alive when idle
 		cm.append(vendor("CV315", 315, "u315", PORT, "EnquireLink: true\nEnquireLinkTime: 2\nKeepEnquireLink: true\n", "TRX", 1));   // always
+		cm.append(vendor("CV316", 316, "u316", PORT, "", "TRX", 1));      // a flood of DRs
+		cm.append(vendor("CV317", 317, "u317", PORT, "WindowSize: 5\n", "TRX", 1));      // MTs waiting for their responses meanwhile
 		Path p = Paths.get(home + "conf/cm.cfg");
 		Files.write(p, (new String(Files.readAllBytes(p), "UTF-8") + cm).getBytes("UTF-8"));
 		FakeSmsc smsc = new FakeSmsc(PORT);
 		FakeSmsc.Account a301 = smsc.account("u301"); a301.bindStatus = 0x0E;
-		FakeSmsc.Account a314 = smsc.account("u314"), a315 = smsc.account("u315");
+		FakeSmsc.Account a314 = smsc.account("u314"), a315 = smsc.account("u315"), a316 = smsc.account("u316"), a317 = smsc.account("u317");
 		FakeSmsc.Account a303 = smsc.account("u303"), a304 = smsc.account("u304"), a305 = smsc.account("u305"), a306 = smsc.account("u306"), a307 = smsc.account("u307"), a308 = smsc.account("u308"), a309 = smsc.account("u309"), a310 = smsc.account("u310"), a311 = smsc.account("u311"), a312 = smsc.account("u312"), a313 = smsc.account("u313");
 		a305.answerEnquire = false;
 		try {
@@ -162,6 +164,33 @@ public class ClientConnectionIT extends ItSupport {
 			boolean perSession = false;
 			for (Thread t : Thread.getAllStackTraces().keySet()) perSession |= t.getName().startsWith("ClientSessionTrd_");
 			check(!perSession, "CN-22 shared upkeep: no ClientSessionTrd_ thread per session");
+
+			// ---- the channels' PDUs on the Client's shared inbound pool (ClientInboundSharedPoolEnable, docs/会话线程优化设计.md 3.2) ----
+			check(waitFor(() -> a316.binds.get() == 1 && a317.binds.get() == 1, 8000), "CN-23a bound");
+			byte[] receipt = "id:FLOOD sub:001 dlvrd:001 submit date:2611201200 done date:2611201201 stat:DELIVRD err:000 text:x".getBytes("US-ASCII");
+			long d316 = 0; for (String k : jedis.keys("stream:core:inbound-dr:316*")) d316 += jedis.xlen(k);
+			final long d0 = d316;
+			props.setProperty("ClientInboundPerSsidQueueSize", "50");   // the flood fills the channel's queue: the receiver runs the rest itself
+			final java.util.List<Integer> seqs = java.util.Collections.synchronizedList(new java.util.ArrayList<Integer>());
+			Thread flood = new Thread(() -> {
+				try { for (int i = 0; i < 3000; i++) seqs.add(a316.deliver("8613800000" + (i % 10), "18667991226", 4, receipt, null)); } catch (Exception e) { }
+			});
+			flood.start();
+			java.util.List<String> waiting = new java.util.ArrayList<String>();
+			for (int i = 0; i < 20; i++) waiting.add(send(317));
+			long floodAt = System.currentTimeMillis();
+			boolean allResults = waitFor(() -> { for (String w : waiting) if (inStreams("stream:core:results*", w).isEmpty()) return false; return true; }, 15000);
+			long took = System.currentTimeMillis() - floodAt;
+			flood.join();
+			check(allResults && took < 5000, "CN-23b 3000 DRs from CV316 at once: CV317's 20 MTs (window 5) all answered meanwhile, in " + took + " ms");
+			check(waitFor(() -> a316.deliverResp.size() >= 3000, 30000), "CN-23c every deliver_sm answered: " + a316.deliverResp.size());
+			long rok = 0; for (Integer q2 : a316.deliverResp.values()) if (q2 == 0) rok++;
+			long d1 = 0; for (String k : jedis.keys("stream:core:inbound-dr:316*")) d1 += jedis.xlen(k);
+			check(rok == 3000 && d1 - d0 == 3000, "CN-23d a full queue rejects nothing: 3000 answered ROK, 3000 DRs to Core: " + rok + ", " + (d1 - d0));
+			props.remove("ClientInboundPerSsidQueueSize");
+			boolean ownPool = false;
+			for (Thread t : Thread.getAllStackTraces().keySet()) ownPool |= t.getName().startsWith("CustReceiver_316") || t.getName().startsWith("CustReceiver_317");
+			check(!ownPool, "CN-23e shared inbound: no CustReceiver_ pool per channel session");
 
 			// ---- silent ----
 			check(waitFor(() -> a310.closed.get() >= 1, 15000), "CN-09a ConnectionSilentTime 2 s, no traffic: connection closed");

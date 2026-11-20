@@ -170,8 +170,13 @@ public abstract class AbstractCommonSession extends AbstractSession {
 		if (list != null && list.size() > 0) {
 			for (Object obj : list) {
 				try {
+					// the customers' PDUs to the Server's shared pool, the channels' to the Client's (each instance
+					// takes only its side); without one, the session's own receiver pool
 					SmppServerInboundQueueManager.SubmitResult submitResult =
 							SmppServerInboundQueueManager.getInstance().submit(this, obj);
+					if (submitResult == SmppServerInboundQueueManager.SubmitResult.DISABLED) {
+						submitResult = SmppServerInboundQueueManager.getClientInstance().submit(this, obj);
+					}
 					if (submitResult != SmppServerInboundQueueManager.SubmitResult.DISABLED) {
 						lastActivity = System.currentTimeMillis();
 						continue;
@@ -239,11 +244,17 @@ public abstract class AbstractCommonSession extends AbstractSession {
 		
 	}
 
+	/** the PDUs of this session go to a shared inbound pool (Server: customers, Client: channels) */
+	private boolean sharedInbound() {
+		return SmppServerInboundQueueManager.getInstance().handles(this)
+				|| SmppServerInboundQueueManager.getClientInstance().handles(this);
+	}
+
 	@Override
 	public void initReceivers() {
-		if (isServer && SmppServerInboundQueueManager.getInstance().isEnabled()) {
+		if (sharedInbound()) {
 			if (log.isInfoEnabled()) {
-				log.info("Skip per-session SMPP server receiver pool because shared inbound queue is enabled. session={}", sessionName);
+				log.info("Skip per-session receiver pool because the shared inbound queue is enabled. session={}", sessionName);
 			}
 			receiverThreadPool = null;
 			return;
@@ -261,7 +272,7 @@ public abstract class AbstractCommonSession extends AbstractSession {
 	
 	@Override
 	public void updateReceivers() {
-		if (isServer && SmppServerInboundQueueManager.getInstance().isEnabled()) {
+		if (sharedInbound()) {
 			if (receiverThreadPool != null) {
 				executorServiceManager.shutdown(receiverThreadPool);
 				receiverThreadPool = null;

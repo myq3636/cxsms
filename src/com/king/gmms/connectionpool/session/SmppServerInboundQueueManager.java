@@ -32,10 +32,23 @@ import com.king.gmms.protocol.smpp.util.Data;
  * <li>Responses (deliver_sm_resp, ...), enquire_link and unbind take a priority lane: they are not
  * held behind a customer's submit backlog (DR pending timeouts, link timeouts) and never rejected.</li>
  * </ul>
+ * The Client has its own instance ({@link #getClientInstance}, ClientInbound* settings, docs/会话线程优化设计.md 3.2):
+ * the PDUs of the channels (submit_sm_resp and enquire_link_resp in the priority lane, deliver_sm per channel), so that
+ * the sessions do not each have their CustReceiver pool; a full queue is never answered with a rejection there: the
+ * receiver thread runs the PDU itself and so stops reading the socket for that time (TCP back pressure to the channel).
  */
 public class SmppServerInboundQueueManager {
     private static final SystemLogger log = SystemLogger.getSystemLogger(SmppServerInboundQueueManager.class);
-    private static final SmppServerInboundQueueManager INSTANCE = new SmppServerInboundQueueManager();
+    private static final SmppServerInboundQueueManager INSTANCE = new SmppServerInboundQueueManager(true, "SmppServerInbound",
+            "SmppServerInboundWorker-", "SmppServerInboundDispatcher-", "queue.smpp_server_inbound", "SMPP server");
+    private static final SmppServerInboundQueueManager CLIENT = new SmppServerInboundQueueManager(false, "ClientInbound",
+            "ClientInboundWorker-", "ClientInboundDispatcher-", "queue.smpp_client_inbound", "SMPP client");
+
+    /** true: the SMPP server sessions (customers); false: the outgoing ones (channels) */
+    private final boolean server;
+    /** prefix of the settings: SmppServerInbound / ClientInbound */
+    private final String prefix;
+    private final String workerName, dispatcherName, metric, label;
 
     private final GmmsUtility gmmsUtility = GmmsUtility.getInstance();
     private final ConcurrentHashMap<Integer, SsidQueue> queues = new ConcurrentHashMap<Integer, SsidQueue>();
@@ -60,15 +73,32 @@ public class SmppServerInboundQueueManager {
         return INSTANCE;
     }
 
-    private SmppServerInboundQueueManager() {
+    /** the Client's (channels) instance */
+    public static SmppServerInboundQueueManager getClientInstance() {
+        return CLIENT;
+    }
+
+    private SmppServerInboundQueueManager(boolean server, String prefix, String workerName, String dispatcherName,
+            String metric, String label) {
+        this.server = server;
+        this.prefix = prefix;
+        this.workerName = workerName;
+        this.dispatcherName = dispatcherName;
+        this.metric = metric;
+        this.label = label;
     }
 
     public boolean isEnabled() {
-        return getBoolean("SmppServerInboundSharedPoolEnable", true);
+        return getBoolean(prefix + "SharedPoolEnable", true);
+    }
+
+    /** this instance takes the PDUs of the session: the shared pool is on and the session is of its side */
+    public boolean handles(AbstractCommonSession session) {
+        return isEnabled() && session instanceof MultiSmppSession && session.isServer() == server;
     }
 
     public SubmitResult submit(AbstractCommonSession session, Object obj) {
-        if (!isEnabled() || !(session instanceof MultiSmppSession) || !session.isServer()) {
+        if (!handles(session)) {
             return SubmitResult.DISABLED;
         }
         if (obj == null) {
@@ -87,14 +117,16 @@ public class SmppServerInboundQueueManager {
             activate(ssid);
             return SubmitResult.QUEUED;
         }
-        int perSsidLimit = getInt("SmppServerInboundPerSsidQueueSize", 10000, 1, Integer.MAX_VALUE);
-        int globalLimit = getInt("SmppServerInboundGlobalQueueLimit", 200000, 1, Integer.MAX_VALUE);
-        int warnQueueSize = getInt("SmppServerInboundWarnQueueSize", 30000, 1, Integer.MAX_VALUE);
+        int perSsidLimit = getInt(prefix + "PerSsidQueueSize", 10000, 1, Integer.MAX_VALUE);
+        int globalLimit = getInt(prefix + "GlobalQueueLimit", 200000, 1, Integer.MAX_VALUE);
+        int warnQueueSize = getInt(prefix + "WarnQueueSize", 30000, 1, Integer.MAX_VALUE);
 
         if (globalQueued.get() >= globalLimit || queue.size.get() >= perSsidLimit) {
-            log.warn("SMPP server shared inbound queue full. ssid={}, queueSize={}, globalQueued={}, perSsidLimit={}, globalLimit={}",
-                    new Object[] {ssid, queue.size.get(), globalQueued.get(), perSsidLimit, globalLimit});
-            if (rejectIfPossible(session, obj, ssid)) {
+            log.warn("{} shared inbound queue full. ssid={}, queueSize={}, globalQueued={}, perSsidLimit={}, globalLimit={}",
+                    new Object[] {label, ssid, queue.size.get(), globalQueued.get(), perSsidLimit, globalLimit});
+            // the Server answers a customer's submit_sm with a rejection; the Client never rejects a channel's DR:
+            // the receiver thread runs it (it does not read the socket meanwhile)
+            if (server && rejectIfPossible(session, obj, ssid)) {
                 return SubmitResult.CALLER_RUNS;
             }
             session.receive(obj);
@@ -108,8 +140,8 @@ public class SmppServerInboundQueueManager {
         updateMetrics();
 
         if (ssidQueued >= warnQueueSize) {
-            log.warn("SMPP server shared inbound queue high watermark. ssid={}, queueSize={}, globalQueued={}",
-                    new Object[] {ssid, ssidQueued, globalQueued.get()});
+            log.warn("{} shared inbound queue high watermark. ssid={}, queueSize={}, globalQueued={}",
+                    new Object[] {label, ssid, ssidQueued, globalQueued.get()});
         }
         return SubmitResult.QUEUED;
     }
@@ -144,28 +176,28 @@ public class SmppServerInboundQueueManager {
         // core = max: a plain pool only adds threads above its core size once the queue is full
         // each worker holds a Redis connection while it produces: more workers than Redis_pool_maxActive
         // (default 50) only wait for the pool and make the tail latency worse
-        int workerMax = getInt("SmppServerInboundWorkerMax", 50, 1, Integer.MAX_VALUE);
-        int workerQueue = getInt("SmppServerInboundWorkerQueue", 1000, 1, Integer.MAX_VALUE);
+        int workerMax = getInt(prefix + "WorkerMax", 50, 1, Integer.MAX_VALUE);
+        int workerQueue = getInt(prefix + "WorkerQueue", 1000, 1, Integer.MAX_VALUE);
         final AtomicInteger threadNo = new AtomicInteger();
         workerPool = new ThreadPoolExecutor(workerMax, workerMax, 60L, TimeUnit.SECONDS,
                 new LinkedBlockingQueue<Runnable>(workerQueue), new ThreadFactory() {
                     public Thread newThread(Runnable r) {
-                        Thread t = new Thread(r, "SmppServerInboundWorker-" + threadNo.incrementAndGet());
+                        Thread t = new Thread(r, workerName + threadNo.incrementAndGet());
                         t.setDaemon(true);
                         return t;
                     }
                 }, new ThreadPoolExecutor.AbortPolicy());
         workerPool.allowCoreThreadTimeOut(true);
 
-        int dispatcherThreads = getInt("SmppServerInboundDispatcherThreads", 2, 1, 64);
+        int dispatcherThreads = getInt(prefix + "DispatcherThreads", 2, 1, 64);
         for (int i = 0; i < dispatcherThreads; i++) {
-            Thread dispatcher = new Thread(new Dispatcher(), "SmppServerInboundDispatcher-" + i);
+            Thread dispatcher = new Thread(new Dispatcher(), dispatcherName + i);
             dispatcher.setDaemon(true);
             dispatcher.start();
         }
         if (log.isInfoEnabled()) {
-            log.info("SMPP server shared inbound queue started. workerMax={}, workerQueue={}, dispatchers={}",
-                    new Object[] {workerMax, workerQueue, dispatcherThreads});
+            log.info("{} shared inbound queue started. workerMax={}, workerQueue={}, dispatchers={}",
+                    new Object[] {label, workerMax, workerQueue, dispatcherThreads});
         }
     }
 
@@ -241,7 +273,7 @@ public class SmppServerInboundQueueManager {
     }
 
     private int resolveQueueFullStatus() {
-        String value = gmmsUtility.getCommonProperty("SmppServerInboundQueueFullCommandStatus", "ESME_RTHROTTLED").trim();
+        String value = gmmsUtility.getCommonProperty(prefix + "QueueFullCommandStatus", "ESME_RTHROTTLED").trim();
         if ("ESME_RTHROTTLED".equalsIgnoreCase(value)) {
             return Data.ESME_RTHROTTLED;
         }
@@ -290,8 +322,8 @@ public class SmppServerInboundQueueManager {
                     return false;
                 }
             }
-            int maxInFlight = getInt("SmppServerInboundMaxInFlightPerSsid", 20, 1, Integer.MAX_VALUE);
-            int batch = getInt("SmppServerInboundDispatchBatchPerSsid", 20, 1, maxInFlight);
+            int maxInFlight = getInt(prefix + "MaxInFlightPerSsid", 20, 1, Integer.MAX_VALUE);
+            int batch = getInt(prefix + "DispatchBatchPerSsid", 20, 1, maxInFlight);
             int available = maxInFlight - queue.inFlight.get();
             int dispatched = 0;
 
@@ -331,7 +363,7 @@ public class SmppServerInboundQueueManager {
                     public void run() {
                         try {
                             long waitMs = System.currentTimeMillis() - task.enqueueTimeMs;
-                            long warnWaitMs = getInt("SmppServerInboundWarnWaitMs", 1000, 1, Integer.MAX_VALUE);
+                            long warnWaitMs = getInt(prefix + "WarnWaitMs", 1000, 1, Integer.MAX_VALUE);
                             if (waitMs >= warnWaitMs) {
                                 warnSlow(ssid, queue, waitMs);
                             }
@@ -367,8 +399,8 @@ public class SmppServerInboundQueueManager {
                 return;
             }
             queue.slowSinceWarn.set(0);
-            log.warn("SMPP server shared inbound tasks waited too long. ssid={}, tasks={}, lastWaitMs={}, queueSize={}, inFlight={}",
-                    new Object[] {ssid, slow, waitMs, queue.size.get(), queue.inFlight.get()});
+            log.warn("{} shared inbound tasks waited too long. ssid={}, tasks={}, lastWaitMs={}, queueSize={}, inFlight={}",
+                    new Object[] {label, ssid, slow, waitMs, queue.size.get(), queue.inFlight.get()});
         }
 
         private void sleep(long millis) {
@@ -382,11 +414,11 @@ public class SmppServerInboundQueueManager {
 
     private void updateMetrics() {
         MetricsCollector collector = MetricsCollector.getInstance();
-        collector.setGauge(MetricsNames.gauge("queue.smpp_server_inbound", "global_queued"), globalQueued.get());
-        collector.setGauge(MetricsNames.gauge("queue.smpp_server_inbound", "global_inflight"), globalInFlight.get());
-        collector.setGauge(MetricsNames.gauge("queue.smpp_server_inbound", "active_ssids"), activeSsidSet.size());
-        collector.setGauge(MetricsNames.gauge("queue.smpp_server_inbound", "ssid_queues"), queues.size());
-        collector.setGauge(MetricsNames.gauge("queue.smpp_server_inbound", "pool_full_retries"), rejected.get());
+        collector.setGauge(MetricsNames.gauge(metric, "global_queued"), globalQueued.get());
+        collector.setGauge(MetricsNames.gauge(metric, "global_inflight"), globalInFlight.get());
+        collector.setGauge(MetricsNames.gauge(metric, "active_ssids"), activeSsidSet.size());
+        collector.setGauge(MetricsNames.gauge(metric, "ssid_queues"), queues.size());
+        collector.setGauge(MetricsNames.gauge(metric, "pool_full_retries"), rejected.get());
     }
 
     private static class SsidQueue {
