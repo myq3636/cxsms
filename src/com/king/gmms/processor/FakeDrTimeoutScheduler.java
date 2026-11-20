@@ -60,7 +60,7 @@ public class FakeDrTimeoutScheduler implements Runnable {
 
 	static int shardOf(String outMsgId) {
 		int total = GmmsUtility.getInstance().getTotalShards();
-		return total <= 1 ? 0 : (outMsgId.hashCode() & Integer.MAX_VALUE) % total;
+		return com.king.gmms.messagequeue.ShardHash.of(outMsgId, total);
 	}
 
 	/** starts timing; false when it could not be stored (no timeout for this MT then) */

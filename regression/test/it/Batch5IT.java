@@ -146,6 +146,33 @@ public class Batch5IT extends ItSupport {
 		check(waitFor(() -> cdrCount("8888_LOST", "OUT_SUBMIT") == 1 && jedis.xlen(lk) == 0, 10000),
 				"R5-07 result left pending by a dead Core on a sharded stream: recovered by auto-claim");
 
+		// ---- R5-08 the parts of a long message: one Core shard (ShardHash keeps the sarMsgRefNum key together) ----
+		{
+			java.lang.reflect.Field tf = com.king.gmms.GmmsUtility.class.getDeclaredField("totalShards");
+			tf.setAccessible(true);
+			Object before = tf.get(com.king.gmms.GmmsUtility.getInstance());
+			tf.set(com.king.gmms.GmmsUtility.getInstance(), 64);
+			java.util.Set<Integer> parts = new java.util.HashSet<Integer>(), messages = new java.util.HashSet<Integer>();
+			for (int ref = 0; ref < 200; ref++) {
+				java.util.Set<Integer> one = new java.util.HashSet<Integer>();
+				for (int part = 1; part <= 3; part++) {
+					GmmsMessage m = new GmmsMessage();
+					m.setOSsID(9971);
+					m.setSenderAddress("MKT");
+					m.setRecipientAddress("86138" + (57543388 + ref));
+					m.setSarMsgRefNum(String.valueOf(ref));
+					m.setSarSegmentSeqNum(part);
+					m.setSplitStatus(part);
+					one.add(q.calculateShardId(m));
+				}
+				parts.add(one.size());
+				messages.addAll(one);
+			}
+			tf.set(com.king.gmms.GmmsUtility.getInstance(), before);
+			check(parts.size() == 1 && parts.contains(1) && messages.size() > 40,
+					"R5-08 200 long messages of 3 parts over 64 shards: each on one shard, " + messages.size() + " shards used");
+		}
+
 		exit();
 	}
 }

@@ -3,6 +3,7 @@ InlineDrCheck com.king.message.gmms.InlineDrCheck unit
 MessageIdCheck com.king.message.gmms.MessageIdCheck unit
 ShardPlanCheck com.king.gmms.ha.ShardPlanCheck unit
 SenderPaceCheck com.king.gmms.mqm.SenderPaceCheck unit
+ShardHashCheck com.king.gmms.messagequeue.ShardHashCheck unit
 DataManagerCheck com.king.db.DataManagerCheck unit
 DrShardCheck com.king.gmms.messagequeue.DrShardCheck unit
 ServerConnectionRaceCheck com.king.gmms.connectionpool.connection.ServerConnectionRaceCheck unit

@@ -128,6 +128,14 @@ MQM（active 的那个），每 EarlyDr.IntervalMs 取出到期的：
 | `MessageStoreManager` 写原始消息的 `TMP-DRLOOKUP submit cache ...` | WARN 和 DEBUG 混用 | 写 Redis 失败、直接写 WDQ 的保留 WARN，其余 DEBUG |
 | outbox 超时 `Core outbound outbox timeout result produced` | 每条 WARN | 保留每条（真实失败），加上 `ageMs`、`sentSeenAgoMs`、`waitMs`，便于区分是排队还是通道不回 |
 
+## 6. 分片哈希不均（PF007 第二轮发现，已改）
+
+营销 MT 的"提交 → 通道"p95、p99 都到了 60 秒上限，最长等 6.6 分钟。按流统计（09:40～10:00，每 10 条取 1）：各 `mt:routed:9981:{分片}` 分到的 MT 从 2715 到 9334 条，差 3.4 倍；最忙的十来个流平均等 2～5 分钟，最闲的不到 1 秒。
+
+原因：分片 = `键.hashCode() % 64`，键是 `ssid_发送方_接收方`（长短信加 `_sarMsgRefNum`）。`String.hashCode` 是各字符乘 31 的幂次相加，而 31² ≡ 1 (mod 64)，所以对 64 取余只由"奇数位字符之和"和"偶数位字符之和"决定。手机号这类数字串的数字和集中在中间值附近，就挤在少数分片上。整机发送能力不够时，Client 按流轮流取，每个流机会均等：闲的流每次都能清空，忙的流清不完，积压全落在这几个流上。监控里的 `doorbellMissing=true` 是流正被处理时门铃已被取走，不是门铃丢失。
+
+改为 `ShardHash.of(键, 分片数)`：`hashCode` 先经 MurmurHash3 的 fmix32 打散再取余，64 万个手机号键在 64 个分片上最多和最少相差不到 10%（原来 2 倍以上）。同一个键总是同一个分片：长短信各段的键相同（同一个 `sarMsgRefNum`），仍在同一个 Core。用到的地方：`StreamQueueManager` 的 `calculateShardId`（Server → Core，决定哪个 Core）、`calculateOutboundShardId`（Core → Client）、HTTP、MQM、DR、通道 DR、结果流的分片，`DelayedInDRDispatcher`、`FakeDrTimeoutScheduler`。升级前后同一个键的分片不同，所有模块要一起升级（线上不混跑）；升级时还在流里的消息仍在原来的流里处理。
+
 ## 回归
 
 - outbox：MT 在流里排队超过 180 秒才发出，发出后 1 秒内收到应答 → 不判 2700。

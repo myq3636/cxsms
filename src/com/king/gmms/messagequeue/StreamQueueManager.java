@@ -106,15 +106,15 @@ public class StreamQueueManager {
 		} else {
 			hashKey = msg.getOSsID() + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
 		}
-		// Same shard as Math.abs(hash) % n for every hash, but never negative for Integer.MIN_VALUE
-		return Math.abs(hashKey.hashCode() % totalShards);
+		// the parts of a long message have the same key (sarMsgRefNum): one shard, one Core
+		return ShardHash.of(hashKey, totalShards);
 	}
 
 	public int calculateOutboundShardId(GmmsMessage msg) {
 		int totalShards = GmmsUtility.getInstance().getTotalShards();
 		if (totalShards <= 1) return 0;
 		String hashKey = msg.getRSsID() + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
-		return (hashKey.hashCode() & Integer.MAX_VALUE) % totalShards;
+		return ShardHash.of(hashKey, totalShards);
 	}
 
 	public boolean produceSubmitRouted(GmmsMessage msg, String channelId) {
@@ -145,7 +145,7 @@ public class StreamQueueManager {
 		int totalShards = GmmsUtility.getInstance().getTotalShards();
 		if (totalShards <= 1) return 0;
 		String hashKey = targetSsid + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
-		return (hashKey.hashCode() & Integer.MAX_VALUE) % totalShards;
+		return ShardHash.of(hashKey, totalShards);
 	}
 
 	public boolean produceMqmSubmitMessage(GmmsMessage msg) {
@@ -194,7 +194,7 @@ public class StreamQueueManager {
 		} else {
 			hashKey = targetSsid + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
 		}
-		return (hashKey.hashCode() & Integer.MAX_VALUE) % totalShards;
+		return ShardHash.of(hashKey, totalShards);
 	}
 
 	private int calculateDrShardId(GmmsMessage msg, int targetSsid) {
@@ -205,7 +205,7 @@ public class StreamQueueManager {
 			// customer's result and acks the DR on one master in one Lua (docs/Redis多主分片设计.md 8.2)
 			String id = !isBlank(msg.getMsgID()) ? msg.getMsgID() : msg.getInMsgID();
 			if (!isBlank(id)) {
-				return (id.hashCode() & Integer.MAX_VALUE) % totalShards;
+				return ShardHash.of(id, totalShards);
 			}
 		}
 		String hashKey;
@@ -216,7 +216,7 @@ public class StreamQueueManager {
 		} else {
 			hashKey = targetSsid + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
 		}
-		return (hashKey.hashCode() & Integer.MAX_VALUE) % totalShards;
+		return ShardHash.of(hashKey, totalShards);
 	}
 
 	public boolean produceDeliveryReport(GmmsMessage msg) {
@@ -969,7 +969,7 @@ public class StreamQueueManager {
 		} else {
 			hashKey = targetSsid + "_" + msg.getOutMsgID();
 		}
-		return (hashKey.hashCode() & Integer.MAX_VALUE) % totalShards;
+		return ShardHash.of(hashKey, totalShards);
 	}
 
 	public boolean isInboundDrShardEnabled() {
@@ -1510,7 +1510,7 @@ public class StreamQueueManager {
 		}
 		String id = !isBlank(msg.getMsgID()) ? msg.getMsgID() : msg.getInMsgID();
 		int totalShards = GmmsUtility.getInstance().getTotalShards();
-		int shard = totalShards <= 1 || isBlank(id) ? 0 : (id.hashCode() & Integer.MAX_VALUE) % totalShards;
+		int shard = totalShards <= 1 || isBlank(id) ? 0 : ShardHash.of(id, totalShards);
 		return STR_CORE_RESULTS + ":" + ssid + ":" + shard;
 	}
 
