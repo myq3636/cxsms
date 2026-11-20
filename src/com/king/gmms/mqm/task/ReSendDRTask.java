@@ -23,6 +23,9 @@ import java.util.ArrayList;
 public class ReSendDRTask extends TaskTimer {
     private static SystemLogger log = SystemLogger.getSystemLogger(ReSendDRTask.class);
 
+    /** RDQ.ReSendDRTask.Batch (default 500): DRs per run, of the current A2Ps and of the others each */
+    private int batch = 500;
+
     public ReSendDRTask() {
         timer = new Timer("ReSendDRTask");
     }
@@ -33,12 +36,13 @@ public class ReSendDRTask extends TaskTimer {
         String configPrefix = taskTable + "." + taskName;
         TaskConfiguration config = TaskConfiguration.getInstance();
         interval = Integer.parseInt(config.getProperty(configPrefix + ".Interval", "60")) * 1000L;
-            log.info("init Timer: ReSendDRTask for table: {}, Interval:{}",tableName, interval);
+        batch = Integer.parseInt(config.getProperty(configPrefix + ".Batch", "500").trim());
+            log.info("init Timer: ReSendDRTask for table: {}, Interval:{}, Batch:{}",tableName, interval, batch);
     }
 
     public void executeTask() {
         try {
-            ArrayList<GmmsMessage> list = msm.getResendDR();
+            ArrayList<GmmsMessage> list = msm.getResendDR(batch);
             if (list == null || list.size() == 0) {
                     log.debug("No DR Message need to resend.");
                 return;

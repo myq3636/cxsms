@@ -78,7 +78,7 @@
 | Server 的 SCAN（`SmppServerSessionRegistry` 等） | 8386 | 约 480 次/秒，每次 208 µs | 按模式扫整个 keyspace（8386 上有 90 万个 key） |
 | 各模块按模式列 stream（`keysSubmitMq` / `keysReportMq` → `scanAll`：自动认领每 5 分钟、积压监控每 10 分钟、启动时） | 8387、8388 | 每次扫完整个 keyspace | 8387 有约 500 万个 key：99% 是 `core:outbox:submit:{MsgID}:{段}:0:done`（TTL 超过 1 小时），扫一遍要约 5000 次 SCAN、每次约 430 µs |
 | 假 DR、延迟 DR 的到期扫描 | 8386 | 各 Core 每秒约 60 次 | ZRANGEBYSCORE 的 Lua |
-| MQM 报告重发 | 8388 | MQM1 每秒约 50 条 | Core 日志 `Reject stale-fence MQM message`：MQM 的任期（fence）过期，Core 拒收后 MQM 一直重发（**疑似功能问题，另查**） |
+| MQM 报告重发 | 8388 | MQM1 每秒约 50 条 | RDQ 重发：`ReSendDRTask` 每 10 秒取 500 条到期的 DR（客户不在线，11005，按重试策略再试），是正常重试，和 fence 无关。另：Core 日志 `Reject stale-fence MQM message` 是 MQM 主备切换或重启后，旧任期发出、还在流里的消息被拒收（按设计）；但拒收后它的 DB 行停在 ActionCode=0，再也不会被取到，DR 或 MT 丢失。2026-11-20 改为拒收时把这一行放回待取状态（ActionCode 0 -> -1），RDQ 每次取多少条可配置（`RDQ.ReSendDRTask.Batch`） |
 | 消费者空转（已修，见 5.2） | 8388 | 修之前空闲时每秒 2 万次 XREADGROUP | 只剩在途条目的 stream 被不停重按门铃 |
 
 另外：8386 上约 30 万个 `RTVS1-*` 键（通道 MsgID → 原消息，用于匹配 DR），TTL 超过 1 天，是之前测试中没收到 DR 的 MT 留下的。
@@ -126,7 +126,7 @@
 | 8 | **横向扩展**：report 实例拆成多个（例如结果、DR 各一个实例），或者 stream 按分片分到多个 Redis 实例 | 单实例单线程是硬上限 | 近似线性 | 高：架构改动，配置和故障切换都要跟着改 |
 | 9 | **任务级开销**：每个任务都 `XGROUP CREATE`（可以只在第一次或 NOGROUP 时建）；取门铃和 ZREM 合成一次 | 低 TPS 时每个条目都付一次 | 低 TPS 时明显，高 TPS 时小 | 低 |
 
-**要单独查的功能问题**（不是性能优化）：MQM 任期过期后报告被 Core 拒收、一直重发（3.4）；8386 上 TTL 超过 1 天的 `RTVS1-*` DR 查找键，以及 `maxmemory 2048mb` 写满时的行为。
+**要单独查的功能问题**（不是性能优化）：MQM 任期过期后报告被 Core 拒收（3.4，已查清并修改：拒收后 DB 行放回待取状态）；8386 上 TTL 超过 1 天的 `RTVS1-*` DR 查找键，以及 `maxmemory 2048mb` 写满时的行为。
 
 ## 6. 到 5000 TPS 的估算
 

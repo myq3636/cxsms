@@ -106,7 +106,7 @@ public class GmmsUtility {
 	private volatile int csmIntegrityCacheTimeout = 3600000; // 1 hour
 	private volatile int csmIntegrityCacheCapacity = 100000;
 	private volatile int enquireLinkResponseTime = 100;	
-	private volatile int resendDRThrottle = 0;	
+	private volatile int resendDRThrottle = 10000;	
 
 	private TimeZone local;
 
@@ -471,7 +471,7 @@ public class GmmsUtility {
 			expireTime = Integer.parseInt(props.getProperty(
 					"MessageExpireTime", "1380").trim());
 			resendDRThrottle = Integer.parseInt(props.getProperty(
-					"ResendDRThrottle", "0").trim());
+					"ResendDRThrottle", "10000").trim());
 			min_ID_expireTime = Integer.parseInt(props.getProperty(
 					"Redis_MinIDExpireTime", "300").trim());
 			finalExpireTime = Integer.parseInt(props.getProperty(
@@ -880,7 +880,7 @@ public class GmmsUtility {
 		for (String key : applied) {
 			if ("InitPhoneLen".equals(key)) initPhoneLen = intProp(props, key, 0);
 			else if ("MessageExpireTime".equals(key)) expireTime = intProp(props, key, 1380);
-			else if ("ResendDRThrottle".equals(key)) resendDRThrottle = intProp(props, key, 0);
+			else if ("ResendDRThrottle".equals(key)) resendDRThrottle = intProp(props, key, 10000);
 			else if ("Redis_MinIDExpireTime".equals(key)) min_ID_expireTime = intProp(props, key, 300);
 			else if ("MessageFinalExpireTime".equals(key)) finalExpireTime = intProp(props, key, 1440);
 			else if ("DRInterval".equals(key)) drInterval = intProp(props, key, 20);

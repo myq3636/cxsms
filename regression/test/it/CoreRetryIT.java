@@ -22,7 +22,16 @@ import com.king.message.gmms.MessageStoreManager;
 public class CoreRetryIT extends CoreBizSupport {
 	static final List<String> sql = Collections.synchronizedList(new ArrayList<String>());
 	static class RecordingStore extends MessageStoreManager {
-		@Override protected int doUpdate(String s) { sql.add(s); return 1; }
+		/** the update of this SQL fails once (RE-09c) */
+		static volatile String failOnce;
+		@Override protected int doUpdate(String s) throws com.king.db.DataControlException {
+			if (failOnce != null && s.contains(failOnce)) {
+				failOnce = null;
+				throw new com.king.db.DataControlException("test: DB down");
+			}
+			sql.add(s);
+			return 1;
+		}
 	}
 	static StreamQueueManager q;
 
@@ -264,6 +273,45 @@ public class CoreRetryIT extends CoreBizSupport {
 			q.produceResult(drf);
 			check(sqlSeen("INSERT", "RDQ", did + "F", 1), "RE-08e DR could not be sent: into RDQ for another try");
 		} catch (Throwable t) { t.printStackTrace(System.out); failures++; }
+		// ---- RE-09 a message of an old MQM term (stale fence): not processed, its row put back for the active MQM ----
+		{
+			GmmsMessage rep9 = first(700, "18667991227", 601);
+			final String id9 = rep9.getMsgID();
+			jedis.set("mqm:active:fence", "6");
+			com.king.gmms.mqm.MqmActiveState.setActive(true, "RE-09 old term", 5);
+			Thread.sleep(3200);   // Core reads the authority every 3 s
+			GmmsMessage d9 = new GmmsMessage(rep9);
+			d9.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
+			d9.setStatus(GmmsStatus.DELIVERED);
+			d9.setOriginalQueue(MessageStoreManager.RDQ);
+			d9.setRowId(11);
+			check(q.produceMqmReportMessage(d9), "RE-09a old term: MQM writes the DR to its stream");
+			check(waitFor(() -> { synchronized (sql) { return sql.contains("UPDATE RDQ SET ActionCode=-1 WHERE ID=11 AND ActionCode=0"); } }, 8000)
+					&& logLine(id9, "Reject stale-fence MQM message") != null,
+					"RE-09b rejected, its RDQ row put back (ActionCode 0 -> -1, only if still taken)");
+			Thread.sleep(1000);
+			check(inStreams("stream:dr:pending:700:*", id9).isEmpty(), "RE-09c no DR to the customer from the old term");
+
+			RecordingStore.failOnce = "WHERE ID=13 AND ActionCode=0";
+			GmmsMessage d13 = new GmmsMessage(d9);
+			d13.setMsgID(id9 + "B");
+			d13.setRowId(13);
+			check(q.produceMqmReportMessage(d13), "RE-09d old term, the DB is down");
+			check(waitFor(() -> logLine(id9 + "B", "its row not released (left pending)") != null, 8000)
+					&& waitFor(() -> { synchronized (sql) { return !sql.contains("UPDATE RDQ SET ActionCode=-1 WHERE ID=13 AND ActionCode=0"); } }, 100),
+					"RE-09e row not put back: the message is left pending (retried), not acked");
+
+			GmmsMessage d0 = new GmmsMessage(d9);
+			d0.setMsgID(id9 + "C");
+			d0.setOriginalQueue(null);
+			d0.setRowId(0);
+			check(q.produceMqmReportMessage(d0), "RE-09f old term, a message without its row");
+			check(waitFor(() -> { String l = logLine(id9 + "C", "Reject stale-fence MQM message"); return l != null && l.contains("rowReleased=false"); }, 8000),
+					"RE-09g rejected as before, nothing to put back");
+			com.king.gmms.mqm.MqmActiveState.setActive(true, "RE-09 current term", 6);
+			jedis.del("mqm:active:fence");
+		}
+
 		exit();
 	}
 }

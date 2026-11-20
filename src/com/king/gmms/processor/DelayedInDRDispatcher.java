@@ -1,5 +1,8 @@
 package com.king.gmms.processor;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
@@ -9,6 +12,7 @@ import com.king.gmms.GmmsUtility;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
 import com.king.redis.RedisClient;
+import com.king.redis.RedisConnection;
 import com.king.redis.SerializableHandler;
 
 /**
@@ -21,6 +25,19 @@ public class DelayedInDRDispatcher implements Runnable {
 	private static final String READY_KEY_PREFIX = "zset:delay:outdr:";
 	private static final String PROCESSING_KEY_PREFIX = "zset:delay:outdr:processing:";
 	private static final String PAYLOAD_KEY_PREFIX = "delay:outdr:payload:";
+
+	// KEYS[1]=ready KEYS[2]=processing ARGV: 1 now, 2 claim end, 3 count. The claims that ran out (a Core stopped) go back
+	// to ready, then up to count due ones are moved to processing: {requeued, {payload keys}}
+	private static final String CLAIM_BATCH_LUA =
+			"local back = redis.call('ZRANGEBYSCORE', KEYS[2], '-inf', ARGV[1], 'LIMIT', 0, tonumber(ARGV[3])) "
+			+ "for i = 1, #back do redis.call('ZREM', KEYS[2], back[i]) redis.call('ZADD', KEYS[1], ARGV[1], back[i]) end "
+			+ "local m = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, tonumber(ARGV[3])) "
+			+ "for i = 1, #m do redis.call('ZREM', KEYS[1], m[i]) redis.call('ZADD', KEYS[2], ARGV[2], m[i]) end "
+			+ "return {#back, m}";
+
+	// KEYS[1]=processing ARGV = payload keys: dispatched (or without a readable payload), deleted
+	private static final String DONE_LUA =
+			"for i = 1, #ARGV do redis.call('DEL', ARGV[i]) redis.call('ZREM', KEYS[1], ARGV[i]) end return #ARGV";
 
 	private volatile boolean running = false;
 	// M-3: 持有 worker 线程引用，stop 时 interrupt，避免停在 sleep 里要等 idleSleepMs 才退出。
@@ -126,67 +143,70 @@ public class DelayedInDRDispatcher implements Runnable {
 		}
 	}
 
+	/**
+	 * The due delayed DRs of this Core's shards, by batch (AutoInDR.DelayBatchSize per shard and round): one Lua claims
+	 * them (and puts back the claims that ran out), one MGET reads them, each is dispatched, one Lua deletes the
+	 * dispatched ones. A failed one is retried after AutoInDR.DelayRetryDelayMs. On a Redis error the claimed ones come
+	 * back after AutoInDR.DelayClaimTimeoutMs.
+	 */
 	private int dispatchDueMessages() {
 		Set<Integer> shards = gmmsUtility.getMyShards();
 		if (shards == null || shards.isEmpty()) {
 			return 0;
 		}
+		RedisConnection state = redis.getStateRedis();
 		int processed = 0;
-		long now = System.currentTimeMillis();
 		for (Integer shardId : shards) {
 			if (shardId == null) {
 				continue;
 			}
-			requeueExpiredProcessing(shardId.intValue(), now);
-			for (int i = 0; i < batchSize(); i++) {
-				String payloadKey = redis.claimDueZSetMember(readyKey(shardId.intValue()),
-						processingKey(shardId.intValue()), now, now + claimTimeoutMs());
-				if (payloadKey == null) {
-					break;
-				}
-				handleClaimedPayload(shardId.intValue(), payloadKey);
-				processed++;
-			}
+			processed += dispatchShard(state, shardId.intValue());
 		}
 		return processed;
 	}
 
-	private void requeueExpiredProcessing(int shardId, long now) {
-		for (int i = 0; i < batchSize(); i++) {
-			String payloadKey = redis.claimDueZSetMember(processingKey(shardId), readyKey(shardId), now, now);
-			if (payloadKey == null) {
-				return;
-			}
-			log.warn("Requeued expired Auto IN_DR processing payload. shardId={}, payloadKey={}", shardId, payloadKey);
+	private int dispatchShard(RedisConnection state, int shardId) {
+		long now = System.currentTimeMillis();
+		List<?> r = (List<?>) state.evalScript(CLAIM_BATCH_LUA, Arrays.asList(readyKey(shardId), processingKey(shardId)),
+				Arrays.asList(String.valueOf(now), String.valueOf(now + claimTimeoutMs()), String.valueOf(batchSize())));
+		long requeued = r.get(0) instanceof Long ? (Long) r.get(0) : 0L;
+		if (requeued > 0) {
+			log.warn("Requeued {} expired Auto IN_DR processing payload(s). shardId={}", requeued, shardId);
 		}
-	}
-
-	private void handleClaimedPayload(int shardId, String payloadKey) {
-		GmmsMessage message = null;
-		try {
-			String body = redis.getString(payloadKey);
-			if (body == null) {
-				redis.zrem(processingKey(shardId), new String[] { payloadKey });
-				return;
-			}
-			message = SerializableHandler.convertRedisMssage2GmmsMessage(body);
+		List<String> keys = new ArrayList<String>();
+		for (Object k : (List<?>) r.get(1)) {
+			keys.add(String.valueOf(k));
+		}
+		if (keys.isEmpty()) {
+			return 0;
+		}
+		List<String> bodies = state.mgetStrict(keys);
+		List<String> done = new ArrayList<String>();
+		for (int i = 0; i < keys.size(); i++) {
+			String payloadKey = keys.get(i);
+			String body = bodies == null || i >= bodies.size() ? null : bodies.get(i);
+			GmmsMessage message = body == null ? null : SerializableHandler.convertRedisMssage2GmmsMessage(body);
 			if (message == null) {
-				redis.del(payloadKey);
-				redis.zrem(processingKey(shardId), new String[] { payloadKey });
-				return;
+				done.add(payloadKey);   // gone (TTL) or not readable
+				continue;
 			}
-			if (DirectInDRDispatchService.getInstance().dispatchNow(message)) {
-				redis.del(payloadKey);
-				redis.zrem(processingKey(shardId), new String[] { payloadKey });
-				return;
+			boolean dispatched;
+			try {
+				dispatched = DirectInDRDispatchService.getInstance().dispatchNow(message);
+			} catch (Exception e) {
+				log.warn(message, "Failed to dispatch delayed Auto IN_DR payload. payloadKey={}", payloadKey, e);
+				dispatched = false;
 			}
-			retryOrFail(shardId, payloadKey, message);
-		} catch (Exception e) {
-			log.warn(message, "Failed to dispatch delayed Auto IN_DR payload. payloadKey={}", payloadKey, e);
-			if (message != null) {
+			if (dispatched) {
+				done.add(payloadKey);
+			} else {
 				retryOrFail(shardId, payloadKey, message);
 			}
 		}
+		if (!done.isEmpty()) {
+			state.evalScript(DONE_LUA, Arrays.asList(processingKey(shardId)), done);
+		}
+		return keys.size();
 	}
 
 	private void retryOrFail(int shardId, String payloadKey, GmmsMessage message) {
@@ -246,7 +266,7 @@ public class DelayedInDRDispatcher implements Runnable {
 	}
 
 	private int batchSize() {
-		return intProperty("AutoInDR.DelayBatchSize", 200);
+		return intProperty("AutoInDR.DelayBatchSize", 500);
 	}
 
 	private long claimTimeoutMs() {

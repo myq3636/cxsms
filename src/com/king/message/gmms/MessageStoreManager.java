@@ -2315,6 +2315,11 @@ public class MessageStoreManager extends DataManager {
 	}
 
 	public ArrayList<GmmsMessage> getResendDR() {
+		return getResendDR(500);
+	}
+
+	/** the due RDQ DRs, at most batch of the current A2Ps and batch of the others (RDQ.ReSendDRTask.Batch) */
+	public ArrayList<GmmsMessage> getResendDR(int batch) {
 		ArrayList<GmmsMessage> messages = new ArrayList<GmmsMessage>();
 		ArrayList<Integer> messageIds = new ArrayList<Integer>();
 		String finalExpire = getNoFinalExpireSql();
@@ -2324,12 +2329,12 @@ public class MessageStoreManager extends DataManager {
 		sqlStr[0] = "SELECT * FROM " + RDQ + " WHERE ActionCode != 0 AND "
 				+ "now() > NextRetryTime AND O_A2P IN ("
 				+ gmmsUtility.getCustomerManager().getCurrentA2Ps() + ") AND "
-				+ finalExpire + " ORDER BY DateIn ASC limit 500";
+				+ finalExpire + " ORDER BY DateIn ASC limit " + batch;
 
 		sqlStr[1] = "SELECT * FROM " + RDQ + " WHERE ActionCode != 0 AND "
 				+ "now() > NextRetryTime AND O_A2P NOT IN ("
 				+ gmmsUtility.getCustomerManager().getCurrentA2Ps() + ") AND "
-				+ before + " ORDER BY DateIn ASC limit 500";
+				+ before + " ORDER BY DateIn ASC limit " + batch;
 
 		// String sqlStr = "SELECT * FROM " + RDQ +
 		// " WHERE ActionCode != 0 AND " +
@@ -3145,6 +3150,37 @@ public class MessageStoreManager extends DataManager {
 		}
 
 		return msg;
+	}
+
+	/** the MQM queues whose rows a task takes by setting ActionCode=0 (taken back by {@link #releaseForResend}) */
+	private static final java.util.Set<String> RELEASABLE_QUEUES = new java.util.HashSet<String>(
+			java.util.Arrays.asList(RDQ, RMQ, SMQ, QDQ, WDQ));
+
+	/**
+	 * The MQM message was rejected (stale fence): its row goes back to what it was before the MQM task took it
+	 * (ActionCode 0 -> -1), so that the active MQM takes it again and it follows its retry, expiry and final expiry
+	 * as if never taken. A row changed since (processed, deleted) is not touched. false when the message has no row
+	 * to put back; DB errors are thrown (the message is left pending and retried).
+	 */
+	public boolean releaseForResend(GmmsMessage message) throws DataManagerException {
+		String table = message == null ? null : message.getOriginalQueue();
+		if (table == null || message.getRowId() <= 0 || !RELEASABLE_QUEUES.contains(table.toUpperCase())) {
+			return false;
+		}
+		String sql = "UPDATE " + table.toUpperCase() + " SET ActionCode=-1 WHERE ID=" + message.getRowId()
+				+ " AND ActionCode=0";
+		try {
+			int n = doUpdate(sql);
+			if (log.isInfoEnabled()) {
+				log.info(message, "Row released for the active MQM. table={}, rowId={}, updated={}", table,
+						message.getRowId(), n);
+			}
+			return true;
+		} catch (Exception e) {
+			throw new DataManagerException(e);
+		} finally {
+			super.closeSession();
+		}
 	}
 
 	/**

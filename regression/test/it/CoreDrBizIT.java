@@ -256,6 +256,26 @@ public class CoreDrBizIT extends CoreRetryIT {
 			DelayedInDRDispatcher.getInstance().startDispatcher();
 			check(waitFor(() -> drs(816, ids) == 1, 8000), "DR-11b dispatcher started again: the due DR goes out");
 
+			// ---- several due at once, one of them claimed by a Core that stopped: one batch sends them all ----
+			DelayedInDRDispatcher.getInstance().stopDispatcher();
+			Thread.sleep(500);
+			final java.util.List<String> many = new java.util.ArrayList<String>();
+			for (int i = 0; i < 5; i++) many.add(accept(first(816, "18667991226", 808)).getMsgID());
+			Thread.sleep(6000);
+			String claimed = null;
+			for (String z : jedis.keys("zset:delay:outdr:*")) {
+				if (z.contains(":processing:") || jedis.zcard(z) == 0) continue;
+				claimed = jedis.zrange(z, 0, 0).get(0);
+				jedis.zrem(z, claimed);
+				jedis.zadd(z.replace("zset:delay:outdr:", "zset:delay:outdr:processing:"), System.currentTimeMillis() - 1, claimed);
+				break;
+			}
+			check(claimed != null, "DR-11c 5 due DRs waiting, one left claimed by a stopped Core");
+			DelayedInDRDispatcher.getInstance().startDispatcher();
+			check(waitFor(() -> { for (String id : many) if (drs(816, id) != 1) return false; return true; }, 8000)
+					&& jedis.keys("delay:outdr:payload:*").isEmpty(),
+					"DR-11d dispatcher started again: all 5 go out once (the run-out claim put back), payloads deleted");
+
 			// ---- reroute on a vendor DR: the window counts from a GMT+8 stamp ----
 			long eight = 8 * 3600 * 1000L;
 			m = accept(firstMsg(withTime(818, eight), 803));

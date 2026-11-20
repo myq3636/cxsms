@@ -21,9 +21,7 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 			.getSystemLogger(MsgQueueMonitor.class);
 	private GmmsUtility gmmsUtility = null;
 	private ExpiredMessageQueueWithSafeExit messageQueueDb;
-	private ExpiredMessageQueueWithSafeExit drQueueRedis;
 	private Map<String, TaskExecutor> taskExecutors = new HashMap<String, TaskExecutor>();
-	private List<MQMMessageSender> drSenders = null;
 	private List<MQMMessageSender> retrySenders = null;
 	private ModuleStatusReporter statusReporter = null;
 	private MqmActiveCoordinator activeCoordinator = null;
@@ -43,7 +41,6 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 	 */
 	public MsgQueueMonitor() {
 		gmmsUtility = GmmsUtility.getInstance();
-		drSenders = new ArrayList<>();
 		retrySenders = new ArrayList<>();
 	}
 
@@ -64,7 +61,6 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 		// mqmListener.start();
 		
 		startMessageSender();
-		startDelayDRMessageSender();
 		startTaskTimers();
 		startRedisRetrieveThread();
 		startEarlyDrDispatcher();
@@ -126,7 +122,10 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 				false, "MsgQueueMonitorQueue_DB");
 		messageQueueDb.setListener(this);
 		messageQueueDb.start();
-		for(int i=0; i<6; i++){
+		// the senders share the queue (and the ResendDRThrottle limit): any of them takes what a task put in
+		int threads = senderThreads();
+		log.info("MQM message senders: {} thread(s), ResendDRThrottle={}/s in all", threads, gmmsUtility.getResendDRThrottle());
+		for(int i=0; i<threads; i++){
 			MQMMessageSender sender = new MQMMessageSender(messageQueueDb);
 			new Thread(A2PThreadGroup.getInstance(), sender,
 					"MQM Message Sender_"+i).start();
@@ -134,18 +133,14 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 		}		
 	}
 	
-	private void startDelayDRMessageSender() {
-		int queueTimeout = GmmsUtility.getInstance().getCacheMsgTimeout();
-		drQueueRedis = new ExpiredMessageQueueWithSafeExit(queueTimeout,
-				false, "MsgQueueMonitorQueue_DR_DB");
-		drQueueRedis.setListener(this);
-		drQueueRedis.start();
-		for(int i=0; i<6; i++){
-			MQMMessageSender sender = new MQMMessageSender(drQueueRedis);
-			new Thread(A2PThreadGroup.getInstance(), sender,
-					"MQM dr redis Sender_"+i).start();
-			drSenders.add(sender);
-		}		
+	/** MQM.SenderThreads (default 12, restart): the threads sending what the MQM tasks resend */
+	private int senderThreads() {
+		try {
+			int n = Integer.parseInt(gmmsUtility.getCommonProperty("MQM.SenderThreads", "12").trim());
+			return n > 0 ? n : 12;
+		} catch (Exception e) {
+			return 12;
+		}
 	}
 
 	private void startTaskTimers() {

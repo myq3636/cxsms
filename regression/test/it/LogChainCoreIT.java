@@ -118,14 +118,14 @@ public class LogChainCoreIT extends ItSupport {
 		nomatch.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
 		nomatch.setStatus(GmmsStatus.DELIVERED);
 		q.produceInboundDeliveryReport(nomatch);
-		// no database in the local environment: the lookup fails and the entry stays pending (retried)
-		check(waitFor(() -> logLine("8_LCDR2", "not in redis, DB lookup failed") != null, 8000), "L-C4a unmatched DR: failed DB lookup logged with the DR");
+		// just received: not looked up in the DB, queued as an early DR (the MQM job looks in WDQ for its batch)
+		check(waitFor(() -> logLine("8_LCDR2", "[VDR-EARLY] outMsgId=OUT-LC-NONE") != null, 8000), "L-C4a unmatched DR: queued as an early DR, logged with the DR");
 		List<String> l4 = lines("8_LCDR2");
 		dump(l4);
-		String miss = logLine("8_LCDR2", "[VDR-MATCH] outMsgId=OUT-LC-NONE");
-		check(miss != null && l4.stream().filter(l -> l.contains("[VDR-MATCH]")).count() == 1 && inOrder(l4, "[STREAM-GET]", "[VDR-MATCH] outMsgId=OUT-LC-NONE")
-				&& logLine("8_LCDR2", "TMP-DRLOOKUP") == null,
-				"L-C4b unmatched DR: one VDR-MATCH line (no TMP-DRLOOKUP WARN with sender/recipient/text)");
+		String miss = logLine("8_LCDR2", "[VDR-EARLY] outMsgId=OUT-LC-NONE");
+		check(miss != null && miss.startsWith("INFO") && l4.stream().filter(l -> l.contains("[VDR-")).count() == 1
+				&& inOrder(l4, "[STREAM-GET]", "[VDR-EARLY] outMsgId=OUT-LC-NONE") && logLine("8_LCDR2", "TMP-DRLOOKUP") == null,
+				"L-C4b unmatched DR: one INFO VDR-EARLY line (no TMP-DRLOOKUP WARN with sender/recipient/text)");
 
 		// ---- L-C5 a late result: one INFO line, no WARN ----
 		GmmsMessage late = inStreams("stream:mt:routed:8:*", "8888_LC1").get(0);

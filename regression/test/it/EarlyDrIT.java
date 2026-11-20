@@ -23,6 +23,8 @@ public class EarlyDrIT extends ItSupport {
 	static final long T = 2000L;
 	/** the outMsgIds the WDQ lookup of the MQM job finds */
 	static final Set<String> IN_WDQ = new HashSet<String>();
+	/** Core's WDQ lookups by outMsgId */
+	static final java.util.concurrent.atomic.AtomicInteger dbLookups = new java.util.concurrent.atomic.AtomicInteger();
 
 	/** the vendor DRs now in the inbound DR stream, read like the consumer does */
 	static List<GmmsMessage> read() {
@@ -81,6 +83,7 @@ public class EarlyDrIT extends ItSupport {
 		msmFactory = () -> new com.king.message.gmms.MessageStoreManager() {
 			@Override
 			public GmmsMessage getGmmsMessageByOutMsgID(String outMsgID) {
+				dbLookups.incrementAndGet();
 				return null;
 			}
 
@@ -187,6 +190,18 @@ public class EarlyDrIT extends ItSupport {
 		int c9 = EarlyDrQueue.dispatchDue();
 		check(c9 == 1 && entry("ED9") == null && read().isEmpty() && jedis.zcard(EarlyDrQueue.READY_ZSET) == 0,
 				"ED-09 an entry without its end: dropped after one lookup");
+
+		// ---- ED-11 Core looks in WDQ only for a DR older than T; a young one is queued without a query ----
+		dbLookups.set(0);
+		GmmsMessage d11 = earlyDr("ED11", 0);
+		handled(d11, "ED-11a");
+		int young = dbLookups.get();
+		GmmsMessage d12 = earlyDr("ED12", T + 500);
+		handled(d12, "ED-11b");
+		check(young == 0 && dbLookups.get() == 1 && entry("ED11") != null && entry("ED12") == null,
+				"ED-11c young DR: queued without a WDQ query; older than T: one WDQ query, then dropped: " + young + ", " + dbLookups.get());
+		jedis.del(EarlyDrQueue.READY_ZSET);
+		jedis.del(entry("ED11"));
 
 		// ---- ED-10 switched off: never queued ----
 		props.setProperty("EarlyDr.Enable", "false");

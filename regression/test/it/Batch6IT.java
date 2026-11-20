@@ -173,8 +173,8 @@ public class Batch6IT extends ItSupport {
 			}
 		});   // processed, never acked
 		consumeDr(reclaim(IDR, IDR_GROUP, cid));
-		check(logLine("8_B603", "not in redis, DB lookup failed") != null,
-				"B6-03 switch off: redelivery finds no lookup and falls back to DB/SDQ (the old problem)");
+		check(logLine("8_B603", "[VDR-EARLY] outMsgId=OUT-B603") != null,
+				"B6-03 switch off: redelivery finds no lookup and goes to the early-DR queue (the old problem)");
 		props.remove("CoreDrResultIdempotency");
 		jedis.del(IDR);
 

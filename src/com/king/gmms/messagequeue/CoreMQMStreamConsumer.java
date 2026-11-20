@@ -269,9 +269,20 @@ public class CoreMQMStreamConsumer {
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
                         MetricsNames.FLOW_CORE, msg, MetricsNames.ACTION_RECEIVED_FROM_STREAM));
                 if (isStaleFence(msg)) {
-                    // C-9: 旧任期(脑裂的旧 active MQM)产的补偿消息 → 直接丢弃(ACK)，不处理，避免重复下发。
-                    logger.warn(msg, "Reject stale-fence MQM message. msgFence={}, streamKey={}",
-                            msg.getRedisFence(), streamKey);
+                    // C-9: 旧任期(脑裂的旧 active MQM)产的补偿消息 → 不处理，避免重复下发；它的 DB 行放回待取状态
+                    // (ActionCode 0 -> -1)，由当前 active MQM 按原有重试、过期逻辑再取，否则这一行再也不会被取到
+                    // (docs/Redis CPU瓶颈分析.md 3.4)。放回失败(DB 异常)不 ACK，留在 pending 里重试。
+                    boolean released;
+                    try {
+                        released = GmmsUtility.getInstance().getMessageStoreManager().releaseForResend(msg);
+                    } catch (Exception e) {
+                        logger.warn(msg, "Reject stale-fence MQM message, its row not released (left pending). msgFence={}, streamKey={}",
+                                msg.getRedisFence(), streamKey, e);
+                        queueManager.logNack(streamKey, groupName, consumerName, msg, submitMq, "stale_fence_release_failed");
+                        return;
+                    }
+                    logger.warn(msg, "Reject stale-fence MQM message. msgFence={}, streamKey={}, table={}, rowId={}, rowReleased={}",
+                            msg.getRedisFence(), streamKey, msg.getOriginalQueue(), msg.getRowId(), released);
                     queueManager.ackById(streamKey, groupName, sourceRedisId, msg, submitMq);
                     return;
                 }

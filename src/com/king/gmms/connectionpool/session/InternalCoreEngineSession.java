@@ -1615,8 +1615,16 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 										message.getMsgID(), message.getOSsID());
 							}
 						}
+					}else if (com.king.gmms.messagequeue.EarlyDrQueue.enabled()
+							&& com.king.gmms.messagequeue.EarlyDrQueue.young(finalMsg)) {
+						// not in Redis and received less than T ago: usually earlier than its submit result. Queued at once
+						// without a WDQ query; the MQM job looks in WDQ for the batch (docs/DR早到重试与outbox应答超时改进设计.md 4)
+						if (log.isDebugEnabled()) {
+							log.debug(finalMsg, "[VDR-MATCH] outMsgId={} status={} rssid={} not in redis, early DR queued without a DB lookup",
+									finalMsg.getOutMsgID(), finalMsg.getStatusCode(), finalMsg.getRSsID());
+						}
 					}else{
-						// a DR earlier than its submit result, or after the lookup was moved to WDQ: the DB is tried next
+						// a DR that waited longer than T: the DB is tried here (after the lookup was moved to WDQ, ...)
 						if (log.isDebugEnabled()) {
 							log.debug(finalMsg, "[VDR-MATCH] outMsgId={} status={} rssid={} not in redis, looking up the DB",
 									finalMsg.getOutMsgID(), finalMsg.getStatusCode(), finalMsg.getRSsID());

@@ -123,6 +123,15 @@ public final class EarlyDrQueue {
 		return DEFAULT_WAIT_MS;
 	}
 
+	/**
+	 * Before t0+T: Core does not look in WDQ for a DR it did not find in Redis, it queues it at once; the MQM job looks
+	 * in WDQ for a whole batch with one query at t0+T/2 (no SQL per early DR when the results lag)
+	 */
+	public static boolean young(GmmsMessage dr) {
+		long now = System.currentTimeMillis();
+		return now < receivedAt(dr, now) + waitMs(dr);
+	}
+
 	/** t0: when the Client received the DR (now when unknown or later than now) */
 	static long receivedAt(GmmsMessage dr, long now) {
 		long t0 = dr.getInTimeMs();
@@ -154,7 +163,8 @@ public final class EarlyDrQueue {
 			return Offer.ERROR;
 		}
 		long due = now < t0 + t / 2 ? t0 + t / 2 : end;
-		long ttlMs = t + longProperty("EarlyDr.ClaimTimeoutMs", 60000L) + 60000L;
+		// only a safety net (an entry is deleted once settled): an hour at least, so that a lagging MQM job finds it
+		long ttlMs = Math.max(TimeUnit.HOURS.toMillis(1), t + longProperty("EarlyDr.ClaimTimeoutMs", 60000L) + 60000L);
 		try {
 			Object n = r.evalScript(OFFER_LUA, Arrays.asList(entryKey(dr), READY_ZSET), Arrays.asList(body,
 					String.valueOf(end), String.valueOf(due), String.valueOf(ttlMs)));
@@ -233,7 +243,14 @@ public final class EarlyDrQueue {
 			log.warn("[VDR-EARLY] original lookup failed, {} DR(s) tried again after the claim", due.size(), e);
 			return due.size();
 		}
-		StreamQueueManager q = StreamQueueManager.getInstance();
+		// the matched ones are written back in parallel (EarlyDr.WriteBackThreads): one XADD each
+		final StreamQueueManager q = StreamQueueManager.getInstance();
+		java.util.Map<Due, java.util.concurrent.Future<Boolean>> written = new java.util.HashMap<Due, java.util.concurrent.Future<Boolean>>();
+		for (final Due d : due) {
+			if (d.dr != null && found.contains(d.dr.getOutMsgID())) {
+				written.put(d, writeBackPool().submit(() -> q.produceInboundDeliveryReport(d.dr)));
+			}
+		}
 		List<String> resolve = new ArrayList<String>();
 		for (Due d : due) {
 			if (d.dr == null) {
@@ -244,9 +261,9 @@ public final class EarlyDrQueue {
 				continue;
 			}
 			long t0 = receivedAt(d.dr, now);
-			if (found.contains(d.dr.getOutMsgID())) {
+			if (written.containsKey(d)) {
 				try {
-					if (!q.produceInboundDeliveryReport(d.dr)) {
+					if (!written.get(d).get()) {
 						log.warn(d.dr, "[VDR-EARLY] not written back, tried again after the claim. key={}", d.key);
 						continue;
 					}
@@ -275,6 +292,28 @@ public final class EarlyDrQueue {
 			r.evalScript(RESOLVE_LUA, Arrays.asList(READY_ZSET, PROCESSING_ZSET), resolve);
 		}
 		return due.size();
+	}
+
+	private static volatile java.util.concurrent.ExecutorService writeBack;
+
+	/** EarlyDr.WriteBackThreads (default 8, read once): the threads writing the matched DRs back to Core */
+	private static java.util.concurrent.ExecutorService writeBackPool() {
+		java.util.concurrent.ExecutorService p = writeBack;
+		if (p == null) {
+			synchronized (EarlyDrQueue.class) {
+				if (writeBack == null) {
+					int n = Math.max(1, intProperty("EarlyDr.WriteBackThreads", 8));
+					java.util.concurrent.atomic.AtomicInteger seq = new java.util.concurrent.atomic.AtomicInteger();
+					writeBack = Executors.newFixedThreadPool(n, runnable -> {
+						Thread t = new Thread(runnable, "EarlyDrWriteBack-" + seq.incrementAndGet());
+						t.setDaemon(true);
+						return t;
+					});
+				}
+				p = writeBack;
+			}
+		}
+		return p;
 	}
 
 	/** the outMsgIds that have an original: one MGET on the state Redis, the others in WDQ with one query */

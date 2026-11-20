@@ -285,6 +285,11 @@ public class CoreOutboundOutboxManager {
                 }
             } else if (markSentSeen(redis, key, now)) {
                 defer(redis, key, msg, now + wait, "sent_seen", age);
+            } else if (redis.getString(key) == null) {
+                // the meta went with the entry: its result claimed it just now (since the value was read above)
+                if (log.isDebugEnabled()) {
+                    log.debug(msg, "Core outbound outbox claimed by its result during the check. key={}", key);
+                }
             } else if (age >= wait) {
                 // no meta: from the produce, as before
                 timeout(redis, key, msg, GmmsStatus.SUBMIT_RESP_ERROR, "sent by the client, no result (no meta, ageMs="

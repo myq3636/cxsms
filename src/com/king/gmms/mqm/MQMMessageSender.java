@@ -43,6 +43,32 @@ public class MQMMessageSender implements Runnable {
 		this.messages = messages;		
 	}
 
+	/** the earliest time (System.nanoTime) of the next send, shared by all the senders */
+	private static final java.util.concurrent.atomic.AtomicLong nextSendAt = new java.util.concurrent.atomic.AtomicLong();
+
+	/**
+	 * ResendDRThrottle: at most perSecond messages a second from all the MQM senders together (all the MQM resends:
+	 * DRs, MTs, expired and query DRs); 0 or less: no limit. Each send takes the next slot and waits for it.
+	 */
+	static void pace(int perSecond) throws InterruptedException {
+		if (perSecond <= 0) {
+			return;
+		}
+		long interval = 1000000000L / perSecond;
+		long now = System.nanoTime(), slot;
+		while (true) {
+			long next = nextSendAt.get();
+			slot = Math.max(now, next);
+			if (nextSendAt.compareAndSet(next, slot + interval)) {
+				break;
+			}
+		}
+		long waitNs = slot - now;
+		if (waitNs > 0) {
+			Thread.sleep(waitNs / 1000000L, (int) (waitNs % 1000000L));
+		}
+	}
+
 	public void putMsg(GmmsMessage msg) {
 		messages.put(msg);
 	}
@@ -59,18 +85,9 @@ public class MQMMessageSender implements Runnable {
 					Thread.sleep(1000L);
 					continue;
 				}
-				// Throttling for resends
-				try {
-					int resendThrottle = gmmsUtility.getResendDRThrottle();
-					if (resendThrottle != 0 && 1000 / resendThrottle > 0) {
-						Thread.sleep(1000 / resendThrottle);
-					}
-				} catch (Exception e) {
-					log.info("MQM Throttling sleep error.", e);
-				}
-
 				GmmsMessage msg = (GmmsMessage) messages.get(1000L);
 				if (msg != null) {
+					pace(gmmsUtility.getResendDRThrottle());
 					boolean success = false;
 					String type = msg.getMessageType();
 

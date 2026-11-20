@@ -61,7 +61,7 @@
 
 - `t0`：Client 收到这条 DR 的时间（DR 的 `inTimeMs`，Client 收到时设置）；没有时用 Core 第一次处理它的时间；比当前时间还晚时（时钟偏差）用当前时间。
 - `T`：DR 所属通道（`rssid`）的应答超时 `getSubmitRespTimeoutMs()`，和第 1 项同一个方法，默认 60 秒。取不到通道配置时用 60 秒。
-- 查找：状态 Redis `GET {outMsgId}`，没有再查 WDQ（`OutMsgID` 有索引）。两处都没有才算找不到。
+- 查找：状态 Redis `GET {outMsgId}`，没有再查 WDQ（`OutMsgID` 有索引）。两处都没有才算找不到。**Core 对还没到 `t0+T` 的 DR 不查 WDQ**，Redis 里没有就直接放进延迟队列，WDQ 由 MQM 每批一条 `SELECT ... IN (...)` 查（PF007 时早到 DR 每分钟 20 万条以上，Core 逐条查 WDQ 把 mysqld 打到 100%）；已过 `t0+T` 的 DR Core 仍自己查一次 WDQ。代价：原消息本来在 WDQ 的 DR（有效期不足 10 分钟、写 Redis 失败、超过 `Redis_RetrieveRedisInterval` 被挪进 WDQ）晚 `T/2` 才匹配。
 
 **流程**
 
@@ -94,7 +94,7 @@ MQM（active 的那个），每 EarlyDr.IntervalMs 取出到期的：
 |---|---|---|
 | `zset:dr:early` | zset | 等待中的条目，score 是下次到期时间（毫秒） |
 | `zset:dr:early:processing` | zset | MQM 取走还没处理完的，score 是认领到期时间（取走时间 + `EarlyDr.ClaimTimeoutMs`） |
-| `dr:early:{outMsgId}:{状态}:{msgId}` | hash | `body`：DR；`end`：`t0+T`（Core 写入，MQM 不用加载通道配置）。TTL = `T + EarlyDr.ClaimTimeoutMs + 60 秒` |
+| `dr:early:{outMsgId}:{状态}:{msgId}` | hash | `body`：DR；`end`：`t0+T`（Core 写入，MQM 不用加载通道配置）。TTL 至少 1 小时（处理完就删，TTL 只是兜底；PF007 验证时按 `T + EarlyDr.ClaimTimeoutMs + 60 秒` 设，MQM 处理不过来时条目先过期，丢了 37 万条 DR，已改） |
 
 **MQM 一轮**（`EarlyDrDispatcher`，只在 active 的 MQM 上；取满 `EarlyDr.BatchSize` 条时马上再取）
 
@@ -103,7 +103,9 @@ MQM（active 的那个），每 EarlyDr.IntervalMs 取出到期的：
 3. 批量查找：Redis pipeline `GET` 一次；没命中的用一条 `SELECT ... FROM WDQ WHERE OutMsgID IN (...)`。
 4. 按结果处理：命中的写回入站流，成功后删除条目；找不到、没到 `end` 的改到期为 `end`；找不到、过了 `end` 的删除并 `[VDR-DROP]`。后两种和删除在一个 Lua 里完成。写回失败的留在 processing，认领超时后重取。
 
-一轮 500 条的开销：Redis 4 次往返加写回的条数，最多 1 次 SQL。没有到期条目时只有两次 `ZRANGEBYSCORE`。
+一轮 500 条的开销：Redis 4 次往返加写回的条数，最多 1 次 SQL。没有到期条目时只有两次 `ZRANGEBYSCORE`。写回的 XADD 由 `EarlyDr.WriteBackThreads`（默认 8）个线程并行做：PF007 时单线程写回每秒约 230 条，跟不上结果流积压时每分钟几万条的早到 DR。
+
+**PF007 验证中发现、已修**：outbox 扫描器读到条目后、追加"看到已发出"之前，真结果正好处理掉了条目和 meta，扫描器退回旧逻辑又报了一次 2700（随后作为迟到结果丢弃，客户不受影响，45 分钟约 3000 次）；改为追加失败时先看条目还在不在，不在就跳过。
 
 **配置项**：删掉 `EarlyDr.DelayMs`、`EarlyDr.MaxTries`、`EarlyDr.TtlSeconds`（代码、`docs/配置项说明.md`、`GmmsUtility` 热加载白名单同步删除）。保留 `EarlyDr.Enable`、`EarlyDr.BatchSize`、`EarlyDr.ClaimTimeoutMs`、`EarlyDr.IntervalMs`。
 
