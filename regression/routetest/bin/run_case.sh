@@ -87,7 +87,8 @@ if $SOAK; then
 fi
 
 echo "[$(date '+%F %T')] run"
-"$JAVA" -cp "$RT/lib/routetest.jar" rt.RouteCase "$CASE" "$RT/env.properties"
+# RT_JAVA_OPTS: options of the test tool JVM (e.g. -Xss256k for the many-connection case: a thread per connection)
+"$JAVA" ${RT_JAVA_OPTS:-} -cp "$RT/lib/routetest.jar" rt.RouteCase "$CASE" "$RT/env.properties"
 rc=$?
 if $SOAK; then
 	touch "$RT_MEMDIR/stop"; wait $MW

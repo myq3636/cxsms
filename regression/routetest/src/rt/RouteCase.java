@@ -97,7 +97,8 @@ public final class RouteCase {
 	void vendorServer(int port) throws IOException {
 		ServerSocket ss = new ServerSocket();
 		ss.setReuseAddress(true);
-		ss.bind(new InetSocketAddress(port));
+		// vendor.backlog (default 4096): the Clients bind thousands of sessions at start; the default 50 dropped SYNs
+		ss.bind(new InetSocketAddress(port), Integer.parseInt(props == null ? "4096" : props.getProperty("vendor.backlog", "4096").trim()));
 		Thread t = new Thread(() -> {
 			while (true) {
 				try {
@@ -421,6 +422,22 @@ public final class RouteCase {
 	 * soak.reconnectSec, soak.reloadCmds are published one by one every soak.reloadSec. Only counts are kept. The times of
 	 * the phases go to $RT_MEMDIR/phases.txt for bin/memwatch.sh and rt.MemReport.
 	 */
+	/** binds the customers, soak.bindThreads (default 16) at a time */
+	void bindAll(Properties p, List<Customer> list) throws Exception {
+		ExecutorService pool = Executors.newFixedThreadPool(Math.max(1, Integer.parseInt(p.getProperty("soak.bindThreads", "16").trim())));
+		try {
+			List<Future<?>> done = new ArrayList<>();
+			for (Customer c : list)
+				done.add(pool.submit(() -> {
+					c.bind(p.getProperty("server.host"), Integer.parseInt(p.getProperty("customer." + c.user + ".port", p.getProperty("server.port")).trim()), p.getProperty("customer.password"));
+					return null;
+				}));
+			for (Future<?> f : done) f.get();
+		} finally {
+			pool.shutdown();
+		}
+	}
+
 	boolean runSoak(Path dir, Properties p, List<Spec> specs, Path out, StringBuilder sum) throws Exception {
 		long duration = Long.parseLong(p.getProperty("soak.durationSec").trim()) * 1000, warmup = Long.parseLong(p.getProperty("soak.warmupSec", "300").trim()) * 1000;
 		long drain = Long.parseLong(p.getProperty("soak.drainSec", "60").trim()) * 1000, idle = Long.parseLong(p.getProperty("soak.idleSec", "600").trim()) * 1000;
@@ -439,23 +456,25 @@ public final class RouteCase {
 		String mark = p.getProperty("case.id", "S") + (System.getenv("RT_SOAK_TAG") == null ? "" : System.getenv("RT_SOAK_TAG")) + "-S";
 		soakPattern = Pattern.compile(Pattern.quote(mark) + "[0-9]+(?![0-9])");
 		Path phases = System.getenv("RT_MEMDIR") == null ? out.resolve("phases.txt") : Paths.get(System.getenv("RT_MEMDIR"), "phases.txt");
+		List<String> users = new ArrayList<>(new TreeSet<>(customers.keySet()));
+		// soak.binds: binds per customer (the first is customers.get(user), re-bound by soak.reconnectSec), round robin;
+		// all bound before the load starts (its rate counts from the start: binds made after it came out as a burst)
+		int binds = Integer.parseInt(p.getProperty("soak.binds", "1").trim());
+		Map<String, List<Customer>> extra = new HashMap<>();
+		List<Customer> binders = new ArrayList<>();
+		for (String u : users) {
+			List<Customer> l = new ArrayList<>();
+			for (int i = 1; i < binds; i++) l.add(new Customer(u));
+			extra.put(u, l);
+			binders.addAll(l);
+		}
+		long bindStart = System.currentTimeMillis();
+		bindAll(p, binders);
+		sum.append("extra binds: ").append(binders.size()).append(" in ").append(System.currentTimeMillis() - bindStart).append(" ms\n");
 		long start = System.currentTimeMillis();
 		Files.write(phases, ("loadStart=" + start + "\nwarmupEnd=" + (start + warmup) + "\n").getBytes(StandardCharsets.UTF_8));
 		Random rnd = new Random();
 		long sent = 0, sendErr = 0, segs = 0, reconnects = 0, reloadsDone = 0, nextReconnect = start + reconnectEvery, nextReload = start + reloadEvery;
-		List<String> users = new ArrayList<>(new TreeSet<>(customers.keySet()));
-		// soak.binds: binds per customer (the first is customers.get(user), re-bound by soak.reconnectSec), round robin
-		int binds = Integer.parseInt(p.getProperty("soak.binds", "1").trim());
-		Map<String, List<Customer>> extra = new HashMap<>();
-		for (String u : users) {
-			List<Customer> l = new ArrayList<>();
-			for (int i = 1; i < binds; i++) {
-				Customer nc = new Customer(u);
-				nc.bind(p.getProperty("server.host"), Integer.parseInt(p.getProperty("customer." + u + ".port", p.getProperty("server.port")).trim()), p.getProperty("customer.password"));
-				l.add(nc);
-			}
-			extra.put(u, l);
-		}
 		long sendTurn = 0;
 		Map<String, Long> bySpec = new TreeMap<>();
 		StringBuilder events = new StringBuilder();
@@ -916,8 +935,7 @@ public final class RouteCase {
 		List<Spec> specs2 = specs(p, "mt2.", 2, caseId, runId);
 		List<Spec> all = new ArrayList<>(specs); all.addAll(specs2);
 		for (Spec s : all) customers.computeIfAbsent(s.customer, Customer::new);
-		for (Customer c : customers.values())                               // customer.{user}.port: another Server
-			c.bind(p.getProperty("server.host"), Integer.parseInt(p.getProperty("customer." + c.user + ".port", p.getProperty("server.port")).trim()), p.getProperty("customer.password"));
+		bindAll(p, new ArrayList<>(customers.values()));                    // customer.{user}.port: another Server
 		if (all.isEmpty()) Thread.sleep(Long.parseLong(p.getProperty("mt.settleMs", "5000")));
 
 		if (p.containsKey("soak.durationSec")) return runSoak(dir, p, specs, out, sum);

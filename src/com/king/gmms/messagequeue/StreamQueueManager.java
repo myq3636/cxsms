@@ -107,14 +107,14 @@ public class StreamQueueManager {
 			hashKey = msg.getOSsID() + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
 		}
 		// the parts of a long message have the same key (sarMsgRefNum): one shard, one Core
-		return ShardHash.of(hashKey, totalShards);
+		return ShardHash.of(msg.getOSsID(), hashKey, totalShards);
 	}
 
 	public int calculateOutboundShardId(GmmsMessage msg) {
 		int totalShards = GmmsUtility.getInstance().getTotalShards();
 		if (totalShards <= 1) return 0;
 		String hashKey = msg.getRSsID() + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
-		return ShardHash.of(hashKey, totalShards);
+		return ShardHash.of(msg.getRSsID(), hashKey, totalShards);
 	}
 
 	public boolean produceSubmitRouted(GmmsMessage msg, String channelId) {
@@ -145,7 +145,7 @@ public class StreamQueueManager {
 		int totalShards = GmmsUtility.getInstance().getTotalShards();
 		if (totalShards <= 1) return 0;
 		String hashKey = targetSsid + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
-		return ShardHash.of(hashKey, totalShards);
+		return ShardHash.of(targetSsid, hashKey, totalShards);
 	}
 
 	public boolean produceMqmSubmitMessage(GmmsMessage msg) {
@@ -194,7 +194,7 @@ public class StreamQueueManager {
 		} else {
 			hashKey = targetSsid + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
 		}
-		return ShardHash.of(hashKey, totalShards);
+		return ShardHash.of(targetSsid, hashKey, totalShards);
 	}
 
 	private int calculateDrShardId(GmmsMessage msg, int targetSsid) {
@@ -205,7 +205,7 @@ public class StreamQueueManager {
 			// customer's result and acks the DR on one master in one Lua (docs/Redis多主分片设计.md 8.2)
 			String id = !isBlank(msg.getMsgID()) ? msg.getMsgID() : msg.getInMsgID();
 			if (!isBlank(id)) {
-				return ShardHash.of(id, totalShards);
+				return ShardHash.of(targetSsid, id, totalShards);
 			}
 		}
 		String hashKey;
@@ -216,7 +216,7 @@ public class StreamQueueManager {
 		} else {
 			hashKey = targetSsid + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
 		}
-		return ShardHash.of(hashKey, totalShards);
+		return ShardHash.of(targetSsid, hashKey, totalShards);
 	}
 
 	public boolean produceDeliveryReport(GmmsMessage msg) {
@@ -969,7 +969,7 @@ public class StreamQueueManager {
 		} else {
 			hashKey = targetSsid + "_" + msg.getOutMsgID();
 		}
-		return ShardHash.of(hashKey, totalShards);
+		return ShardHash.of(targetSsid, hashKey, totalShards);
 	}
 
 	public boolean isInboundDrShardEnabled() {
@@ -1510,7 +1510,8 @@ public class StreamQueueManager {
 		}
 		String id = !isBlank(msg.getMsgID()) ? msg.getMsgID() : msg.getInMsgID();
 		int totalShards = GmmsUtility.getInstance().getTotalShards();
-		int shard = totalShards <= 1 || isBlank(id) ? 0 : ShardHash.of(id, totalShards);
+		// the same ssid and key as calculateDrShardId (a DR result: the ossid of its dr:pending stream)
+		int shard = totalShards <= 1 || isBlank(id) ? 0 : ShardHash.of(ssid, id, totalShards);
 		return STR_CORE_RESULTS + ":" + ssid + ":" + shard;
 	}
 

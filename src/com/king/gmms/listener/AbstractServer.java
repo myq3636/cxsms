@@ -39,6 +39,16 @@ public abstract class AbstractServer implements A2PService, Runnable {
 	/**
 	 * start the thread
 	 */
+	/** SmppServerListenBacklog (default 4096, restart) */
+	public static int listenBacklog() {
+		try {
+			int n = Integer.parseInt(GmmsUtility.getInstance().getCommonProperty("SmppServerListenBacklog", "4096").trim());
+			return n > 0 ? n : 4096;
+		} catch (Exception e) {
+			return 4096;
+		}
+	}
+
 	public void run() {
 		try {
 			if (serverSocket == null) {
@@ -47,7 +57,9 @@ public abstract class AbstractServer implements A2PService, Runnable {
 				if (port <= 0) {
 					throw new IOException("Port number is:" + port);
 				}
-				serverSocket = new ServerSocket(port);
+				// SmppServerListenBacklog (default 4096; Java's default 50 dropped SYNs when thousands of customers came
+				// back at once: docs/多连接性能分析与优化设计.md 2.6); the kernel caps it at net.core.somaxconn
+				serverSocket = new ServerSocket(port, listenBacklog());
 				serverSocket.setReuseAddress(true);
 				String info = module + " began to listen on port:" + port;
 				log.info(info);

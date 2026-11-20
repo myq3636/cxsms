@@ -96,7 +96,7 @@ public class SslSmppServer extends AbstractSslServer {
 				try{
 					SslConfiguration config = gmmsUtility.getSslConfiguration();
 					sslContextFactory = new SslContextFactory(config);
-					serverSocket = sslContextFactory.newSslServerSocket(port);
+					serverSocket = sslContextFactory.newSslServerSocket(null, port, com.king.gmms.listener.AbstractServer.listenBacklog());
 				}catch(Exception e){
 					log.error("Can not create the TLS server socket, and excpeiton is {}",e.getMessage());
 					return;

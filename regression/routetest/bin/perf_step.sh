@@ -42,6 +42,9 @@ for TPS in $LEVELS; do
 	touch "$OUT/watch_$TPS.stop"; wait
 	echo "$TPS end $(date '+%F %T')" >> "$OUT/notes.txt"
 	[ -f "$OUT/watch_$TPS.guard" ] && cat "$OUT/watch_$TPS.guard" >> "$OUT/notes.txt"
+	# the steady window for rt.PerfReport (the step's result/ goes with the copy)
+	ph=$(ls -t "$STEP"/result/*/phases.txt "$STEP"/result/*/mem/phases.txt 2>/dev/null | head -1)
+	[ -n "$ph" ] && cp "$ph" "$OUT/phases_$TPS.txt"
 	rm -rf "$STEP"
 done
 

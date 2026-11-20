@@ -82,6 +82,9 @@ public class PerfReport {
 			r.label = label(p);
 			String watch = r.label.isEmpty() ? "watch" : "watch_" + r.label;
 			parseRun(r, Files.readAllLines(p, StandardCharsets.ISO_8859_1));
+			// bin/perf_step.sh deletes the step's case copy (and its result/): it keeps phases_{X}.txt here
+			Path kept = dir.resolve(r.label.isEmpty() ? "phases.txt" : "phases_" + r.label + ".txt");
+			if (r.warmupEnd == 0 && Files.exists(kept)) phases(r, kept);
 			parseWatch(r, dir, watch);
 			out.add(r);
 		}
@@ -112,13 +115,16 @@ public class PerfReport {
 			if ((m = Pattern.compile("^result: (\\S+)").matcher(l)).find()) {
 				Path ph = Paths.get(m.group(1), "phases.txt");
 				if (!Files.exists(ph)) ph = Paths.get(m.group(1), "mem", "phases.txt");
-				if (Files.exists(ph)) {
-					for (String x : Files.readAllLines(ph)) {
-						if (x.startsWith("warmupEnd=")) r.warmupEnd = Long.parseLong(x.substring(10).trim()) / 1000;
-						if (x.startsWith("loadEnd=")) r.loadEnd = Long.parseLong(x.substring(8).trim()) / 1000;
-					}
-				}
+				if (Files.exists(ph)) phases(r, ph);
 			}
+		}
+	}
+
+	/** the steady window of the run: warmupEnd and loadEnd (ms) of phases.txt */
+	static void phases(Run r, Path ph) throws IOException {
+		for (String x : Files.readAllLines(ph)) {
+			if (x.startsWith("warmupEnd=")) r.warmupEnd = Long.parseLong(x.substring(10).trim()) / 1000;
+			if (x.startsWith("loadEnd=")) r.loadEnd = Long.parseLong(x.substring(8).trim()) / 1000;
 		}
 	}
 

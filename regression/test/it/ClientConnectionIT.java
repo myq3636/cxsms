@@ -60,10 +60,13 @@ public class ClientConnectionIT extends ItSupport {
 		cm.append(vendor("CV311", 311, "u311", PORT, "", "TRX", 1));       // SMSC asks enquire_link
 		cm.append(vendor("CV312", 312, "u312", PORT, "ConnectionSilentTime: 12\n", "TRX", 1));      // reconnect, no keep-alive
 		cm.append(vendor("CV313", 313, "u313", PORT, "EnquireLink: true\nEnquireLinkTime: 8\n", "TRX", 1));      // reconnect, keep-alive
+		cm.append(vendor("CV314", 314, "u314", PORT, "EnquireLink: true\nEnquireLinkTime: 2\n", "TRX", 1));      // keep-alive when idle
+		cm.append(vendor("CV315", 315, "u315", PORT, "EnquireLink: true\nEnquireLinkTime: 2\nKeepEnquireLink: true\n", "TRX", 1));   // always
 		Path p = Paths.get(home + "conf/cm.cfg");
 		Files.write(p, (new String(Files.readAllBytes(p), "UTF-8") + cm).getBytes("UTF-8"));
 		FakeSmsc smsc = new FakeSmsc(PORT);
 		FakeSmsc.Account a301 = smsc.account("u301"); a301.bindStatus = 0x0E;
+		FakeSmsc.Account a314 = smsc.account("u314"), a315 = smsc.account("u315");
 		FakeSmsc.Account a303 = smsc.account("u303"), a304 = smsc.account("u304"), a305 = smsc.account("u305"), a306 = smsc.account("u306"), a307 = smsc.account("u307"), a308 = smsc.account("u308"), a309 = smsc.account("u309"), a310 = smsc.account("u310"), a311 = smsc.account("u311"), a312 = smsc.account("u312"), a313 = smsc.account("u313");
 		a305.answerEnquire = false;
 		try {
@@ -137,6 +140,28 @@ public class ClientConnectionIT extends ItSupport {
 			check(waitFor(() -> a311.binds.get() == 1, 8000), "CN-08a bound");
 			a311.open().get(0).pdu(0x15, 0, 77, new byte[0]);
 			check(waitFor(() -> a311.enquireResps.get() == 1, 5000), "CN-08b SMSC asks enquire_link: answered");
+
+			// ---- the two keep-alive ways, on the shared upkeep (ClientSessionKeeperShared, docs/会话线程优化设计.md 3.3) ----
+			check(waitFor(() -> a314.binds.get() == 1 && a314.enquires.get() >= 2, 10000), "CN-20a idle link, EnquireLinkTime 2 s: enquire_links");
+			String idle = send(314);
+			check(reached(a314, idle), "CN-20b an MT (its submit_resp is traffic)");
+			long trafficAt = System.currentTimeMillis();
+			int before = a314.enquireAt.size();
+			check(waitFor(() -> a314.enquireAt.size() > before, 6000), "CN-20c the next enquire_link");
+			long after = a314.enquireAt.get(before) - trafficAt;
+			check(after >= 1500 && after <= 2700, "CN-20d keep-alive when idle: the next one EnquireLinkTime after the last traffic, not up to twice: " + after + " ms");
+			check(waitFor(() -> a315.binds.get() == 1 && a315.enquires.get() >= 1, 8000), "CN-21a KeepEnquireLink bound");
+			int k0 = a315.enquireAt.size();
+			long until = System.currentTimeMillis() + 7000;
+			while (System.currentTimeMillis() < until) { send(315); Thread.sleep(500); }
+			java.util.List<Long> at;
+			synchronized (a315.enquireAt) { at = new java.util.ArrayList<Long>(a315.enquireAt.subList(k0, a315.enquireAt.size())); }
+			boolean even = at.size() >= 3;
+			for (int i = 1; i < at.size(); i++) even &= at.get(i) - at.get(i - 1) >= 1700 && at.get(i) - at.get(i - 1) <= 2600;
+			check(even, "CN-21b KeepEnquireLink: enquire_link about every 2 s while MTs flow every 500 ms: " + at.size() + " in 7 s");
+			boolean perSession = false;
+			for (Thread t : Thread.getAllStackTraces().keySet()) perSession |= t.getName().startsWith("ClientSessionTrd_");
+			check(!perSession, "CN-22 shared upkeep: no ClientSessionTrd_ thread per session");
 
 			// ---- silent ----
 			check(waitFor(() -> a310.closed.get() >= 1, 15000), "CN-09a ConnectionSilentTime 2 s, no traffic: connection closed");

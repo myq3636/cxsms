@@ -120,7 +120,7 @@ public class PeeringTcp2ClientFactory extends AbstractConnectionFactory {
 				// add the session into NodeConnectionManager
 				connManager.insertSession(conn.getConnectioName(), cs);
 				try {
-					Thread.sleep(10L);
+					Thread.sleep(com.king.gmms.GmmsUtility.getInstance().getClientSessionStartIntervalMs());
 				} catch (Exception e) {
 					e.printStackTrace();
 				}

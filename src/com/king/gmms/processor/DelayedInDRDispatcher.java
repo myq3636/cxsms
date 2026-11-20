@@ -239,7 +239,7 @@ public class DelayedInDRDispatcher implements Runnable {
 		} else {
 			hashKey = msg.getOSsID() + "_" + msg.getSenderAddress() + "_" + msg.getRecipientAddress();
 		}
-		return com.king.gmms.messagequeue.ShardHash.of(hashKey, totalShards);
+		return com.king.gmms.messagequeue.ShardHash.of(msg.getOSsID(), hashKey, totalShards);
 	}
 
 	private String buildDelayId(GmmsMessage message) {

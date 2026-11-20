@@ -1084,7 +1084,7 @@ public class GmmsUtility {
 			"ClientSendIdempotency", "ClientSendMarkerBatch", "ClientDispatchBatch", "ClientSendLeaseMs",
 			"EarlyDr.Enable", "EarlyDr.BatchSize",
 			"EarlyDr.ClaimTimeoutMs", "EarlyDr.IntervalMs", "ClientStreamTaskMaxBatches", "ClientStreamTaskMaxMs",
-			"SmppServerBindTimeoutMs", "SmppServerMaxConnections", "SmppServerMaxConnectionsPerIp",
+			"SmppServerBindTimeoutMs", "SmppServerMaxConnections", "SmppServerMaxConnectionsPerIp", "ClientSessionStartIntervalMs",
 			"ServerStreamTaskMaxBatches", "ServerStreamTaskMaxMs",
 			"SmppPduLogEnable", "SmppServerSessionKeeperShared", "SmppServerSendQueueMax",
 			"SmppServerSendQueueHighWater", "ServerDrAckOnResp", "SmppServerDrLivenessCheck",
@@ -2448,6 +2448,19 @@ public class GmmsUtility {
 	
 	
 	
+	/**
+	 * ClientSessionStartIntervalMs (default 1, hot reload): the pause between two outgoing sessions started by a Client
+	 * factory (was 10 ms: 8000 sessions took 80 s and more; docs/多连接性能分析与优化设计.md 3.4)
+	 */
+	public long getClientSessionStartIntervalMs() {
+		try {
+			long ms = Long.parseLong(getCommonProperty("ClientSessionStartIntervalMs", "1").trim());
+			return ms < 0 ? 1L : ms;
+		} catch (Exception e) {
+			return 1L;
+		}
+	}
+
 	public int getResendDRThrottle() {
 		return resendDRThrottle;
 	}

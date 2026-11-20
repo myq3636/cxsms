@@ -83,6 +83,7 @@ public class A2PMultiConnectionInfo extends A2PCustomerInfo{
             this.smppSubmitPendingMode = sc.getSMPPSubmitPendingMode();
             this.smppSubmitPendingRedisTTLSeconds = sc.getSMPPSubmitPendingRedisTTLSeconds();
             this.smppSubmitPendingRedisTimeoutSeconds = sc.getSMPPSubmitPendingRedisTimeoutSeconds();
+            this.streamShards = sc.getStreamShards();
             this.smppDRPendingMode = sc.getSMPPDRPendingMode();
             this.smppDRPendingRedisTTLSeconds = sc.getSMPPDRPendingRedisTTLSeconds();
             this.smppDRPendingRedisTimeoutSeconds = sc.getSMPPDRPendingRedisTimeoutSeconds();

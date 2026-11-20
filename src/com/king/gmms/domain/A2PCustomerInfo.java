@@ -142,6 +142,8 @@ public abstract class A2PCustomerInfo {
 	protected String smppSubmitPendingMode = "memory";
 	protected int smppSubmitPendingRedisTTLSeconds = 600;
 	protected int smppSubmitPendingRedisTimeoutSeconds = 0;
+	/** StreamShards: the shards of this ssid's streams, 0 = StreamShardsDefault (messagequeue.ShardHash) */
+	protected int streamShards = 0;
 	protected String smppDRPendingMode = "memory";
 	protected int smppDRPendingRedisTTLSeconds = 600;
 	protected int smppDRPendingRedisTimeoutSeconds = 0;
@@ -1461,6 +1463,7 @@ public abstract class A2PCustomerInfo {
 		}
 		smppSubmitPendingRedisTTLSeconds = cfg.getInt("SMPPSubmitPendingRedisTTLSeconds", 600);
 		smppSubmitPendingRedisTimeoutSeconds = cfg.getInt("SMPPSubmitPendingRedisTimeoutSeconds", 0);
+		streamShards = cfg.getInt("StreamShards", 0);
 		smppDRPendingMode = cfg.getString("SMPPDRPendingMode", "memory");
 		if (smppDRPendingMode == null || smppDRPendingMode.trim().length() == 0) {
 			smppDRPendingMode = "memory";
@@ -3842,6 +3845,14 @@ public abstract class A2PCustomerInfo {
 	 * when set, else BufferTimeout. The Client's pending submits, the Core outbox and the early DRs use it
 	 * (docs/DR早到重试与outbox应答超时改进设计.md).
 	 */
+	public int getStreamShards() {
+		return streamShards;
+	}
+
+	public void setStreamShards(int streamShards) {
+		this.streamShards = streamShards;
+	}
+
 	public long getSubmitRespTimeoutMs() {
 		return smppSubmitPendingRedisTimeoutSeconds > 0 ? smppSubmitPendingRedisTimeoutSeconds * 1000L : bufferTimeout;
 	}

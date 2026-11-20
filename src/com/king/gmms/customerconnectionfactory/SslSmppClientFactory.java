@@ -165,7 +165,7 @@ public class SslSmppClientFactory extends AbstractConnectionFactory{
 				SslSmppSession cs = new SslSmppSession(connInfo);
 
 				cs.setConnectionManager(connManager);
-				SessionThread thread = new ClientSessionThread(cs, ci
+				SessionThread thread = com.king.gmms.connectionpool.sessionthread.ClientSessionKeeper.create(cs, ci
 						.getReconnectInterval(), ci.getEnquireLinkFailureNum());
 				cs.setSessionThread(thread);
 				sessionList.add(cs);
@@ -173,7 +173,7 @@ public class SslSmppClientFactory extends AbstractConnectionFactory{
 				// add the session into NodeConnectionManager
 				connManager.insertSession(conn.getConnectioName(), cs);
 				try {
-					Thread.sleep(10L);
+					Thread.sleep(com.king.gmms.GmmsUtility.getInstance().getClientSessionStartIntervalMs());
 				} catch (Exception e) {
 					e.printStackTrace();
 				}

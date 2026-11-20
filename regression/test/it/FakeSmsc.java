@@ -26,6 +26,8 @@ final class FakeSmsc implements Runnable {
 		final AtomicInteger deliverSeq = new AtomicInteger(1000);
 		final AtomicInteger binds = new AtomicInteger(), rejected = new AtomicInteger(), closed = new AtomicInteger(),
 				enquires = new AtomicInteger(), enquireResps = new AtomicInteger();
+		/** when each enquire_link came */
+		final List<Long> enquireAt = java.util.Collections.synchronizedList(new java.util.ArrayList<Long>());
 		/** enquire_link received before the first close */
 		volatile int enquiresAtFirstClose = -1;
 		volatile long firstBindAt = 0, firstCloseAt = 0, nextBindAt = 0;
@@ -129,7 +131,7 @@ final class FakeSmsc implements Runnable {
 					a.perLink.put(k, new AtomicInteger());
 					k.pdu(cmd | 0x80000000, 0, seq, "smsc\0".getBytes("US-ASCII"));
 				} else if (cmd == 0x15) {
-					if (a != null) a.enquires.incrementAndGet();
+					if (a != null) { a.enquires.incrementAndGet(); a.enquireAt.add(System.currentTimeMillis()); }
 					if (a != null && a.answerEnquire && link != null) link.pdu(0x80000015, 0, seq, new byte[0]);
 				} else if (cmd == 0x80000005) {
 					if (a != null) a.deliverResp.put(seq, st);
