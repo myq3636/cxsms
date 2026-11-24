@@ -19,6 +19,8 @@ public class RedisControlSubscriber extends JedisPubSub implements Runnable {
 	private final LifecycleSupport lifecycleSupport;
 	private final EventFactory eventFactory;
 	private volatile boolean running = false;
+	/** the next subscribe at once, not after the retry pause (a Redis switch: the new state Redis) */
+	private volatile boolean resubscribeNow = false;
 
 	public RedisControlSubscriber() {
 		this.lifecycleSupport = GmmsUtility.getInstance().getLifecycleSupport();
@@ -237,6 +239,11 @@ public class RedisControlSubscriber extends JedisPubSub implements Runnable {
 				}
 				log.info("RedisControlSubscriber subscribing to {}", CONTROL_CHANNEL);
 				redisClient.subscribeState(this, CONTROL_CHANNEL);
+				if (running && resubscribeNow) {
+					resubscribeNow = false;
+					log.info("RedisControlSubscriber subscribing again on the new state Redis. channel={}", CONTROL_CHANNEL);
+					continue;
+				}
 				if (running) {
 					log.warn("RedisControlSubscriber subscribe returned, retrying in 5 seconds. channel={}", CONTROL_CHANNEL);
 					sleepBeforeRetry();
@@ -247,6 +254,18 @@ public class RedisControlSubscriber extends JedisPubSub implements Runnable {
 					sleepBeforeRetry();
 				}
 			}
+		}
+	}
+
+	/** after a Redis switch: leave the subscription of the old state Redis, the loop subscribes on the new one at once */
+	public void resubscribe() {
+		resubscribeNow = true;
+		try {
+			if (isSubscribed()) {
+				unsubscribe();
+			}
+		} catch (Exception e) {
+			log.warn("RedisControlSubscriber unsubscribe failed, the old subscription ends with its pool", e);
 		}
 	}
 

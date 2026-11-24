@@ -218,6 +218,75 @@ public class GmmsUtility {
 		}
 	}
 
+	/**
+	 * The side to start on: the one whose state Redis answers role:master (after a SWITCH_REDIS the slaves were
+	 * promoted), else ha/RedisStatus (the side of the last switch on this host), else the caller's flag
+	 */
+	private String startupRedisSide(String flag) {
+		String side = null;
+		try {
+			side = redisClient.detectMasterSide();
+		} catch (Exception e) {
+			log.warn("Redis master side not detected", e);
+		}
+		String file = readRedisStatus();
+		if (side == null) {
+			side = file != null ? file : flag;
+			log.warn("initRedisClient: no state Redis answers role:master, starting on side {} ({})", side,
+					file != null ? "ha/RedisStatus" : "default");
+		} else if (!side.equalsIgnoreCase(flag)) {
+			log.warn("initRedisClient: the state Redis of side {} is the master, starting there (not {})", side, flag);
+		}
+		return side;
+	}
+
+	/** Used=M|S of ha/RedisStatus, null when there is none */
+	private String readRedisStatus() {
+		if (redisFile == null) {
+			return null;
+		}
+		java.io.File f = new java.io.File(redisFile);
+		if (!f.exists()) {
+			return null;
+		}
+		try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+			Properties p = new Properties();
+			p.load(in);
+			String used = p.getProperty("Used");
+			return used == null || used.trim().isEmpty() ? null : used.trim().toUpperCase();
+		} catch (Exception e) {
+			log.warn("{} not read", redisFile, e);
+			return null;
+		}
+	}
+
+	/** ha/RedisStatus: the side this host's modules are on (RedisSwitchListener), the fallback of the next start */
+	public void writeRedisStatus(String side) {
+		if (redisFile == null) {
+			return;
+		}
+		java.io.File f = new java.io.File(redisFile);
+		try {
+			if (f.getParentFile() != null) {
+				f.getParentFile().mkdirs();
+			}
+			Properties p = new Properties();
+			p.setProperty("Used", side);
+			try (java.io.FileOutputStream out = new java.io.FileOutputStream(f)) {
+				p.store(out, "Update Used to file.");
+			}
+		} catch (Exception e) {
+			log.warn("{} not written", redisFile, e);
+		}
+	}
+
+	/** after a Redis switch: the control channel on the new state Redis */
+	public void resubscribeControl() {
+		if (controlSubscriber != null) {
+			controlSubscriber.resubscribe();
+		}
+	}
+
 	public synchronized void startControlSubscriber() {
 		if (controlSubscriberThread != null && controlSubscriberThread.isAlive()) {
 			return;
@@ -235,6 +304,10 @@ public class GmmsUtility {
 						com.king.framework.lifecycle.event.Event.TYPE_SWITCHDB,
 						new com.king.gmms.ha.DbSwitchListener(), 1);
 				log.info("DbSwitchListener registered for SWITCH_DB (SystemManager disabled).");
+				getLifecycleSupport().addListener(
+						com.king.framework.lifecycle.event.Event.TYPE_SWITCHREDIS,
+						new com.king.gmms.ha.RedisSwitchListener(), 1);
+				log.info("RedisSwitchListener registered for SWITCH_REDIS (SystemManager disabled).");
 			}
 		} catch (Exception e) {
 			log.error("Failed to register DbSwitchListener", e);
@@ -325,6 +398,7 @@ public class GmmsUtility {
     		log.info("initRedisClient getting RedisClient instance.");
     		redisClient = RedisClient.getInstance();
     		log.info("initRedisClient got RedisClient instance.");
+    		flag = startupRedisSide(flag);
     		if("M".equalsIgnoreCase(flag)){
     			log.info("initRedisClient setting Redis HA flag to master.");
     			redisClient.setRedisHaFlag(true);

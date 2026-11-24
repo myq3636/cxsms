@@ -364,6 +364,57 @@ public class RedisClient {
 	public void delHash(String key, String field) { stateRedis.delHash(key, field); }
 	public boolean isRedisHaFlag() { return redisHaFlag; }
 
+	/**
+	 * The side whose state Redis answers role:master now: "M" (Redis_master_*), "S" (Redis_slave_*), null when neither
+	 * does (down, or both replicas). The master side is asked first: the slave only when the master is not a master.
+	 */
+	public String detectMasterSide() {
+		if ("master".equals(role(host, port))) {
+			return "M";
+		}
+		if ("master".equals(role(host1, port1))) {
+			return "S";
+		}
+		return null;
+	}
+
+	/** every Redis of a side (the state Redis and each submit / report MQ instance) answers role:master */
+	public boolean sideIsMaster(boolean masterSide) {
+		List<String> all = new java.util.ArrayList<String>();
+		all.add((masterSide ? host : host1) + ":" + (masterSide ? port : port1));
+		all.addAll(java.util.Arrays.asList(masterSide ? submitMasters : submitSlaves));
+		all.addAll(java.util.Arrays.asList(masterSide ? reportMasters : reportSlaves));
+		for (String hp : new java.util.LinkedHashSet<String>(all)) {
+			int c = hp.lastIndexOf(':');
+			String r = role(hp.substring(0, c), Integer.parseInt(hp.substring(c + 1).trim()));
+			if (!"master".equals(r)) {
+				log.warn("Redis {} answers role {}, not master", hp, r);
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** the replication role of a Redis (INFO replication): master, slave; null when it does not answer */
+	private String role(String h, int p) {
+		if (h == null || h.trim().isEmpty()) {
+			return null;
+		}
+		try (redis.clients.jedis.Jedis j = new redis.clients.jedis.Jedis(h.trim(), p, connectTimeout)) {
+			if (isAuth && password != null) {
+				j.auth(password);
+			}
+			for (String line : j.info("replication").split("\r?\n")) {
+				if (line.startsWith("role:")) {
+					return line.substring(5).trim();
+				}
+			}
+		} catch (Exception e) {
+			log.warn("Redis {}:{} role not read: {}", h, p, e.getMessage());
+		}
+		return null;
+	}
+
 	public synchronized void setRedisHaFlag(boolean redisHaFlag) {
 		log.info("setRedisHaFlag start. redisHaFlag={}, stateHost={}:{}, submitHost={}:{}, reportHost={}:{}",
 				redisHaFlag, redisHaFlag ? host : host1, redisHaFlag ? port : port1,
