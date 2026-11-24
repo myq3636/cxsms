@@ -1426,7 +1426,7 @@ public class GmmsUtility {
 		"MaxCPUUsage", "SystemStatusCheckInterval", "RuninOverloadStatusPeriod", "ExpiredMessageQueueSize",
 		"DNSPort", "DNSMaxFailedLimit", "DNSTestPeriod", "DNSTestNumber", "DNSBufferCapacity",
 		"DNSBufferTimeout", "NMGAddress", "NMGPort", "DefaultRetryPolicy", "AntiSpam.Characters2Escape",
-		"DefaultSuffix", "LocalSuffix", "SMSQueryDRHttpModule"
+		"DefaultSuffix", "LocalSuffix"
 	};
 
 	private boolean isRestartRequiredConfigKey(String key) {

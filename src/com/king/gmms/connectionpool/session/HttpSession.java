@@ -193,58 +193,6 @@ public abstract class HttpSession extends Session {
 		}
 	}
 	
-	protected String doQueryMsgWithHeader(URL url, Map<String, String>header, boolean supportHttps) throws Exception {
-
-		try {
-			if(supportHttps){							
-				HostnameVerifier hv = new HostnameVerifier() {
-					public boolean verify(String urlHostName, SSLSession session) {
-						// TODO Auto-generated method stub
-						log.info("Warning: URL Host: " + urlHostName + " vs "+ session.getPeerHost());
-						//return true;
-						return true;
-					}
-			     };
-			     trustAllHttpsCertificates();
-			     HttpsURLConnection.setDefaultHostnameVerifier(hv);
-			     connection = (HttpsURLConnection) url.openConnection();	
-			}else{
-				connection = (HttpURLConnection) url.openConnection();
-			}
-
-			connection.setDoInput(true);
-			connection.setDoOutput(true);
-			connection.setUseCaches(false);
-			connection.setRequestMethod("GET");
-
-			connection.setConnectTimeout(connectTimeoutMs());
-			connection.setReadTimeout(readTimeoutMs());
-			if (header != null) {
-				for(String key : header.keySet()){
-					connection.setRequestProperty(key, header.get(key));
-				}
-
-			}
-			InputStream in = connection.getInputStream();
-			BufferedReader data = new BufferedReader(new InputStreamReader(in));
-			StringBuffer respones = new StringBuffer();
-			String line = data.readLine();
-
-			while (line != null) {
-				respones.append(line + "\r\n");
-				line = data.readLine();
-			}
-			data.close();
-			return respones.toString();
-		} catch (Exception ex) {
-			log.error(ex, ex);
-			throw ex;
-		} finally {
-			if (connection != null) {
-				connection.disconnect();
-			}
-		}
-	}
 
 	protected String doPost(URL url, String post, String cookie, boolean supportHttps)
 			throws IOException {

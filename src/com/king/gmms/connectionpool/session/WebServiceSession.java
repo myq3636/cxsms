@@ -132,18 +132,7 @@ public class WebServiceSession extends Session {
 				}	
 			}else if(msg.getMessageType().equals(GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP)
 					||msg.getMessageType().equals(GmmsMessage.MSG_TYPE_SUBMIT_RESP) ){
-				if(!"".equalsIgnoreCase(cst.getHttpQueryMessageFlag())){					
-					msg.setMessageType(GmmsMessage.MSG_TYPE_INNER_ACK);
-					msg.setStatusCode(0);
-					if (!putGmmsMessage2RouterQueue(msg)) {
-						if (log.isInfoEnabled()) {
-							log.info(msg, "Send response to core engine failed!");
-						}
-					}
-					return true;
-				}else{
-					log.error(msg, "Unsupport message type:"+msg.getMessageType());
-				}
+				log.error(msg, "Unsupport message type:"+msg.getMessageType());
 			} else {
 			log.error(msg, "Unsupport message type:"
 					+ msg.getMessageType());
@@ -258,51 +247,6 @@ public class WebServiceSession extends Session {
 	}
 	
 	
-	/**
-	 * Query the batch DR messages
-	 * */
-	@SuppressWarnings("unchecked")
-	public void queryBatchDR(){
-		if(cst == null){
-			log.error("Current web service session has no coresponding customer info.");
-			return;
-		}
-		List<GmmsMessage> msgs = null;
-		
-		HttpPdu mtRequest = hi.getMtDRRequest();
-		
-		if (mtRequest.hasHandlerClass()) {
-			String className = mtRequest.getHandlerClass();
-			GmmsMessage msg = null;
-			Object[] args = { msg,cst };
-			Object c = hi.invokeHandler(className,
-					HttpConstants.WS_HANDLER_METHOD_PARSMTELISTREQUEST, args);
-			if (c !=null && c.getClass().getName().equals("java.util.ArrayList")) {
-				msgs = (List<GmmsMessage>) c;
-			}
-			if (log.isDebugEnabled()) {
-				log.debug("Get "+hi.getInterfaceName()+"  MT Dr messages used handlerclass:" + className
-						+ ",invoke method:"
-						+ HttpConstants.WS_HANDLER_METHOD_PARSMTELISTREQUEST);
-			}
-		}else{
-			log.warn(hi.getInterfaceName()+" MT Dr Request has no handler class.");
-		}
-
-		if (msgs == null) {
-			return;
-		} else {
-			for (GmmsMessage message : msgs) {
-				if (!putGmmsMessage2RouterQueue(message)) {
-					if (log.isInfoEnabled()) {
-						log.info(message,
-								"Send response to core engine failed!");
-					}
-				}
-			}
-		}
-		
-	}
 	
 
 	@Override

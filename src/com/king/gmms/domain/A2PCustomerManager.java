@@ -2661,7 +2661,6 @@ public class A2PCustomerManager implements LifecycleListener {
 						&& this.inCurrentA2P(this.getConnectedRelay(ssid,
 								GmmsMessage.AIC_MSG_TYPE_TEXT))) {
 					commonFct.removeOperatorMessageQueue(ssid);
-					commonFct.clearThreads(cust.getSSID());
 				}
 			} else if (SystemConstants.CLICKATELLHTTPCLIENT_MODULE_TYPE
 					.equalsIgnoreCase(moduleType)
@@ -2785,15 +2784,6 @@ public class A2PCustomerManager implements LifecycleListener {
 						.getInstance();
 				int connectionType = custInfo.getConnectionType();
 				serverFct.initConnectionFactory(ssid, connectionType);
-			}
-		}else{
-			if(SystemConstants.COMMONHTTPCLIENT_MODULE_TYPE.equalsIgnoreCase(moduleType)
-					&& SystemConstants.COMMONHTTPCLIENT_MODULE_TYPE.equalsIgnoreCase(custInfo.getChlQueue())) {
-				CommonHttpClientFactory commonFct = CommonHttpClientFactory.getInstance();
-				if ((((A2PSingleConnectionInfo) custInfo).isChlInit())
-						&& this.inCurrentA2P(this.getConnectedRelay(ssid,GmmsMessage.AIC_MSG_TYPE_TEXT))) {
-					commonFct.reloadQueryMessageThread(ssid);
-				}
 			}
 		}
 	}
@@ -2923,7 +2913,6 @@ public class A2PCustomerManager implements LifecycleListener {
 		initCurrentA2P(b, block);
 		initCorePrioritySSIDList(b, block);
 		initProtocolSSIDMap(b, block);
-		initQueryMsgSSIDList(b, block);
 		initNoticeInfo(b, cust);
 		initRecipientLen(b, ssid);
 		initSsidtoPhonePrefix(b, block);
@@ -3106,16 +3095,6 @@ public class A2PCustomerManager implements LifecycleListener {
 		}
 		if (!ssids.contains(cfg.getSSID())) {
 			ssids.add(cfg.getSSID());
-		}
-	}
-
-	private void initQueryMsgSSIDList(CustomerSnapshot b, A2PCustomerConfig cfg) {
-		String queryMsgFlag = cfg.getString(
-				"SMSOptinIsSupportHttpQueryMessage", "");
-		if ("".equalsIgnoreCase(queryMsgFlag))
-			return;
-		if (!b.queryMsg_ssid_list.contains(cfg.getSSID())) {
-			b.queryMsg_ssid_list.add(cfg.getSSID());
 		}
 	}
 
@@ -5342,10 +5321,6 @@ public class A2PCustomerManager implements LifecycleListener {
 			all.add(getCustomerBySSID(cust.getSSID()));
 		}
 		return all;
-	}
-
-	public ArrayList<Integer> getSsidByQueryMsg() {
-		return new ArrayList<Integer>(cs().queryMsg_ssid_list);
 	}
 
 	public String getNodeIDByConnectionID(String connectionID) {

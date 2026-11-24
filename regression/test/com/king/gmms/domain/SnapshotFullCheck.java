@@ -189,7 +189,7 @@ public class SnapshotFullCheck {
 				"ChlIsSupportDeliveryReport: No", "DeliveryReportMode: 1", "LocalDNSPrefix: a.com,b.com",
 				"ContentScan: (Prefix=86,Charset=ASCII,Except=UCS2)", "SmsOptionIsSupportUDH: No", "SmsOptionIsSupport7Bit: yes",
 				"SmsOptionIsSupportExpiredDR: yes", "SMSOptionCoreProcessorThrottlingNum: 10", "Protocol: SMPP",
-				"SMSOptinIsSupportHttpQueryMessage: MtDr", "NoticePrefix: 1,2", "PhonePrefix: 8613,8615", "CustomerID: 5001",
+				"NoticePrefix: 1,2", "PhonePrefix: 8613,8615", "CustomerID: 5001",
 				"IOSMSSSID: 9001", "Service: GMMS", "RequiredCharsets: (R_RELAY=ChanB_x,Charset=UCS2)",
 				"SMSOptionOutgoingThrottlingNum: 50", "SMSOptionMORetryPolicy: 1,2,3");
 		Collections.addAll(l, extra);

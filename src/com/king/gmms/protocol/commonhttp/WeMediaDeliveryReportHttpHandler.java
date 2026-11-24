@@ -28,7 +28,6 @@ import com.king.db.DBLockConnection;
 import com.king.db.DataControl;
 import com.king.db.DataControlException;
 import com.king.framework.SystemLogger;
-import com.king.gmms.customerconnectionfactory.CommonHttpClientFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PSingleConnectionInfo;
 import com.king.gmms.domain.http.HttpInterface;
@@ -133,9 +132,6 @@ public class WeMediaDeliveryReportHttpHandler extends HttpHandler {
 			Element root = doc.getRootElement();
 			String nextId = root.getAttributeValue("nextID");
 			List node = root.getChildren();
-			if (nextId != null && nextId.trim() != null) {
-			    CommonHttpClientFactory.getInstance().setQueryMinID(cm.getShortName()+"_MTDR", nextId);
-			}
 			if (node == null) {
 				return null;
 			}

@@ -78,7 +78,6 @@ final class CustomerSnapshot {
 
 	Map<String, List<Integer>> protocol_ssid_map = new HashMap<String, List<Integer>>();
 	// used by queryDR for commonHttp
-	List<Integer> queryMsg_ssid_list = new ArrayList<Integer>();
 	List<Integer> corePriority_ssid_list = new ArrayList<Integer>();
 
 	private boolean frozen = false;
@@ -132,7 +131,6 @@ final class CustomerSnapshot {
 		recipientLengthMap = Collections.unmodifiableMap(recipientLengthMap);
 		currentA2Ps = Collections.unmodifiableSet(currentA2Ps);
 		protocol_ssid_map = Collections.unmodifiableMap(protocol_ssid_map);
-		queryMsg_ssid_list = Collections.unmodifiableList(queryMsg_ssid_list);
 		corePriority_ssid_list = Collections.unmodifiableList(corePriority_ssid_list);
 		frozen = true;
 		return this;

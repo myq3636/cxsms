@@ -23,7 +23,6 @@ import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.customerconnectionfactory.CommonHttpClientFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PSingleConnectionInfo;
 import com.king.gmms.domain.http.HttpInterface;
@@ -214,7 +213,6 @@ public class PaasooDeliveryReportHttpHandler extends HttpHandler {
 			Document doc = sb.build(xml);
 			Element root = doc.getRootElement();
 			List node = root.getChildren();
-			CommonHttpClientFactory.getInstance().setQueryMinID(cm.getShortName()+"_MTDR", "1");
 			if (node == null) {
 				return null;
 			}

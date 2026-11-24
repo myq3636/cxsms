@@ -75,17 +75,7 @@ public class CommonHttpSession extends HttpSession {
 		String contentType = null;
 		String httpMethod = cst.getHttpMethod();
 		Map<String, String> header = null;
-		if("JatisDr".equalsIgnoreCase(cst.getHttpQueryMessageFlag())){
-			if (msg.getMessageType().equalsIgnoreCase(
-					GmmsMessage.MSG_TYPE_DELIVERY_REPORT_QUERY)) {
-				httpMethod = "post";
-				contentType = "text/xml";
-				serverAddress = serverDRAddress;
-			}else{
-				A2PSingleConnectionInfo sInfo = (A2PSingleConnectionInfo) cst;
-				serverAddress = sInfo.getChlURL()[0];
-			}
-		}else if("SIOO".equalsIgnoreCase(cst.getProtocol())){
+		if("SIOO".equalsIgnoreCase(cst.getProtocol())){
 			if (msg.getMessageType().equalsIgnoreCase(
 					GmmsMessage.MSG_TYPE_SUBMIT)) {
 				HttpCharset httpCharset = hi
@@ -174,18 +164,6 @@ public class CommonHttpSession extends HttpSession {
 				serverAddress = serverDRAddress;
 			}
 		}else if("South".equalsIgnoreCase(cst.getProtocol())){
-			if ("SouthDR".equalsIgnoreCase(cst.getHttpQueryMessageFlag())
-					||"MtDr".equalsIgnoreCase(cst.getHttpQueryMessageFlag())) {
-				if (msg.getMessageType().equalsIgnoreCase(
-						GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP)) {
-					msg.setMessageType(GmmsMessage.MSG_TYPE_INNER_ACK);
-					msg.setStatusCode(0);
-					if (!putGmmsMessage2RouterQueue(msg)) {
-						log.error(msg, "Result not written to Redis for Core (send response to core engine failed)");
-					}
-					return true;
-				}
-			}
 			if (msg.getMessageType().equalsIgnoreCase(
 					GmmsMessage.MSG_TYPE_SUBMIT)) {
 				httpMethod = "post";
@@ -326,102 +304,6 @@ public class CommonHttpSession extends HttpSession {
 			return false;
 		}
 		return bret;
-	}
-
-	public boolean queryMessage(GmmsMessage msg) throws IOException {
-		boolean bret = false;
-		if (msg == null) {
-			return false;
-		}		
-		String post = this.appendData(msg).toString();
-		
-		String resp = null;
-		try {
-			URL url = null;
-			String httpMethod = cst.getHttpQueryDRMethod();
-			if (httpMethod.equalsIgnoreCase("get")) {
-				if ("".equals(post)) {
-					url = new URL(serverDRAddress);
-				}else {
-					url = new URL(serverDRAddress + "?" + post);
-				}
-				
-				log.debug("http get mothed send url: {}", url.toString());
-				Map<String, String>header = new HashMap<String, String>();
-				String userName = cst.getChlAcctNamer();
-				header.put("SCT-SMS-ACCOUNT", userName);
-				Date d = new Date(System.currentTimeMillis());
-		        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH");
-		        sdf.setTimeZone(TimeZone.getTimeZone("GMT+8"));
-				String dateTime = sdf.format(d);
-				String timestamp = dateTime+":00:00";
-				String key = cst.getChlPasswordr();
-				header.put("SCT-SMS-TIMESTAMP", timestamp);	
-				String md5Src = new StringBuffer(userName).append(timestamp)
-						.append(key).toString();
-	    			    		
-				String md5Pass = HttpUtils.md5Encrypt(md5Src);
-				header.put("SCT-SMS-SIGN", md5Pass);				
-				resp = super.doQueryMsgWithHeader(url, header, cst.isSMSOptionIsSupportHttps());
-			} else {
-				url = new URL(serverDRAddress);
-				log.debug("http post mothed send url: {}", url.toString());
-				resp = super.doPost(url, post, null,cst.isSMSOptionIsSupportHttps());
-			}
-			if(log.isInfoEnabled()){
-				log.info(msg, "received queryDR resp = {}" , resp);
-			}
-			this.dealQueryBatchDRResp(msg, resp);
-			bret = true;
-		} catch (IOException e) {
-			handleHttpStatusCode(msg);
-			return false;
-		} catch (Exception e) {
-			return false;
-		}
-		return bret;
-	}
-
-	@SuppressWarnings("unchecked")
-	public void dealQueryBatchDRResp(GmmsMessage msg, String resp) {
-		if (resp == null || "".equals(resp)) {
-			return;
-		}
-		List<GmmsMessage> msgs = null;
-		if (msg.getMessageType().equalsIgnoreCase(GmmsMessage.MSG_TYPE_DELIVERY_REPORT_QUERY)) {
-			HttpPdu drResp = hi.getMtDRResponse();
-			if (drResp.hasHandlerClass()) {
-				String className = drResp.getHandlerClass();
-				Object[] args = { msg, this.cst, resp };
-				Object c = hi.invokeHandler(className,
-						HttpConstants.HANDLER_METHOD_PARSELISTRESPONSE, args);
-				if (c == null) {
-					return ;
-				}
-				if (c.getClass().getName().equals("java.util.ArrayList")) {
-					msgs = (List<GmmsMessage>) c;
-				}
-				if(log.isDebugEnabled()){
-	        		log.debug(msg, "Used handlerclass:{},invoke method:{}",className,
-						HttpConstants.HANDLER_METHOD_PARSELISTRESPONSE);
-				}
-			}
-
-		} else {
-			log.error(msg, "Unsupport message type:{}" , msg.getMessageType());
-		}
-		if (msgs == null) {
-			return;
-		} else {
-			for (GmmsMessage message : msgs) {
-				message.setRSsID(cst.getSSID());
-				message.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
-				if (!putGmmsMessage2RouterQueue(message)) {
-					log.error(message, "Result not written to Redis for Core (send response to core engine failed)");
-				}
-			}
-		}
-
 	}
 
 	public void dealResp(GmmsMessage msg, String resp) {

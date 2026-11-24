@@ -20,7 +20,6 @@ public class CommonHttpClient extends AbstractClient {
 			 // consumes stream:http:*, not stream:mt:routed: its shards are checked apart from the SMPP clients
 			 com.king.gmms.ha.ShardAssignmentChecker.setShardGroup("httpclient");
 			 customerFactory = CommonHttpClientFactory.getInstance();
-			 customerFactory.initQueryMsgThread();	           		 
 	}
 	public boolean startService() {
 		customerFactory.initializeAllHttpCustomers();

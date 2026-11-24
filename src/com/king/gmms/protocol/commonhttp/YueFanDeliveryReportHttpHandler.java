@@ -28,7 +28,6 @@ import com.king.db.DBLockConnection;
 import com.king.db.DataControl;
 import com.king.db.DataControlException;
 import com.king.framework.SystemLogger;
-import com.king.gmms.customerconnectionfactory.CommonHttpClientFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PSingleConnectionInfo;
 import com.king.gmms.domain.http.HttpInterface;
@@ -221,7 +220,6 @@ public class YueFanDeliveryReportHttpHandler extends HttpHandler {
 			Document doc = sb.build(xml);
 			Element root = doc.getRootElement();
 			List node = root.getChildren();
-			CommonHttpClientFactory.getInstance().setQueryMinID(cm.getShortName()+"_MTDR", "1");
 			if (node == null) {
 				return null;
 			}

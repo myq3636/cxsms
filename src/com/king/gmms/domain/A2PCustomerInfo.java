@@ -290,11 +290,8 @@ public abstract class A2PCustomerInfo {
 	protected TimeZone smsOptionTimeZone = TimeZone.getTimeZone("GMT");
 
 	// added by King for WeMedia
-	protected int msgQueryInterval = 60000;
-	protected String httpQueryMessageFlag = "";
 	// added by King for http method
 	protected String httpMethod = "";
-	protected String httpQueryDRMethod = "";
 
 	// added by King for Http custom parameter
 	protected String SMSOptionHttpCustomParameter = "";
@@ -497,22 +494,6 @@ public abstract class A2PCustomerInfo {
 
 	public void setHttpMethod(String httpMethod) {
 		this.httpMethod = httpMethod;
-	}
-
-	public String getHttpQueryMessageFlag() {
-		return httpQueryMessageFlag;
-	}
-
-	public void setHttpQueryMessageFlag(String queryDR) {
-		this.httpQueryMessageFlag = queryDR;
-	}
-
-	public int getMsgQueryInterval() {
-		return msgQueryInterval;
-	}
-
-	public void setMsgQueryInterval(int drQueryInterval) {
-		this.msgQueryInterval = drQueryInterval;
 	}
 
 	/**
@@ -1412,9 +1393,6 @@ public abstract class A2PCustomerInfo {
 		messageMode = MessageMode.parse(cfg.getString("MessageMode"));
 
 		// added for WeMedia by king -begin
-		this.msgQueryInterval = cfg.getInt("SMSOptionQueryMsgIntervalTime", 60) * 1000;
-		this.httpQueryMessageFlag = cfg.getString(
-				"SMSOptinIsSupportHttpQueryMessage", "");
 		
 //		inClientPull = cfg.getString("InClientPull");
 		
@@ -1433,7 +1411,6 @@ public abstract class A2PCustomerInfo {
 		// added for WeMedia by king -end
 		// added for http method by king
 		this.httpMethod = cfg.getString("SMSOptionHttpMethod", "post");
-		this.httpQueryDRMethod = cfg.getString("SMSOptionQueryDRHttpMethod", "post");
 
 		// added for CICN by king
 		this.SMSOptionHttpCustomParameter = cfg.getString(
@@ -2937,7 +2914,6 @@ public abstract class A2PCustomerInfo {
 		.append(prefix).append("FinalExpireTime:").append(this.finalExpireTime)
 		.append(prefix).append("Foreword:").append(this.foreword)
 		.append(prefix).append("SMSOptionHttpMethod:").append(this.httpMethod)
-		.append(prefix).append("SMSOptinIsSupportHttpQueryMessage:").append(this.httpQueryMessageFlag)
 		.append(prefix).append("InClientPull:").append(this.inClientPull)
 		.append(prefix).append("SMSOptionIncomingThrottlingNum:").append(this.incomingThrottlingNum)
 		.append(prefix).append("IOSMSSSID:").append(this.iosmsSsid)
@@ -2947,7 +2923,6 @@ public abstract class A2PCustomerInfo {
 		.append(prefix).append("SMSOptionHttpUrlEncodingTwice:").append(this.isUrlEncodingTwice)
 		.append(prefix).append("LastHopSplitSuffixFormat:").append(this.lastHopSplitSuffixFormat)
 		.append(prefix).append("SMSOptionMatchFullWhenRouteReplaceOAddr:").append(this.matchFullWhenRouteReplaceOAddr)
-		.append(prefix).append("SMSOptionQueryMsgIntervalTime:").append(this.msgQueryInterval)
 		.append(prefix).append("needAntiSpam:").append(this.needAntiSpam)
 		.append(prefix).append("SMSOptionSMPPNeedReceiptedMessageId:").append(this.needReceiptedMsgId)
 		.append(prefix).append("NoticeCustomer:").append(this.noticeCustomer)
@@ -3033,7 +3008,6 @@ public abstract class A2PCustomerInfo {
 		.append(prefix).append("SMSOptionParseValidityPeriod:").append(this.parseValidityPeriod)
 		.append(prefix).append("SMSOptionTransferValidityPeriod:").append(this.transferValidityPeriod)
 		.append(prefix).append("SMSOptionIsMaxASCIILenTo7BitFlag:").append(this.smsOptionIsMaxASCIILenTo7BitFlag)
-		.append(prefix).append("SMSOptionQueryDRHttpMethod:").append(this.httpQueryDRMethod)
 		.append(prefix).append("SMSOptionIsSupportHttps:").append(this.smsOptionIsSupportHttps)
 		.append(prefix).append("MCCMNCLength:").append(this.MCCMNCLength)
 		.append(prefix).append("CustomerSupportLength:").append(this.customerSupportLength)
@@ -3180,14 +3154,6 @@ public abstract class A2PCustomerInfo {
 
 	public void setRelateValidityPeriod(boolean isRelateValidityPeriod) {
 		this.isRelateValidityPeriod = isRelateValidityPeriod;
-	}
-
-	public String getHttpQueryDRMethod() {
-		return httpQueryDRMethod;
-	}
-
-	public void setHttpQueryDRMethod(String httpQueryDRMethod) {
-		this.httpQueryDRMethod = httpQueryDRMethod;
 	}
 
 	public int getInClientPull() {
