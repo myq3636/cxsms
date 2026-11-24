@@ -31,7 +31,6 @@ public class CustomerMessageSender extends Sender {
 	protected ConnectionStrategy sameSessionStrategy;
 	private int ssid = -1;
 	private Map connectionMap;
-	protected boolean isEnableSysMgt = false;
 	protected boolean isRespFirst = false;
 	protected GmmsUtility gmmsUtility = null;
 	private boolean skipLegacyOutgoingThrottle = false;
@@ -62,7 +61,6 @@ public class CustomerMessageSender extends Sender {
 		String responsePolicy = cInfo.getResponseConnectionPolicy();
 		responseStrategy = getStrategy(responsePolicy, connManager, null);
 		sameSessionStrategy = getStrategy("SameSession", connManager, null);
-		isEnableSysMgt = GmmsUtility.getInstance().isSystemManageEnable();
 		
 	}
 
@@ -93,49 +91,13 @@ public class CustomerMessageSender extends Sender {
 		if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(msg.getMessageType())
 				|| GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(msg
 						.getMessageType())) {
-			if (isEnableSysMgt) {
-				TransactionURI transaction = msg.getTransaction();
-				if (transaction != null) {
-					session = sameSessionStrategy.execute(msg);
-					if (session == null) {
-						session = newMsgStrategy.execute(msg);
-					}
-				} else {
-					session = newMsgStrategy.execute(msg);
-				}
-			} else {
-				session = newMsgStrategy.execute(msg);
-			}
+			session = newMsgStrategy.execute(msg);
 		} else if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(msg
 				.getMessageType())) {
-			if (isEnableSysMgt) {
-				TransactionURI transaction = msg.getTransaction();
-				if (transaction != null) {
-					session = sameSessionStrategy.execute(msg);
-					if (session == null) {
-						session = drStrategy.execute(msg);
-					}
-				} else {
-					session = drStrategy.execute(msg);
-				}
-			} else {
-				session = drStrategy.execute(msg);
-			}
+			session = drStrategy.execute(msg);
 		} else if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT_QUERY
 				.equalsIgnoreCase(msg.getMessageType())) {
-			if (isEnableSysMgt) {
-				TransactionURI transaction = msg.getTransaction();
-				if (transaction != null) {
-					session = sameSessionStrategy.execute(msg);
-					if (session == null) {
-						session = drStrategy.execute(msg);
-					}
-				} else {
-					session = drStrategy.execute(msg);
-				}
-			} else {
-				session = drStrategy.execute(msg);
-			}
+			session = drStrategy.execute(msg);
 		} else if (GmmsMessage.MSG_TYPE_SUBMIT_RESP.equalsIgnoreCase(msg
 				.getMessageType())
 				|| GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP

@@ -16,7 +16,6 @@ import com.king.framework.SystemLogger;
 import com.king.framework.lifecycle.LifecycleListener;
 import com.king.framework.lifecycle.LifecycleSupport;
 import com.king.framework.lifecycle.event.Event;
-import com.king.gmms.connectionpool.systemmanagement.ConnectionManagementForMGT;
 import com.king.gmms.domain.A2PCustomerConfig;
 import com.king.message.gmms.GmmsMessage;
 public class AntiSpamFilter implements LifecycleListener {

@@ -35,7 +35,6 @@ public abstract class AbstractMultiConnection
     private GmmsUtility gmmsUtility = null;
     protected String module = null;
     protected boolean isCoreEngine = false;
-    protected boolean isSystemManageEnable = false;
 
     public AbstractMultiConnection(IndexStrategy strategy,boolean isCreatURIMap) {
         this.strategy = strategy;
@@ -46,7 +45,6 @@ public abstract class AbstractMultiConnection
         module = System.getProperty("module");
         ModuleManager moduleManager = ModuleManager.getInstance();
         isCoreEngine = moduleManager.isCoreEngine(module);
-        isSystemManageEnable = gmmsUtility.isSystemManageEnable();
     }
 
     protected void putSession2URIMap(Session session){
@@ -107,17 +105,7 @@ public abstract class AbstractMultiConnection
                     if (i++ >= index) {
                         if (obj != null) {
                             session = (Session) obj;
-                            if(isCoreEngine || !isSystemManageEnable){
-                            	return session;
-                            }
-                            else{
- 	                            if(!session.isFakeSession()){
- 	                            	return session;
- 	                            }else{
- 	                            	session = null;
- 	                            	continue;
- 	                           }
-                            }
+                        	return session;
                         }
                     }
                 }
@@ -126,17 +114,7 @@ public abstract class AbstractMultiConnection
             		 obj = iterator.next();
                      if (obj != null) {
                          session = (Session) obj;;
-                         if(isCoreEngine || !isSystemManageEnable){
-                        	 return session;
-                         }
-                         else{
-                            if(!session.isFakeSession()){
-                            	return session;
-                            }else{
-                            	session = null;
-                            	continue;
-                           }
-                         }
+                    	 return session;
                      }
             	  }
             }
@@ -145,17 +123,7 @@ public abstract class AbstractMultiConnection
                     obj = iterator.next();
                     if (obj != null) {
                     	session = (Session) obj;
-                        if(isCoreEngine || !isSystemManageEnable){
-                        	return session;
-                        }
-                        else{
-                            if(!session.isFakeSession()){
-                            	return session;
-                            }else{
-                            	session = null;
-                            	continue;
-                           }
-                        }
+                    	return session;
                     }
                 }
             }

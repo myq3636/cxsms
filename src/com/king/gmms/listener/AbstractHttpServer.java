@@ -24,16 +24,11 @@ import com.king.gmms.domain.ModuleConnectionInfo;
 import com.king.gmms.domain.ModuleManager;
 import com.king.gmms.ha.ModuleStatusReporter;
 import com.king.gmms.ha.TransactionURI;
-import com.king.gmms.ha.systemmanagement.SystemListener;
-import com.king.gmms.ha.systemmanagement.SystemSession;
-import com.king.gmms.ha.systemmanagement.SystemSessionFactory;
-import com.king.gmms.ha.systemmanagement.pdu.ModuleRegisterAck;
 import com.king.gmms.messagequeue.OperatorMessageQueue;
 import com.king.gmms.messagequeue.StreamQueueManager;
 import com.king.gmms.metrics.MetricsCollector;
 import com.king.gmms.metrics.MetricsNames;
 import com.king.gmms.protocol.smpp.pdu.Response;
-import com.king.gmms.throttle.ReportInMsgCountTimer;
 import com.king.gmms.throttle.ThrottlingControl;
 import com.king.message.gmms.GmmsMessage;
 
@@ -57,15 +52,11 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 	protected static ModuleStatusReporter statusReporter = null;
 	protected static Object statusReporterMutex = new Object();
 	protected static int timeout = 10000;
-	protected SystemListener systemListener = null;
-	protected SystemSession systemSession = null; // system client
-	protected boolean isEnableSysMgt = false;
     protected boolean canHandover = false;
 	protected String moduleName;
 	protected static Map<String, Integer> urlMap = null;
 	protected static int httpConnectionNumberMaximum = 100;
 	protected static Map<String, Integer> httpCustomConnectionNumMap = null;
-	protected ReportInMsgCountTimer reportInMsgCountTimer = null;
 
 	private static String comma = ",";
 	private static String semi = ";";
@@ -99,7 +90,6 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 				httpConnectionNumberMaximum = 100;
 			}
 			log.debug("httpConnectionMaxNumber is: {}",	httpConnectionNumberMaximum);
-			isEnableSysMgt = gmmsUtility.isSystemManageEnable();
 			canHandover = gmmsUtility.isDBHandover();
 			
 			String customIp = gmmsUtility.getCommonProperty("HttpCustomConnectionNumber");
@@ -149,22 +139,6 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 		try {
 			DatabaseStatus dbstatus = DatabaseStatus.MASTER_USED;
 			String redisStatus = "M"; // V4.0 Default to Master, synchronized via Redis Pub/Sub
-			/*
-			 * V4.0 微服务化：关闭旧式 TCP SystemListener，由 RedisControlSubscriber 接管 
-			if ((canHandover ||isEnableSysMgt) && !systemListener.isRunning()) {
-				systemListener.start();
-				if (systemSession != null) {
-					ModuleRegisterAck ack = systemSession.moduleRegisterInDetail();
-		        	if(ack!=null){
-		        		String dbstatusStr = ack.getDbStatus();
-		        		dbstatus = DatabaseStatus.get(dbstatusStr);
-		        		redisStatus = ack.getRedisStatus();
-		        	}
-					reportInMsgCountTimer.startTimer("reportInMsgCountTimer");
-					resetDynamicCustInThresholdTimer.startTimer("resetDynamicCustInThresholdTimer");
-				}
-			}
-			*/
 			gmmsUtility.initRedisClient(redisStatus);
 			gmmsUtility.initDBManager(dbstatus);
 			ensureHttpServerStatusReporter();

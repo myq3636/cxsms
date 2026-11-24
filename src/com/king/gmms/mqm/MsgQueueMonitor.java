@@ -31,7 +31,6 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 	private EarlyDrDispatcher earlyDrDispatcher = null;
 	//private SystemSession systemSession = null; // system client
 	//private SystemSessionFactory sysFactory = null;
-	private boolean isEnableSysMgt = false;
     protected boolean canHandover = false;
 	//private SystemListener systemListener = null;
 	private ExecutorService exthreadPool = null;
@@ -89,7 +88,7 @@ public class MsgQueueMonitor implements A2PService, QueueTimeoutInterface {
 
 
 	public boolean stopService() {
-		if (isEnableSysMgt||canHandover) {
+		if (canHandover) {
 			beforeStop();
 		}
 		if (activeCoordinator != null) {

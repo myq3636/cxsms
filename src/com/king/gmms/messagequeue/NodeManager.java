@@ -76,7 +76,6 @@ public class NodeManager extends CustomerMessageQueue implements Observer {
 	private NodeStrategy submitNodeStrategy = null;
 	private NodeStrategy drNodeStrategy = null;
 	private NodeStrategy respNodeStrategy = null;
-	protected boolean isEnableSysMgt = false;
 	private Object mutex = new Object();
 	private MultiNodeCustomerInfo customerInfo = null;
 	private GmmsUtility gmmsUtility = null;
@@ -102,7 +101,6 @@ public class NodeManager extends CustomerMessageQueue implements Observer {
 			if(log.isDebugEnabled()){
 				log.debug("nodeManager init begin, ssid: {}", ssid);
 			}
-			isEnableSysMgt = GmmsUtility.getInstance().isSystemManageEnable();
 			Map<String, NodeInfo> tempNodeMap = customerInfo.getNodeMap();
 			if(log.isTraceEnabled()){
 				log.trace("nodes size: {}", tempNodeMap.size());
@@ -423,21 +421,7 @@ public class NodeManager extends CustomerMessageQueue implements Observer {
 				submitNodeStrategy = createNodeStrategy(submitStrategyType,
 						true);
 			}
-			if (isEnableSysMgt) {
-				TransactionURI transaction = msg.getTransaction();
-				if (transaction != null) {
-					String connection = transaction.getConnectionName();
-					if(connection != null && connetion2NodeMap.containsKey(connection)){
-						node = connetion2NodeMap.get(connection);
-					}else{
-						node = submitNodeStrategy.execute(msg);
-					}
-				}else{
-					node = submitNodeStrategy.execute(msg);
-				}
-			}else{
-				node = submitNodeStrategy.execute(msg);
-			}
+			node = submitNodeStrategy.execute(msg);
 			if (node != null)
 				return (Node) node;
 		} else if (GmmsMessage.MSG_TYPE_SUBMIT_RESP.equalsIgnoreCase(msg
@@ -458,21 +442,7 @@ public class NodeManager extends CustomerMessageQueue implements Observer {
 			if (null == drNodeStrategy) {
 				drNodeStrategy = createNodeStrategy(drStrategyType, false);
 			}
-			if (isEnableSysMgt) {
-				TransactionURI transaction = msg.getTransaction();
-				if (transaction != null) {
-					String connection = transaction.getConnectionName();
-					if(connection != null && connetion2NodeMap.containsKey(connection)){
-						node = connetion2NodeMap.get(connection);
-					}else{
-						node = drNodeStrategy.execute(msg);
-					}
-				}else{
-					node = drNodeStrategy.execute(msg);
-				}
-			}else{
-				node = drNodeStrategy.execute(msg);
-			}
+			node = drNodeStrategy.execute(msg);
 			if (node != null)
 				return (Node) node;
 		} else if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT_QUERY
@@ -480,21 +450,7 @@ public class NodeManager extends CustomerMessageQueue implements Observer {
 			if (null == drNodeStrategy) {
 				drNodeStrategy = createNodeStrategy(drStrategyType, false);
 			}
-			if (isEnableSysMgt) {
-				TransactionURI transaction = msg.getTransaction();
-				if (transaction != null) {
-					String connection = transaction.getConnectionName();
-					if(connection != null && connetion2NodeMap.containsKey(connection)){
-						node = connetion2NodeMap.get(connection);
-					}else{
-						node = drNodeStrategy.execute(msg);
-					}
-				}else{
-					node = drNodeStrategy.execute(msg);
-				}
-			}else{
-				node = drNodeStrategy.execute(msg);
-			}
+			node = drNodeStrategy.execute(msg);
 			if (node != null)
 				return (Node) node;
 		} else {

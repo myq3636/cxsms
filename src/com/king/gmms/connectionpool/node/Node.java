@@ -46,7 +46,6 @@ public class Node {
     private boolean isServer;
     private NodeInfo nodeInfo;
     private Map connectionMap ;
-	protected boolean isEnableSysMgt = false;
 
 
 	public void init(MultiNodeCustomerInfo cInfo, NodeConnectionManagerInterface ncm) {
@@ -64,56 +63,19 @@ public class Node {
         drStrategy.setConnectionMap(connectionMap);
         String responsePolicy = cInfo.getResponseConnectionPolicy();
         responseStrategy = getStrategy(responsePolicy, nodeConnectionManager, null);
-		isEnableSysMgt = GmmsUtility.getInstance().isSystemManageEnable();
     }
     
     public Session getSession(GmmsMessage msg){
     	Session session = null;
         if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(msg.getMessageType())||
                 GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(msg.getMessageType())) {
-            if (isEnableSysMgt) {
-				TransactionURI transaction = msg.getTransaction();
-				if (transaction != null) {
-					session = sameSessionStrategy.execute(msg);
-					if (session == null) {
-						session = newMsgStrategy.execute(msg);
-					}
-				} else {
-					session = newMsgStrategy.execute(msg);
-				}
-			} else {
-				session = newMsgStrategy.execute(msg);
-			}
+			session = newMsgStrategy.execute(msg);
         }
         else if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(msg.getMessageType())) {
-			if (isEnableSysMgt) {
-				TransactionURI transaction = msg.getTransaction();
-				if (transaction != null) {
-					session = sameSessionStrategy.execute(msg);
-					if (session == null) {
-						session = drStrategy.execute(msg);
-					}
-				} else {
-					session = drStrategy.execute(msg);
-				}
-			} else {
-				session = drStrategy.execute(msg);
-			}
+			session = drStrategy.execute(msg);
         }
         else if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT_QUERY.equalsIgnoreCase(msg.getMessageType())) {
-			if (isEnableSysMgt) {
-				TransactionURI transaction = msg.getTransaction();
-				if (transaction != null) {
-					session = sameSessionStrategy.execute(msg);
-					if (session == null) {
-						session = drStrategy.execute(msg);
-					}
-				} else {
-					session = drStrategy.execute(msg);
-				}
-			} else {
-				session = drStrategy.execute(msg);
-			}
+			session = drStrategy.execute(msg);
         }
         else if (GmmsMessage.MSG_TYPE_SUBMIT_RESP.equalsIgnoreCase(msg.getMessageType()) ||
                  GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP.equalsIgnoreCase(msg.getMessageType()) ||

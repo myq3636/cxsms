@@ -130,7 +130,7 @@ public class CommonHttpClientFactory extends ShortConnectionFactory {
                  	String module = System.getProperty("module");
                     String drModule = gmmsUtility.getCommonProperty("SMSQueryDRHttpModule", "CommonHttpClient");                                  	
                  	if("SouthDR".equalsIgnoreCase(queryMsgFlag)){ 
-                 		if(!gmmsUtility.isSystemManageEnable()&&!module.equalsIgnoreCase(drModule)){
+                 		if(!module.equalsIgnoreCase(drModule)){
                  			continue;
                  		}
                  		queryMsgThread[0] = new QueryHttpMessageThread(ci);

@@ -16,7 +16,6 @@ import com.king.framework.SystemLogger;
 import com.king.gmms.Constant;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.connectionpool.session.Session;
-import com.king.gmms.connectionpool.systemmanagement.ConnectionManagementForCore;
 import com.king.gmms.customerconnectionfactory.InternalCoreEngineConnectionFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PCustomerManager;
@@ -43,10 +42,7 @@ public class MessageProcessorThread extends RunnableMsgTask{
 	private MessageProcessor processor = null;
 	private DBBackupHandler dbHandler = null;
 	private MessageStoreManager msm = null;
-	private boolean isEnableMgt = false;
-	private List<String> persistentProtocols = null;
 	private ModuleManager moduleManager = null;
-	private ConnectionManagementForCore connectionManager = null;
 	private String moduleName = null;
 
 	public MessageProcessorThread(GmmsMessage msg) {
@@ -57,11 +53,6 @@ public class MessageProcessorThread extends RunnableMsgTask{
 		processor = new MessageProcessor();
 		dbHandler = DBBackupHandler.getInstance();
 		msm = gmmsUtility.getMessageStoreManager();
-		isEnableMgt = gmmsUtility.isSystemManageEnable();
-		if (isEnableMgt) {
-			connectionManager = ConnectionManagementForCore.getInstance();
-			persistentProtocols = connectionManager.getPersistentConnProtocol();
-		}
 		moduleManager = ModuleManager.getInstance();
 		moduleName =  System.getProperty("module");
 	}
@@ -414,18 +405,6 @@ public class MessageProcessorThread extends RunnableMsgTask{
 	 * @param server
 	 * @return
 	 */
-	private boolean isSupportMgt(A2PCustomerInfo server) {
-		if (server == null || server.getProtocol() == null) {
-			return false;
-		}
-		String protocol = server.getProtocol().toLowerCase();
-		if (isEnableMgt && persistentProtocols != null
-				&& persistentProtocols.contains(protocol)) {
-			return true;
-		}
-		return false;
-	}
-
 	private void transactNewMessage(GmmsMessage message) {
 
 		A2PCustomerInfo server = ctm.getCustomerBySSID(message.getRSsID());
@@ -878,26 +857,7 @@ public class MessageProcessorThread extends RunnableMsgTask{
 
 			String moduleName = null;
 			TransactionURI transaction = null;
-			if (isSupportMgt(server)) {
-				Session session = connectionManager.getSession(message, message
-						.getOSsID(), queue);
-				if (session != null) {
-					transaction = session.getTransactionURI();
-					moduleName = transaction.getModule().getModule();
-				} else if(!isInit(server)){//chlInit=no
-					moduleName = moduleManager.selectChannel(queue);
-					if (log.isDebugEnabled()) {
-						log.debug(message, "Can not find customer session to send DR, isInit=false, try random function module");
-					}
-				} else {
-					if(log.isDebugEnabled()){
-						log.debug(message,
-							"Can not find customer session to send message");
-					}
-				}
-			} else {
-				moduleName = moduleManager.selectChannel(queue);
-			}
+			moduleName = moduleManager.selectChannel(queue);
 
 			if (moduleName == null) {
 				// normal for HTTP customers and stream delivery: the DR goes to the stream below
@@ -1041,23 +1001,7 @@ public class MessageProcessorThread extends RunnableMsgTask{
 
 		String moduleName = null;
 		TransactionURI transaction = null;
-		if (isSupportMgt(server)) {
-			Session session = connectionManager.getSession(message, message
-					.getRSsID(), queue);
-			if (session != null) {
-				transaction = session.getTransactionURI();
-				moduleName = transaction.getModule().getModule();
-			} else if(!isInit(server)){//chlInit=no
-				moduleName = moduleManager.selectChannel(queue);
-			} else {
-				if(log.isInfoEnabled()){
-					log.info(message,
-						"Can not find customer session to send message");
-				}
-			}
-		} else {
-			moduleName = moduleManager.selectChannel(queue);
-		}
+		moduleName = moduleManager.selectChannel(queue);
 
 		if (moduleName == null) {
 			message

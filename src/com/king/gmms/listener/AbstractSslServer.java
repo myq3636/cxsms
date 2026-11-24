@@ -8,11 +8,6 @@ import com.king.framework.A2PService;
 import com.king.framework.A2PThreadGroup;
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.connectionpool.systemmanagement.ConnectionManagementForFunction;
-import com.king.gmms.ha.systemmanagement.SystemListener;
-import com.king.gmms.ha.systemmanagement.SystemSession;
-import com.king.gmms.ha.systemmanagement.SystemSessionFactory;
-import com.king.gmms.throttle.ReportInMsgCountTimer;
 
 public abstract class AbstractSslServer implements A2PService, Runnable {
 	private static SystemLogger log = SystemLogger
@@ -22,15 +17,10 @@ public abstract class AbstractSslServer implements A2PService, Runnable {
 	protected String module;
 	protected ServerSocket server = null;
 	protected InternalAgentListener agentListener = null;
-	protected SystemListener systemListener = null;
 	protected ServerSocket serverSocket;// Init in run
 	protected Thread serverThread;
 	protected int port; // smpp server listener port
-	protected SystemSession systemSession = null; // system client
-	protected SystemSessionFactory sysFactory = null;
-	protected boolean isEnableSysMgt = false;
     protected boolean canHandover = false;
-	protected ReportInMsgCountTimer reportInMsgCountTimer = null;
 
 
 	public AbstractSslServer() {
@@ -39,7 +29,6 @@ public abstract class AbstractSslServer implements A2PService, Runnable {
 		agentListener = InternalAgentListener.getInstance();
 		module = System.getProperty("module");
 		port = Integer.parseInt(gmmsUtility.getModuleProperty("Port").trim());
-		isEnableSysMgt = gmmsUtility.isSystemManageEnable();
 		canHandover = gmmsUtility.isDBHandover();
 		
 	}

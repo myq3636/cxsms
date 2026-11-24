@@ -14,7 +14,6 @@ import com.king.framework.A2PThreadGroup;
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.ha.ModuleStatusReporter;
-import com.king.gmms.ha.systemmanagement.pdu.ModuleRegisterAck;
 
 public abstract class AbstractServer implements A2PService, Runnable {
 	private static SystemLogger log = SystemLogger

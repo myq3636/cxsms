@@ -9,7 +9,6 @@ import java.util.concurrent.ExecutorService;
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.connectionpool.session.Session;
-import com.king.gmms.connectionpool.systemmanagement.ConnectionManagementForCore;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PCustomerManager;
 import com.king.gmms.processor.MessageProcessorThread;
@@ -62,16 +61,6 @@ public class CorePrioritrySender implements Runnable{
 				continue;
 			}
 			Map<Integer,Integer> priorityMap = cst.getPriorityPercentMap();
-			if(cst.isNeedCheckSession()){
-				ConnectionManagementForCore connectionManager = ConnectionManagementForCore.getInstance();
-				String queue = cst.getChlQueue();
-				GmmsMessage msg = new GmmsMessage();
-				msg.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT);
-				Session session = connectionManager.getSession(msg, ssid, queue);
-				if(session == null){
-					continue;
-				}
-			}
 			
 			int outgoingThrottleNum = cst.getCoreProcessorThrottlingNum();
 			// locals, not fields: the same instance may run in several pool threads

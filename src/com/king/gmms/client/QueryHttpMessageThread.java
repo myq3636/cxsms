@@ -16,12 +16,6 @@ import com.king.gmms.connectionpool.session.WebServiceSession;
 import com.king.gmms.customerconnectionfactory.CommonHttpClientFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.http.HttpConstants;
-import com.king.gmms.ha.systemmanagement.SystemSession;
-import com.king.gmms.ha.systemmanagement.SystemSessionFactory;
-import com.king.gmms.ha.systemmanagement.pdu.ConnectionHttpConfirm;
-import com.king.gmms.ha.systemmanagement.pdu.QueryHttpAck;
-import com.king.gmms.ha.systemmanagement.pdu.QueryHttpRequest;
-import com.king.gmms.ha.systemmanagement.pdu.SystemPdu;
 import com.king.message.gmms.GmmsMessage;
 
 public class QueryHttpMessageThread extends Thread {
@@ -35,13 +29,9 @@ public class QueryHttpMessageThread extends Thread {
 	private int queryInterval = 60*1000;
 	private Object sync = new Object();
 
-	private Map<String, SystemPdu> bufferMap = null;
-	private Map<String, String> queryFlagMap = null;
 	private boolean isWs = false;
 	private boolean isMo = false;
 	private boolean isDr = false;
-	private SystemSessionFactory sysFactory;
-	private SystemSession systemSession;
 	private CommonHttpClientFactory commHttpClientFactory;
     private String queryFlag = "";
 	public boolean isWs() {
@@ -81,22 +71,12 @@ public class QueryHttpMessageThread extends Thread {
 		while (running) {
 			try {
 				Thread.sleep(queryInterval);
-				//whether system support HA Model;
-				boolean isEnableSysMgt = false;
-				boolean isqueryFlag = false;
+				boolean isqueryFlag = true;
 				String queryMinIDKey = ci.getShortName()+"_"+queryFlag;
-				if(GmmsUtility.getInstance().isSystemManageEnable()){
-					if(applyHttpQueryFlag()){
-						isEnableSysMgt = true;
-						isqueryFlag = true;
-					}
-				}else{
-					isqueryFlag = true;
-					String minID = readFile(queryMinIDKey);
-					if(minID!=null){
-						this.commHttpClientFactory.setQueryMinID(queryMinIDKey, minID);
-					}
-					
+				// the query position of this host (ha/{shortName}_{flag})
+				String minID = readFile(queryMinIDKey);
+				if(minID!=null){
+					this.commHttpClientFactory.setQueryMinID(queryMinIDKey, minID);
 				}
 				if (isqueryFlag) {
 					if (isWs) {
@@ -118,9 +98,7 @@ public class QueryHttpMessageThread extends Thread {
 							((CommonHttpSession) session).queryMessage(msg);
 						}
 					}
-					if(isEnableSysMgt){
-						this.connectionHttpConfirm();
-					}else if(this.commHttpClientFactory.getQueryMinID().get(queryMinIDKey)!=null){
+					if(this.commHttpClientFactory.getQueryMinID().get(queryMinIDKey)!=null){
 						writeFile(queryMinIDKey,this.commHttpClientFactory.getQueryMinID().get(queryMinIDKey));
 					}					
 				}
@@ -150,11 +128,7 @@ public class QueryHttpMessageThread extends Thread {
 			queryInterval = 60*1000;
 		}
 		running = true;
-		sysFactory = SystemSessionFactory.getInstance();
-		systemSession = sysFactory.getSystemSessionForFunction();
 		commHttpClientFactory = CommonHttpClientFactory.getInstance();
-		bufferMap = new ConcurrentHashMap<String, SystemPdu>();
-		queryFlagMap = new ConcurrentHashMap<String, String>();
 		
 	}
 
@@ -170,38 +144,6 @@ public class QueryHttpMessageThread extends Thread {
 		}
 	}
 
-	private boolean applyHttpQueryFlag() {		
-		QueryHttpRequest qhr = new QueryHttpRequest();
-		qhr.setQueryMethod(queryFlag);
-		qhr.setSsid(this.ci.getSSID());	
-		QueryHttpAck qha = (QueryHttpAck)systemSession.queryFlag(qhr);		
-		if (qha != null) {	
-			String value = qha.getValue();
-			if (value == null || value.contains("false")) {
-				return false;
-			} else if (value.contains("true")) {
-				String minID[] = value.split(":");
-				if (minID.length == 2) {
-					commHttpClientFactory.setQueryMinID(
-							ci.getShortName()+"_"+queryFlag, minID[1]);
-				}
-				return true;
-			}
-		}
-		return false;
-	}
-	private void connectionHttpConfirm(){
-		ConnectionHttpConfirm chc = new ConnectionHttpConfirm();	
-		chc.setQueryMethod(queryFlag);
-		chc.setSsid(this.ci.getSSID());
-		String value = "true:"+commHttpClientFactory.getQueryMinID().get(ci.getShortName()+"_"+queryFlag);
-		chc.setValue(value);
-		try {
-			this.systemSession.send(chc);
-		} catch (IOException e) {
-			log.error("send ConnectionHttpConfirm message error!");
-		}
-	}
 	
 	private String readFile(String path) {
 		String interffaceConfig = System.getProperty("a2p_home") + "ha/" + path;

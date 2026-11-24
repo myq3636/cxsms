@@ -9,9 +9,6 @@ import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PCustomerManager;
-import com.king.gmms.ha.systemmanagement.SystemSession;
-import com.king.gmms.ha.systemmanagement.SystemSessionFactory;
-import com.king.gmms.ha.systemmanagement.pdu.ApplyInThrottleQuota;
 
 /**
  * <p>
@@ -34,7 +31,6 @@ public class ThrottlingControl {
 	private static SystemLogger log = SystemLogger.getSystemLogger(ThrottlingControl.class);
 	private AtomicInteger moduleIncomingMsgCount = new AtomicInteger();
 	
-	private boolean isEnableSysMgt = false;
     private boolean canHandover = false;
 	private GmmsUtility gmmsUtility = GmmsUtility.getInstance();;
 	private A2PCustomerManager custManager = null;
@@ -61,7 +57,6 @@ public class ThrottlingControl {
 		
 		expireInThottleQuotaMap = new ConcurrentHashMap<Integer, Long>();
 		
-		isEnableSysMgt = gmmsUtility.isSystemManageEnable();
 		canHandover = gmmsUtility.isDBHandover();
 		custManager = gmmsUtility.getCustomerManager();
 	}
@@ -106,27 +101,6 @@ public class ThrottlingControl {
 			if (currentCount != null && currentCount > throttlingNum) {
 				A2PCustomerInfo cust = server;
 				// apply quota
-				if ((canHandover || isEnableSysMgt) && cust.isApplyInThrottleFlag()) {
-					// set flag, avoid apply msg flood
-					cust.setApplyInThrottleFlag(false);
-					
-					int currentThrottlingNum = currentCount.intValue();
-					int maxThrottlingNum = gmmsUtility.getMaxCustIncomingThresholdMagnification() * cust.getConfigedIncomingThrottlingNum();
-					int sysIncomingThreshold = gmmsUtility.getSystemIncomingThreshold();
-					if (currentThrottlingNum < sysIncomingThreshold && currentThrottlingNum < maxThrottlingNum) {
-						try {
-							boolean isSucessSend = applyInThrottleQuata(ssid);
-							if (!isSucessSend) {
-								// reset flag, enable to re-apply if exception
-								cust.setApplyInThrottleFlag(true);
-							}
-						} catch(Exception e) {
-							log.warn(e, e);
-							// reset flag, enable to re-apply if exception
-							cust.setApplyInThrottleFlag(true);
-						}
-					}
-				}
 				
 				
 				return false;
@@ -141,22 +115,6 @@ public class ThrottlingControl {
 		return true;
 	}
 	
-	/**
-	 * customer apply incoming throttling quota
-	 * </p> from protocol module to SYS
-	 * @param cust
-	 * @param currentThrottlingNum
-	 * @throws IOException 
-	 */
-	private boolean applyInThrottleQuata(int ssid) throws IOException {
-		SystemSession systemSession = SystemSessionFactory.getInstance().getSystemSessionForFunction();
-		if(systemSession == null){
-			return false;
-		}
-		ApplyInThrottleQuota message = new ApplyInThrottleQuota();
-		message.setSsid(ssid);
-		return systemSession.send(message);
-	}
 
 	public boolean isAllowedToSend(int ssid) {
 		try {

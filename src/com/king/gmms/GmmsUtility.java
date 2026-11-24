@@ -85,7 +85,6 @@ public class GmmsUtility {
 	private volatile int maxSilentTime;
 	private volatile int cdrMaxTime;
 	private volatile int cdrMaxSize;
-	private boolean isSystemManageEnable = false;
 
 	private String blackListFile = null;
 	private String whiteListFile = null;
@@ -296,18 +295,17 @@ public class GmmsUtility {
 		controlSubscriberThread.setDaemon(true);
 		controlSubscriberThread.start();
 		log.info("RedisControlSubscriber thread started.");
-		// DB HA Phase 1: SystemManager 关闭(默认)时由 DbSwitchListener 处理 SWITCH_DB 控制命令(否则无人处理)；
-		// SystemManager 开启时由其自身监听处理同一事件，此处不重复注册。
+		// SWITCH_DB and SWITCH_REDIS of the control channel (mgt, DbHealthDetector): every module switches itself
 		try {
-			if (!isSystemManageEnable() && getLifecycleSupport() != null) {
+			if (getLifecycleSupport() != null) {
 				getLifecycleSupport().addListener(
 						com.king.framework.lifecycle.event.Event.TYPE_SWITCHDB,
 						new com.king.gmms.ha.DbSwitchListener(), 1);
-				log.info("DbSwitchListener registered for SWITCH_DB (SystemManager disabled).");
+				log.info("DbSwitchListener registered for SWITCH_DB.");
 				getLifecycleSupport().addListener(
 						com.king.framework.lifecycle.event.Event.TYPE_SWITCHREDIS,
 						new com.king.gmms.ha.RedisSwitchListener(), 1);
-				log.info("RedisSwitchListener registered for SWITCH_REDIS (SystemManager disabled).");
+				log.info("RedisSwitchListener registered for SWITCH_REDIS.");
 			}
 		} catch (Exception e) {
 			log.error("Failed to register DbSwitchListener", e);
@@ -610,12 +608,6 @@ public class GmmsUtility {
 					.getProperty("StoreDRModeEnable", "False");
 			if ("True".equalsIgnoreCase(storeDRMode)) {
 				storeDRModeEnable = true;
-			}
-			
-			String isSystemManageEnableString = props.getProperty(
-					"SystemManager.enable", "False");
-			if (isSystemManageEnableString.equalsIgnoreCase("True")) {
-				isSystemManageEnable = true;
 			}
 			
 			blackholeSsid = Integer.parseInt(props.getProperty(
@@ -2289,10 +2281,6 @@ public class GmmsUtility {
 
 	public int getEnquireLinkResponseTiem() {
 		return enquireLinkResponseTime;
-	}
-
-	public boolean isSystemManageEnable() {
-		return isSystemManageEnable;
 	}
 
 	public ModuleManager getModuleManager() {

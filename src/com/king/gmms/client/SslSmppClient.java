@@ -4,7 +4,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.king.framework.SystemLogger;
-import com.king.gmms.connectionpool.systemmanagement.ConnectionManagementForFunction;
 import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.customerconnectionfactory.SslSmppClientFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
@@ -12,7 +11,6 @@ import com.king.gmms.domain.A2PMultiConnectionInfo;
 import com.king.gmms.domain.A2PSingleConnectionInfo;
 import com.king.gmms.domain.ModuleManager;
 import com.king.gmms.routing.ADSServerMonitor;
-import com.king.gmms.throttle.ReportInMsgCountTimer;
 import com.king.message.gmms.GmmsMessage;
 
 public class SslSmppClient extends AbstractClient {
@@ -20,7 +18,6 @@ public class SslSmppClient extends AbstractClient {
 			.getSystemLogger(SslSmppClient.class);
 	private final String PROTOCOL_NAME = "SSLSMPP";
 	private SslSmppClientFactory customerFactory = null;
-	private ReportInMsgCountTimer reportInMsgCountTimer = null;
 
 	public SslSmppClient() {
 		customerFactory = SslSmppClientFactory.getInstance();

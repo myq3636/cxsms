@@ -56,8 +56,6 @@ import com.king.gmms.GmmsUtility;
 import com.king.gmms.RetryPolicyInfo;
 import com.king.gmms.RetryPolicyManager;
 import com.king.gmms.WhiteList;
-import com.king.gmms.connectionpool.systemmanagement.ConnectionManagementForCore;
-import com.king.gmms.connectionpool.systemmanagement.ConnectionManagementForMGT;
 import com.king.gmms.customerconnectionfactory.AcceletClientFactory;
 import com.king.gmms.customerconnectionfactory.ClickatellClientFactory;
 import com.king.gmms.customerconnectionfactory.CommonHttpClientFactory;
@@ -2279,48 +2277,6 @@ public class A2PCustomerManager implements LifecycleListener {
 		return changes.failed.isEmpty() ? 0 : 1;
 	}
 
-	/**
-	 * clear for ConnectionManagement
-	 */
-	private void clearConnectionManagement(int ssid) {
-		// the connection management serves SystemManager only: without it (stream mode) a first call built it for
-		// every SMPP customer (a NodeManager and its pool for each multi-node one) and dropped it again
-		if (!GmmsUtility.getInstance().isSystemManageEnable()) {
-			return;
-		}
-		ArrayList<Integer> ssids = new ArrayList<Integer>();
-		ssids.add(ssid);
-		String module = System.getProperty("module");
-		String moduleType = ModuleManager.getInstance().getFullModuleType(
-				module);
-		if (SystemConstants.ROUTER_MODULE_TYPE.equalsIgnoreCase(moduleType)) {
-			ConnectionManagementForCore.getInstance().clearConnection(ssids);
-		} else if (SystemConstants.MGT_MODULE_TYPE.equalsIgnoreCase(moduleType)) {
-			ConnectionManagementForMGT.getInstance().clearConnection(ssids);
-		}
-	}
-
-	/**
-	 * init for ConnectionManagement
-	 */
-	private void reloadConnectionManagement(int ssid) {
-		// the connection management serves SystemManager only: without it (stream mode) a first call built it for
-		// every SMPP customer (a NodeManager and its pool for each multi-node one) and dropped it again
-		if (!GmmsUtility.getInstance().isSystemManageEnable()) {
-			return;
-		}
-		ArrayList<Integer> ssids = new ArrayList<Integer>();
-		ssids.add(ssid);
-		String module = System.getProperty("module");
-		String moduleType = ModuleManager.getInstance().getFullModuleType(
-				module);
-		if (SystemConstants.ROUTER_MODULE_TYPE.equalsIgnoreCase(moduleType)) {
-			ConnectionManagementForCore.getInstance().initConnection(ssids);
-		} else if (SystemConstants.MGT_MODULE_TYPE.equalsIgnoreCase(moduleType)) {
-			ConnectionManagementForMGT.getInstance().initConnection(ssids);
-		}
-	}
-
 	/** A built snapshot plus the customers that differ from the previous one. */
 	private static final class CustomerChanges {
 		final CustomerSnapshot snapshot;
@@ -2499,7 +2455,6 @@ public class A2PCustomerManager implements LifecycleListener {
 					log.error("clear throttling/duplicate cache error, ssid={}", oldSsid, e);
 				}
 				try {
-					clearConnectionManagement(oldSsid);
 				} catch (Exception e) {
 					log.error("clear connection management error, ssid={}", oldSsid, e);
 				}
@@ -2533,7 +2488,6 @@ public class A2PCustomerManager implements LifecycleListener {
 				}
 				try {
 					initConnectionMap(newCust);
-					reloadConnectionManagement(ssid);
 					createCustomerSessions(newCust);
 				} catch (Exception e) {
 					log.error("init customer sessions error, ssid={}", ssid, e);
