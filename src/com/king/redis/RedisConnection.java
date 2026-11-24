@@ -452,40 +452,6 @@ public class RedisConnection {
 		}
 	}
 
-	public boolean setDelayDR(String key, String value, int expireTime,
-			double score, int ossid) {
-		try (Jedis jedis = pool.getResource()) {
-			Pipeline p = jedis.pipelined();
-			Response<String> resp = p.setex(key, (long) expireTime, value);
-			p.zadd("delayDR_" + ossid, score, key);
-			p.sadd("delayDR", "delayDR_" + ossid);
-			p.sync();
-			String result = null;
-			if (resp != null) {
-				result = resp.get();
-			}
-			if (!("OK".equalsIgnoreCase(result))) {
-				Pipeline rollback = jedis.pipelined();
-				rollback.del(key);
-				rollback.zrem("delayDR", key);
-				rollback.sync();
-				return false;
-			}
-			return true;
-		} catch (Exception e) {
-			logger.error("setDelayDR failed. key={}", key, e);
-			try (Jedis cleanupJedis = pool.getResource()) {
-				Pipeline p = cleanupJedis.pipelined();
-				p.del(key);
-				p.zrem("delayDR", key);
-				p.sync();
-			} catch (Exception ex) {
-				logger.error("setDelayDR cleanup failed. key={}", key, ex);
-			}
-			return false;
-		}
-	}
-
 	public static class RedisTask {
 		public enum Type {
 			LPUSH, HINCRBY

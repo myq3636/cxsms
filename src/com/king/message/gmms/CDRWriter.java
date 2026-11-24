@@ -171,11 +171,12 @@ public class CDRWriter {
 
 	private synchronized void swichFile() {
 		if (System.currentTimeMillis() - lastFileTime >= maxFileTime()) {
-			log.debug("CDRWriter up to file max time");
+			// nothing written in this period: the file stays, nothing logged (it was a DEBUG line every period)
 			if (!isOpen || (currentFileSize == 0)) {
 				lastFileTime = System.currentTimeMillis();
 				return;
 			}
+			log.info("CDR file switched by time: {} ({} chars)", currentFile == null ? null : currentFile.getName(), currentFileSize);
 			newLog();
 		}
 	}

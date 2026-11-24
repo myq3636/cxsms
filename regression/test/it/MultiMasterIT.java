@@ -75,6 +75,34 @@ public class MultiMasterIT extends ItSupport {
 					&& RedisClient.instanceOf("stream:dr:pending:8891:" + S + ":1", 2) == 1 && RedisClient.instanceOf("stream:core:hold:81", 2) == 0
 					&& RedisClient.instanceOf("stream:mt:routed:81:1", 1) == 0,
 					"MM-00b a sharded stream on master shard % masters, a hold stream on master 0, one master: always 0");
+			// MM-00c the parts of a long message wait on the submit master of their group, not on the state Redis
+			{
+				com.king.gmms.processor.RedisCsmReassembler csm = com.king.gmms.processor.RedisCsmReassembler.getInstance();
+				Jedis[] submit = { jedis, s2 };
+				boolean[] seen = new boolean[2];
+				boolean placed = true;
+				for (int ref = 1; ref <= 40 && !(seen[0] && seen[1]); ref++) {
+					com.king.message.gmms.GmmsMessage seg = new com.king.message.gmms.GmmsMessage();
+					seg.setOSsID(8891);
+					seg.setSenderAddress("MMCSM");
+					seg.setRecipientAddress("8613900000001");
+					seg.setSarMsgRefNum(String.valueOf(ref));
+					seg.setSarTotalSegments(2);
+					seg.setSarSegmentSeqNum(1);
+					seg.setMsgID("MMCSM" + ref);
+					seg.setMessageType(com.king.message.gmms.GmmsMessage.MSG_TYPE_SUBMIT);
+					String key = csm.buildKey(seg);
+					int at = com.king.gmms.messagequeue.ShardHash.of(key, 2);
+					boolean stored = csm.storeSegment(seg, "MM-00c").isIncomplete();
+					placed &= stored && submit[at].exists(key) && submit[at].zscore("csm:index", key) != null
+							&& !submit[1 - at].exists(key);
+					seen[at] = true;
+					csm.complete(seg);
+					placed &= !submit[at].exists(key) && submit[at].zscore("csm:index", key) == null;
+				}
+				check(placed && seen[0] && seen[1], "MM-00c long message parts on the submit master of their group (both masters used), "
+						+ "with its csm:index there; finished: gone");
+			}
 
 			PathChainIT.nodes.clear();
 			PathChainIT.launch(C, "core");

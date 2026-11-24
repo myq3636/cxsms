@@ -103,7 +103,6 @@ public class GmmsUtility {
 
 	private volatile int cacheMsgTimeout = 180000;
 	private volatile int csmIntegrityCacheTimeout = 3600000; // 1 hour
-	private volatile int csmIntegrityCacheCapacity = 100000;
 	private volatile int enquireLinkResponseTime = 100;	
 	private volatile int resendDRThrottle = 10000;	
 
@@ -600,8 +599,6 @@ public class GmmsUtility {
 					"CacheMessageTimeout", "180000").trim());
 			csmIntegrityCacheTimeout = Integer.parseInt(props.getProperty(
 					"CsmIntegrityCacheTimeout", "3600000").trim()); // 1 hour
-			csmIntegrityCacheCapacity = Integer.parseInt(props.getProperty(
-					"CsmIntegrityCacheCapacity", "100000").trim());
 			enquireLinkResponseTime = Integer.parseInt(props.getProperty(
 					"WaitingEnquireLinkResponseTime", "100"));
 			String storeDRMode = props
@@ -990,7 +987,6 @@ public class GmmsUtility {
 			else if ("MaxSilentTime".equals(key)) maxSilentTime = intProp(props, key, 60);
 			else if ("CacheMessageTimeout".equals(key)) cacheMsgTimeout = intProp(props, key, 180000);
 			else if ("CsmIntegrityCacheTimeout".equals(key)) csmIntegrityCacheTimeout = intProp(props, key, 3600000);
-			else if ("CsmIntegrityCacheCapacity".equals(key)) csmIntegrityCacheCapacity = intProp(props, key, 100000);
 			else if ("WaitingEnquireLinkResponseTime".equals(key)) enquireLinkResponseTime = intProp(props, key, 100);
 			else if ("StoreDRModeEnable".equals(key)) storeDRModeEnable = Boolean.parseBoolean(props.getProperty(key, "False").trim());
 			else if ("BlackholeSsid".equals(key)) blackholeSsid = intProp(props, key, -1);
@@ -1127,7 +1123,7 @@ public class GmmsUtility {
 		String[] keys = new String[] {
 			"InitPhoneLen", "MessageExpireTime", "ResendDRThrottle",
 			"Redis_MinIDExpireTime", "MessageFinalExpireTime", "DRInterval", "ConnectionSilentTime",
-			"MaxSilentTime", "CacheMessageTimeout", "CsmIntegrityCacheTimeout", "CsmIntegrityCacheCapacity",
+			"MaxSilentTime", "CacheMessageTimeout", "CsmIntegrityCacheTimeout",
 			"WaitingEnquireLinkResponseTime", "StoreDRModeEnable", "BlackholeSsid", "DNSTimeOut",
 			"MaxServiceTypeID", "Smpp.ServiceTypeIDTag", "MinMessageExpireTimeFromCust",
 			"MaxMessageExpireTimeFromCust", "CDRFileSwitchInterval", "CDRFileMaxSize",
@@ -1181,7 +1177,7 @@ public class GmmsUtility {
 			"CoreResultStreamSharded", "CoreDrResultIdempotency", "CoreStreamAttemptBatch", "CoreStreamAttemptBatchFlagsInMemory",
 			"CoreMTDispatchBatch",
 			"ThrottleInSyncIntervalMs",
-			"CoreDbFallbackInline", "CsmReassembleMode", "CoreCsmExpirySweep",
+			"CoreDbFallbackInline", "CoreCsmExpirySweep",
 			"CoreCsmExpiryIntervalSec", "CoreCsmExpiryBatch", "CoreCsmExpiryLeaseMs",
 			"ClientSendIdempotency", "ClientSendMarkerBatch", "ClientDispatchBatch", "ClientSendLeaseMs",
 			"EarlyDr.Enable", "EarlyDr.BatchSize",
@@ -1236,7 +1232,7 @@ public class GmmsUtility {
 	private boolean isStringRuntimeKey(String key) {
 		String[] keys = new String[] {
 			"Metrics.LogLevel", "Metrics.Format", "DB.StartupCheckSql", "ScreenedIPs", "LoopbackAddresses",
-			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress", "CsmReassembleMode",
+			"SMSOptionRecipitLenCheck", "mnpqueryurl", "DNSAddress",
 			"Skytel_Prefix", "Indigo_prefix", "APBW_CPID", "APBW_SID", "DescendingTime",
 			"MQM.ActivePriority", "SmppServerInboundQueueFullCommandStatus", "enquirelinktime", "DB.DrErrorCodeColumns", "DB.RoutingLevelColumn"
 		};
@@ -2256,14 +2252,6 @@ public class GmmsUtility {
 
 	public int getCsmIntegrityCacheTimeout() {
 		return csmIntegrityCacheTimeout;
-	}
-
-	public void setCsmIntegrityCacheCapacity(int csmIntegrityCacheCapacity) {
-		this.csmIntegrityCacheCapacity = csmIntegrityCacheCapacity;
-	}
-
-	public int getCsmIntegrityCacheCapacity() {
-		return csmIntegrityCacheCapacity;
 	}
 
 	public int assignUniqueNumber() {

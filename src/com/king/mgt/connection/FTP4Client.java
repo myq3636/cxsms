@@ -392,20 +392,5 @@ public class FTP4Client {
 		this.util = util;
 	}
 
-	public static void main(String[] args) {
-		FTP4Client c = null;
-		try {
-			c = new FTP4Client("192.168.23.117", 21, "root", "root");
-			c.connect();
-			c.download("/usr/local/a2p/conf/ModuleManagement.xml",
-					"D:", false);
-			// c.upload("D:\\gmd-mmvd.log", "/usr/local/gmd/conf/gmd-mmvd.log");
-			c.closeServer();
-			System.out.println("finish");
-		} catch (Exception ex) {
-			ex.printStackTrace();
-		}
-
-	}
 
 }

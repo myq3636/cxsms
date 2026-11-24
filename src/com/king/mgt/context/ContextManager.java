@@ -1,10 +1,8 @@
 package com.king.mgt.context;
 
 import java.util.Date;
-import java.util.HashMap;
 
 import com.king.framework.SystemLogger;
-import com.king.gmms.domain.ModuleManager;
 
 /**
  * <p>Title: </p>
@@ -27,8 +25,6 @@ public class ContextManager {
     private Date curUserLoginTime;
 
     private Module currentModule;
-    private static HashMap<Integer, Module> mapId2Module=new HashMap<Integer,Module>();
-    private static HashMap<String, Module> mapName2Module=new HashMap<String, Module>();
     public ContextManager(String userName, String ip) {
         this.curUser=userName;
         this.curUserIP=ip;
@@ -38,16 +34,6 @@ public class ContextManager {
     public ContextManager()
     {
         this.currentModule = rootModule();
-    }
-    public boolean change(String name)
-    {
-        // the module name starts with "_" are reserved.
-        if (name==null || name.startsWith("_")) return false;
-        Module module=ModuleManager.getInstance().getModuleByName(name);
-        if (module==null)
-            return false;
-        this.currentModule=module;
-        return true;
     }
     public Module getCurrentModule()
     {

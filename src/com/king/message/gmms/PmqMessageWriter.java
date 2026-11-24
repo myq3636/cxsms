@@ -434,7 +434,7 @@ public class PmqMessageWriter {
 	 */
 	private synchronized void swichFile() {
 		if (System.currentTimeMillis() - lastFileTime >= maxFileTime()) {
-			log.debug("PMQWriter up to file max time");
+			// nothing written in this period: nothing to switch, nothing logged
 			if (!isOpen || (currentFileSize == 0)) {
 				lastFileTime = System.currentTimeMillis();
 				return;

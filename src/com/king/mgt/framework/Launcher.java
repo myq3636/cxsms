@@ -30,15 +30,11 @@ public class Launcher {
     {
         UserInterfaceUtility util=UserInterfaceUtility.getInstance();
         util.init();
-        if(args.length >= 1 && args[0].equalsIgnoreCase("true")) {
-            util.setHa();
-        }
         initA2pRedis();
         util.initCoreUtilities();
 
         UserCommandListener cmdListener=new UserCommandListener();
         cmdListener.start();
-        util.initModuleManagerAsync();
         util.initConfigFilesAsync();
         
         Timer downloadPolicyFileTimer = new Timer("WhiteListFileTimer", true);
@@ -101,7 +97,7 @@ public class Launcher {
 		} catch (Exception e) {
 			recipientTimerIndex = 360;
 		}
-        if(contentTimerIndex>0){
+        if(recipientTimerIndex>0){
         	downloadRecipeintPolicyFileTimer.schedule(new RecipientListFileTask(), 1000, recipientTimerIndex*60*1000);
         }
     }

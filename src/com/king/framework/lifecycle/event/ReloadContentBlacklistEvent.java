@@ -1,6 +1,5 @@
 package com.king.framework.lifecycle.event;
 
-import com.king.framework.lifecycle.cmd.SystemCommand;
 
 /**
  * <p>Title: </p>
@@ -21,7 +20,4 @@ public class ReloadContentBlacklistEvent
         super(Event.TYPE_CONTENT_BLACKLIST_RELOAD);
     }
 
-    public boolean parseArgs(SystemCommand cmd) {
-        return true;
-    }
 }

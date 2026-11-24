@@ -144,7 +144,7 @@
 
 - 所有延迟回复的假 DR、超时 DR 都走 Core 侧的 `DelayedInDRDispatcher`（`zset:delay:outdr:{分片}`）；延迟为 0 时直接写 `stream:dr:pending:*`（HTTP 客户写 `stream:http:dr:*`）。
 - **不再依赖 MQM**：去掉 `AutoInDR.DirectStreamEnable`、`AutoInDR.FallbackToLegacyDelayDR` 两个开关，固定走 Core。
-- 旧的 Redis 延迟键（`DELAYDR_{inMsgId}` + `delayDR_{ossid}` ZSET + `delayDR` 集合）不再写入。升级后 Core 启动时由一个节点（加锁）把旧键里还没发的 DR 按剩余延迟搬进新 ZSET，再删掉旧键；MQM 的 `SendDelayRedisDRThread` 随之去掉。
+- 旧的 Redis 延迟键（`DELAYDR_{inMsgId}` + `delayDR_{ossid}` ZSET + `delayDR` 集合）不再写入。升级后 Core 启动时由一个节点（加锁）把旧键里还没发的 DR 按剩余延迟搬进新 ZSET，再删掉旧键；MQM 的 `SendDelayRedisDRThread` 随之去掉。（2026-11-24：这个迁移已删除，商用都是全新部署，没有旧键要搬。）
 
 ## 8. 去掉的旧逻辑和配置
 
@@ -213,7 +213,7 @@
 **新增：**
 - `processor/FakeDr`：方式 1～4 的判断和假 DR 生成（`onRouted`、`onOutSubmitOk`、`onVendorDr`、`rewriteRealDr`、`fakeStatus`）。
 - `processor/FakeDrTimeoutScheduler`：方式 4 的计时（第 5 节的三段 Lua：批量认领、到点、真实 DR 取消）。Core 启动时随 `DelayedInDRDispatcher` 一起启动，调优参数共用 `AutoInDR.DelayBatchSize`、`AutoInDR.DelayClaimTimeoutMs`、`AutoInDR.DispatcherIdleSleepMs`，不新增 GmmsConfig 配置。
-- `processor/LegacyDelayDrMigrator`：Core 启动时把旧 Redis 延迟键里没发的 DR 搬到 Core 的延迟发送（加锁，一个 Core 做）。
+- `processor/LegacyDelayDrMigrator`：Core 启动时把旧 Redis 延迟键里没发的 DR 搬到 Core 的延迟发送（加锁，一个 Core 做）。（2026-11-24 已删除。）
 
 **删除：** `AutoSendInDRProcessorThread`、MQM 的 `SendDelayRedisDRThread`、`MessageBase.setFakeDR` / `hasFakeSendDR`、`DirectInDRDispatchService.buildAutoInDR` / `isEnabled`、`MessageStoreManager` 的旧延迟键写入、`MessageProcessorThread` 的“外发前回”、各处旧的避让条件；GmmsConfig 的 `AutoInDR.DirectStreamEnable`、`AutoInDR.FallbackToLegacyDelayDR`（同时移出热加载白名单）。延迟 DR 发不出去时改为直接进 RDQ。
 

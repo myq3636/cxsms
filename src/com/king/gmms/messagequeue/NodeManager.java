@@ -18,7 +18,6 @@ import com.king.gmms.connectionpool.node.NodeStatus;
 import com.king.gmms.connectionpool.node.NodeType;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.ConnectionInfo;
-import com.king.gmms.domain.ModuleManager;
 import com.king.gmms.domain.MultiNodeCustomerInfo;
 import com.king.gmms.domain.NodeInfo;
 import com.king.gmms.ha.TransactionURI;
@@ -484,7 +483,6 @@ public class NodeManager extends CustomerMessageQueue implements Observer {
 
 	public void timeout(Object message) {
 		GmmsMessage msg = (GmmsMessage) message;
-		ModuleManager moduleManager = ModuleManager.getInstance();
 		String routerQueue = null;
         if(log.isInfoEnabled()){
         	log.info(msg,"{} is timeout in customer message queue",msg.getMessageType());
@@ -518,8 +516,6 @@ public class NodeManager extends CustomerMessageQueue implements Observer {
 			msg.setMessageType(GmmsMessage.MSG_TYPE_INNER_ACK);
 			TransactionURI innerTransaction = msg.getInnerTransaction();
 			routerQueue = innerTransaction.getConnectionName();
-		} else {
-			routerQueue = moduleManager.selectRouter(msg);
 		}
 		// the failure went back over the internal connection to Core, which stream mode does not have: Core's outbox
 		// times out an MT without a result (docs/流模式下系统管理和模块间连接代码清理分析.md 3.4)

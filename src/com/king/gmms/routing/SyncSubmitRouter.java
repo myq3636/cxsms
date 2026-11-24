@@ -177,7 +177,7 @@ public class SyncSubmitRouter {
     }
 
     /**
-     * 复刻 CsmProcessorThread 的 recipient 24h 上限检查。
+     * recipient 24h 上限检查（原 CsmProcessorThread 的规则）。
      * @return true=通过(继续外发)；false=超限已拒绝(handleOutSubmitResForInnack 已 durable，调用方 ACK)。
      */
     private boolean applyDuplicateCheck(GmmsMessage assembled) {

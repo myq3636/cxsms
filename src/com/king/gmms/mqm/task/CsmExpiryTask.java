@@ -16,8 +16,6 @@ import com.king.message.gmms.GmmsMessage;
  * {@code messageSenders} 后才收尾），两边可以同时运行。对仍未集齐的残段生成 EXPIRED/UNDELIVERABLE
  * 过期 DR 回客户（{@link CsmUtility#splitCsmDr} 逐段拆分，经 MQM report 流 → core 路由回客户）。
  *
- * <p>与旧 CSMQ {@code ExpiredMessageTask} 并存注册即可：legacy 模式下 {@code csm:index} 为空 → 本任务空转；
- * redis 模式下 CSMQ DB 为空 → 旧任务空转。互不干扰，无需配置开关。
  */
 public class CsmExpiryTask extends TaskTimer {
 

@@ -5,7 +5,6 @@ import java.util.Date;
 import com.king.framework.A2PService;
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.domain.ModuleConnectionInfo;
 import com.king.gmms.domain.ModuleManager;
 
 /**
@@ -26,7 +25,6 @@ public class HALauncher {
     protected static final String RESTART = "restart";
     protected static final String START = "start";
     protected A2PService service;
-    protected int port;
     protected String moduleName = null;
     protected ModuleManager moduleManager = null;
 
@@ -101,8 +99,6 @@ public class HALauncher {
                 System.out.println("Start service fail!");
                 return false;
             }
-            ModuleConnectionInfo moduleInfo = moduleManager.getConnectionInfo(moduleName);
-            port = resolveCmdPort(moduleInfo);
             service = (A2PService) Class.forName(className).newInstance();
             com.king.framework.GracefulStop.setService(service);
             if (service.startService()) {
@@ -136,16 +132,4 @@ public class HALauncher {
         return true;
     }
 
-    private int resolveCmdPort(ModuleConnectionInfo moduleInfo) {
-        if (moduleInfo != null && moduleInfo.getCmdPort() > 0) {
-            return moduleInfo.getCmdPort();
-        }
-        String value = GmmsUtility.getInstance().getCommonProperty(moduleName + ".CmdPort",
-                GmmsUtility.getInstance().getCommonProperty("Module.CmdPort", "-1"));
-        try {
-            return value == null ? -1 : Integer.parseInt(value.trim());
-        } catch (Exception e) {
-            return -1;
-        }
-    }
 }

@@ -1,9 +1,6 @@
 package com.king.mgt.cmd.user;
 
 import com.king.framework.SystemLogger;
-import com.king.mgt.cmd.system.SystemCommand;
-import com.king.mgt.cmd.system.SystemCommandBlacklist;
-import com.king.mgt.cmd.system.SystemCommandWhitelist;
 import com.king.mgt.connection.FTP4Client;
 
 /**
@@ -62,22 +59,11 @@ public class UserCommandWhitelist extends UserCommand {
 			FTP4Client ftp = new FTP4Client();
 			return ftp.downloadConfigFile(keyword);
 		}
-		case TYPE_RELOAD: {
-			FTP4Client ftp = new FTP4Client();
-			ftp.downloadConfigFile(keyword);
-		}
-		case TYPE_ACTIVE: {
-			return processor.handleCommandActive();
-		}
 		default: {
 			log.error("Unknow command type: {}", type);
 		}
 		}
 		return rtnval;
-	}
-
-	public SystemCommand buildSystemCommand() {
-		return new SystemCommandWhitelist(this);
 	}
 
 }

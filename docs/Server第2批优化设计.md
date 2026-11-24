@@ -11,7 +11,7 @@
 | 收到 submit_sm（PDU） | `[RECV] ... cmd=submit_sm`（pduLogger） | 不变 |
 | 解码完成 | `[SUBMIT-IN] ssid session seq inMsgId sender recipient`（deliver_sm 为 `[DELIVER-IN]`） | `Smpp receive message :{整个消息}` → 改为 DEBUG |
 | 写入 Core 的 stream | `[STREAM-PUT] stream redisId`（stream 日志） | 不变 |
-| 已入 Core、回 resp | `[SUBMIT-TO-CORE] ssid session seq inMsgId redisId -> submit_sm_resp ESME_ROK` | `SUBMIT_SM accepted asynchronously` → 改写 |
+| 已入 Core、回 resp | `[SUBMIT-TO-CORE] ssid session seq inMsgId shard core redisId -> submit_sm_resp ESME_ROK`（shard 是写入的 `stream:mt:pending:{ssid}:{shard}` 分片；core 是负责这个分片的 Core，取自每 60 秒一次的分片检查，收到 `RELOAD_CORE_SHARDS` 后约 3 秒刷新，分片刚迁移时可能还是旧的，`none` 表示没有 Core 负责，`?` 表示还没检查过；实际处理的 Core 以 Core 日志 `[MT-TO-CLIENT] path=` 为准；redisId 是流条目 ID，不是分片） | `SUBMIT_SM accepted asynchronously` → 改写 |
 | 从 Core 读到 DR | `[STREAM-GET] ... msg={简短形式}` | 原来打印整个消息 → 改为简短形式，整个消息改为 DEBUG（Core、Client 的 STREAM-GET 也一样） |
 | DR 发给客户 | `[SEND] cmd=deliver_sm`（pduLogger）+ `[DR-OUT] ssid session seq status redisId` | `send dr, inTransID` → 改写；`resolved session` → 改为 DEBUG |
 | 收到 deliver_sm_resp | `[RECV] cmd=deliver_sm_resp`（pduLogger）+ `[DR-RESP] ssid seq pduStatus status` | `receives DELIVER_SM_RESP, sequence`（没有 msgId）→ 改为 DEBUG；`DeliverSM receivies response` → 改写 |

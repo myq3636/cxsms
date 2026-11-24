@@ -642,9 +642,13 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
                             response.setCommandStatus(com.king.gmms.protocol.smpp.util.Data.ESME_ROK);
                             connection.send(response.getData().getBuffer());
                             if(log.isInfoEnabled()){
-                                log.info(msg, "[SUBMIT-TO-CORE] ssid={} session={} seq={} inMsgId={} redisId={} -> submit_sm_resp ESME_ROK",
+                                // shard: the one of stream:mt:pending:{ssid}:{shard} the submit went to; core: the Core owning
+                                // it as the last shard check saw it (ShardAssignmentChecker.coreOf, may lag a move by up
+                                // to 60 s); redisId is the stream entry id (ms-seq), not a shard
+                                int shard = StreamQueueManager.getInstance().calculateShardId(msg);
+                                log.info(msg, "[SUBMIT-TO-CORE] ssid={} session={} seq={} inMsgId={} shard={} core={} redisId={} -> submit_sm_resp ESME_ROK",
                                         msg.getOSsID(), sessionName, request.getSequenceNumber(), msg.getInMsgID(),
-                                        msg.getRedisStreamID());
+                                        shard, com.king.gmms.ha.ShardAssignmentChecker.coreOf(shard), msg.getRedisStreamID());
                             }
                         } catch (Exception e) {
                             log.warn(msg, "Fail to send success response");

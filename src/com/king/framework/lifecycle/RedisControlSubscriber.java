@@ -45,6 +45,10 @@ public class RedisControlSubscriber extends JedisPubSub implements Runnable {
 				targets = parts[1];
 			}
 
+			if ("RELOAD_CORE_SHARDS".equalsIgnoreCase(cmd)) {
+				// every module, also when the command is for one Core: the shard owners a Server logs
+				com.king.gmms.ha.ShardAssignmentChecker.checkSoon();
+			}
 			if (!isTargetMatched(targets)) {
 				log.info("Ignore control command: {} because target [{}] does not match local module.", message, targets);
 				return;

@@ -25,7 +25,6 @@ import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PCustomerManager;
 import com.king.gmms.ha.ModuleURI;
 import com.king.gmms.mqm.TaskConfiguration;
-import com.king.gmms.processor.CsmKeyInfo;
 import com.king.gmms.processor.CsmUtility;
 import com.king.gmms.processor.FakeDr;
 import com.king.gmms.domain.DrErrorConfig;
@@ -63,7 +62,6 @@ public class MessageStoreManager extends DataManager {
 	
 	// add by kevin for InMsgID prefix
 	public static final String INMSGIDPREFIXFORDRQUERY = "IQDR_";
-	public static final String INMSGIDPREFIXFORDELAYDR = "DELAYDR_";
 
 	/**
 	 * Concatenated message queue
@@ -4061,105 +4059,6 @@ public class MessageStoreManager extends DataManager {
 		// else indicates transferring message which maybe contain 3
 		// parameters(:sar_msg_ref_num, sar_total_segments and
 		// sar_segment_seqnum) or normal message without UDH
-	}
-
-	/**
-	 * Store GmmsMessage to CSMQ
-	 * 
-	 * @param message
-	 */
-	public void sendToCsmq(GmmsMessage message) {
-
-		if (message != null) {
-			insertMessageToDB(message, CSMQ);
-		}
-	}
-
-	/**
-	 * get Messages From Csmq By CsmKeyInfo
-	 * 
-	 * @param csmKeyInfo
-	 * @return
-	 */
-	public List<GmmsMessage> getMessagesFromCsmqByCsmKeyInfo(
-			CsmKeyInfo csmKeyInfo) {
-		if (csmKeyInfo == null) {
-			return null;
-		}
-		String sqlStr = "SELECT * FROM " + CSMQ + " WHERE OSsID="
-				+ csmKeyInfo.getoSsID() + " AND SenderAddresses="
-				+ makeSqlStrReplace(csmKeyInfo.getSenderAddress())
-				+ " AND RecipientAddresses="
-				+ makeSqlStrReplace(csmKeyInfo.getRecipientAddress())
-				+ " AND msgRefNum=" + makeSqlStr(csmKeyInfo.getSarMsgRefNum())
-				+ " ORDER BY DateIn ASC limit 100";
-
-		ResultSet rs = null;
-		List<GmmsMessage> retList = new ArrayList<GmmsMessage>();
-		try {
-			rs = doSelect(sqlStr);
-			while (rs.next()) {
-				GmmsMessage msg = new GmmsMessage();
-				assignValue(rs, msg);
-				msg.setRowId(rs.getInt("ID"));
-				retList.add(msg);
-			}
-		} catch (Exception e) {
-			log.error("Error in executing:" + sqlStr, e);
-		} finally {
-			if (rs != null) {
-				try {
-					rs.close();
-				} catch (Exception ex) {
-					log.error(ex, ex);
-				}
-			}
-			super.closeSession();// add by Levens in Jan.20 2006
-		}
-
-		return retList;
-	}
-
-	/**
-	 * clear messasage in CSMQ by CsmKeyInfo
-	 * 
-	 * @param csmKeyInfo
-	 */
-	public void clearCsmqByCsmKeyInfo(CsmKeyInfo csmKeyInfo,
-			CsmValueInfoMark csmValueInfoMark) {
-		if (csmKeyInfo == null || csmValueInfoMark == null) {
-			return;
-		}
-
-		StringBuilder seqNumBuilder = new StringBuilder(50);
-		Set<CsmValueInfo> csmvalueSet = csmValueInfoMark.getValueSet();
-		for (Iterator<CsmValueInfo> iter = csmvalueSet.iterator(); iter
-				.hasNext();) {
-			seqNumBuilder.append(iter.next().getSarSegmentSeqNum()).append(",");
-		}
-
-		String seqNums = seqNumBuilder.substring(0, seqNumBuilder.length() - 1);
-		if (seqNums.length() < 1) {
-			return;
-		}
-
-		String sqlStr = "DELETE FROM " + CSMQ + " WHERE OSsID="
-				+ csmKeyInfo.getoSsID() + " AND SenderAddresses="
-				+ makeSqlStrReplace(csmKeyInfo.getSenderAddress())
-				+ " AND RecipientAddresses="
-				+ makeSqlStrReplace(csmKeyInfo.getRecipientAddress())
-				+ " AND msgRefNum=" + makeSqlStr(csmKeyInfo.getSarMsgRefNum())
-				+ " AND segmentSeqNum in (" + seqNums + ")";
-		try {
-			doDelete(sqlStr);
-			if (log.isDebugEnabled()) {
-				log.debug(" {} delete from {}", csmKeyInfo.toString(), CSMQ);
-			}
-		} catch (Exception e) {
-			log.error(" " + csmKeyInfo.toString() + " " + e, e);
-		} finally {
-			super.closeSession();
-		}
 	}
 
 	public void insertInMsgForQueryDR(GmmsMessage msg) {

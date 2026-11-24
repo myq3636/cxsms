@@ -124,7 +124,7 @@ Core 负责消费 MT、做检查和路由、外发到出向 stream，并处理�
 | DR 不重复 | 可能重复。设计上接受少量重复 DR | Server 批次决定 |
 | 客户断线时的 DR | 没有宽限期，按决定不做（D5）。客户不在线时 DR 回失败，走重试策略 | Server 第 2 批设计 |
 | 计费退款 | Core 不做计费；Server 扣费后，Core 判失败也不退款。按决定不改 | Server 第 1 批设计 |
-| 长短信 Redis 模式 | state Redis 必须是 `noeviction`，否则分段可能被清掉 | 配置说明 4.7 |
+| 长短信 Redis 合并 | submit Redis 必须是 `noeviction`，否则分段可能被清掉（2026-11-24 从 state 迁到 submit，《长短信合并数据迁移设计》） | 配置说明 4.7 |
 | Core 故障接管 | 分片是静态配置，Core 挂掉后不会自动接管。积压等待重启，或手动改分片后执行 `RELOAD_CORE_SHARDS` | `FT-06` |
 | `Relay=a;b` | 配置能写但不生效，`;` 后面的部分被丢弃。改道用 `A2PBackupRoutingRelay` | `RT-05` |
 | 消息顺序 | 没有端到端顺序保证。同一发送方和接收方进同一分片，但重试、改道、长短信都可能改变顺序（读代码推断，未实测） | `calculateShardId` |

@@ -1,6 +1,5 @@
 package com.king.mgt.cmd.user;
 
-import com.king.mgt.cmd.system.SystemCommand;
 
 
 /**
@@ -35,20 +34,9 @@ public class UserCommandHelp extends UserCommand {
         return false;
     }
 
-    /**
-     * toSystemCommand
-     *
-     * @return byte[]
-     * @todo Implement.mgt.Command.UserCommand method
-     */
-
     public boolean process() {
         processor.handleCommandHelp();
         return true;
-    }
-
-    public SystemCommand buildSystemCommand() {
-        return null;
     }
 
 }

@@ -2,8 +2,6 @@ package com.king.mgt.cmd.user;
 
 import java.util.Arrays;
 
-import com.king.mgt.cmd.system.SystemCommand;
-import com.king.mgt.cmd.system.SystemCommandSwitchRedis;
 
 public class UserCommandSwitchRedis extends UserCommand {
 	public static final String keyword = "switchredis";
@@ -11,10 +9,6 @@ public class UserCommandSwitchRedis extends UserCommand {
     public UserCommandSwitchRedis(){
         super(UserCommand.Notify_Fix);
     }
-	@Override
-	public SystemCommand buildSystemCommand() {
-		return new SystemCommandSwitchRedis(this);
-	}
 
 	@Override
 	public boolean parseArgs(String[] args) {
@@ -31,8 +25,8 @@ public class UserCommandSwitchRedis extends UserCommand {
 
 	@Override
 	public boolean process() {
-		processor.handleSwitchDB();
-        return true;
+		// published on the control channel (RedisControlCommands), not run here
+		return false;
 	}
 
 }

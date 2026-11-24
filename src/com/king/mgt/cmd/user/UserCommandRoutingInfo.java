@@ -6,8 +6,6 @@ package com.king.mgt.cmd.user;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import com.king.mgt.cmd.system.SystemCommand;
-import com.king.mgt.cmd.system.SystemCommandRoutingInfo;
 import com.king.mgt.connection.FTP4Client;
 
 public class UserCommandRoutingInfo extends UserCommand {
@@ -43,12 +41,6 @@ public class UserCommandRoutingInfo extends UserCommand {
 	
 
 	@Override
-	public SystemCommand buildSystemCommand() {
-		// TODO Auto-generated method stub
-		return new SystemCommandRoutingInfo(this);
-	}
-
-	@Override
 	public boolean parseArgs(String[] args) {
 		// TODO Auto-generated method stub
         if (args.length == 2 && args[1].equals("-r")) {
@@ -74,13 +66,6 @@ public class UserCommandRoutingInfo extends UserCommand {
 		case TYPE_GENERATE: {
 			FTP4Client ftp = new FTP4Client();
 			return ftp.downloadConfigFile(keyword);
-		}
-		case TYPE_RELOAD: {
-			FTP4Client ftp = new FTP4Client();
-			ftp.downloadConfigFile(keyword);
-		}
-		case TYPE_ACTIVE: {
-			return processor.handleCommandActive();
 		}
 		default: {
 			log.error("Unknow command type: {}", type);

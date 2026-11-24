@@ -150,7 +150,6 @@ public class Batch7IT extends ItSupport {
 		props.remove("CoreDbFallbackInline");
 
 		// ================= B. CSM redis mode =================
-		check(RedisCsmReassembler.enabled(), "B7-B0 CsmReassembleMode not configured -> redis mode");
 
 		String r1 = newRecipient();
 		long before = routed();
@@ -289,10 +288,6 @@ public class Batch7IT extends ItSupport {
 		CsmExpirySweeper.getInstance().stop();
 		gu.setCsmIntegrityCacheTimeout(3600000);
 
-		// legacy switch still selectable
-		props.setProperty("CsmReassembleMode", "legacy");
-		check(!RedisCsmReassembler.enabled(), "B7-D1 CsmReassembleMode=legacy selects the old mode");
-		props.remove("CsmReassembleMode");
 
 		// ================= P. throughput of the redis mode =================
 		int n = 1000;

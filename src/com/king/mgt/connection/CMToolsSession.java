@@ -57,25 +57,10 @@ public class CMToolsSession extends UserSession{
             writer.flush();
             closeConnection();
 
-            if (!cmd.process()) {
+            if (!(RedisControlCommands.handles(cmd) ? RedisControlCommands.publish(cmd) : cmd.process())) {
                 log.warn("[MGT-ALERT] user={} command={}: {}", cmd.getContext() == null ? null : cmd.getContext().getCurUser(), cmd.getCmdLine(), info.get(InfoTable.SYSTEM_RESPONSE_ERROR));
                 return;
             }
-            // Dispatch and notify modules.
-           /* if (util.isEnableNotification() &&
-                cmd.getNotifyType() != UserCommand.Notify_None) {
-                // We need to notify.
-                if (!dispatcher.dispatch(cmd, context)) {
-                    log.warn("[MGT-ALERT] user={} command={}: {}", cmd.getContext() == null ? null : cmd.getContext().getCurUser(), cmd.getCmdLine(), info.get(InfoTable.INTERNAL_ERROR));
-                    return;
-                }
-                SystemCommandSender sender = new SystemCommandSender();
-                sender.send(cmd.getSystemCommands());
-                if (!cmd.isSuccess()) {
-                    log.warn("[MGT-ALERT] command={}: failed on some modules", cmd.getCmdLine());
-                    return;
-                }
-            }*/
             log.trace("Operation Done.");
 
         }

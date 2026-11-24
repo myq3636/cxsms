@@ -32,7 +32,6 @@ public class CoreMessageProcessor {
 	private MessageStoreManager msgStoreManager = null;
 	private DeliveryRouterHandler deliveryRouterHandler = null;
 	private MessageProcessorHandler processorHandler = null;
-	private CsmProcessorHandler csmHandler = null;
 	private A2PCustomerManager ctm;
 	private ModuleManager moduleManager;
 	private SdqMessageManager sdqManager = null;
@@ -70,7 +69,6 @@ public class CoreMessageProcessor {
 		}
 		deliveryRouterHandler = DeliveryRouterHandler.getInstance();
 		processorHandler = MessageProcessorHandler.getInstance();
-		csmHandler = CsmProcessorHandler.getInstance();
 		sdqManager = SdqMessageManager.getInstance();
 	}
 
@@ -273,15 +271,10 @@ public class CoreMessageProcessor {
 				return true;
 			}
 			if (CsmUtility.isConcatenatedMsg(msg) && msg.getRoperator() < 0) {
-				// CSM：CsmReassembleMode=redis（默认）走 Redis Hash 同步合并(持久化后才 ACK)；legacy 异步。
-				if (com.king.gmms.processor.RedisCsmReassembler.enabled()) {
-					if (!com.king.gmms.routing.SyncSubmitRouter.getInstance().routeCsmSegmentSync(msg)) {
-						msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
-						return false;   // 不 ACK -> MQM 流 PEL auto-claim 重试
-					}
-				} else if (!csmHandler.putMsg(msg)) {
+				// CSM：Redis Hash 同步合并(持久化后才 ACK)
+				if (!com.king.gmms.routing.SyncSubmitRouter.getInstance().routeCsmSegmentSync(msg)) {
 					msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
-					msgStoreManager.handleOutSubmitRes(msg);
+					return false;   // 不 ACK -> MQM 流 PEL auto-claim 重试
 				}
 			} else {
 				// C-1: downstream produce is synchronous; DB fallback is async and acceptable once enqueued.
@@ -568,15 +561,10 @@ public class CoreMessageProcessor {
 						}
 						msgStoreManager.handleInSubmit(msg, false);
 						if (CsmUtility.isConcatenatedMsg(msg)) {
-							// CSM：CsmReassembleMode=redis（默认）走 Redis Hash 同步合并(持久化后才 ACK，不丢)；legacy 异步。
-							if (com.king.gmms.processor.RedisCsmReassembler.enabled()) {
-								if(!com.king.gmms.routing.SyncSubmitRouter.getInstance().routeCsmSegmentSync(msg)){
-									msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
-									return false;   // 不 ACK -> PEL auto-claim 重试
-								}
-							} else if(!csmHandler.putMsg(msg)){
+							// CSM：Redis Hash 同步合并(持久化后才 ACK，不丢)
+							if(!com.king.gmms.routing.SyncSubmitRouter.getInstance().routeCsmSegmentSync(msg)){
 								msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
-								msgStoreManager.handleOutSubmitResForInnack(msg);
+								return false;   // 不 ACK -> PEL auto-claim 重试
 							}
 						}else{
 							//TODO							

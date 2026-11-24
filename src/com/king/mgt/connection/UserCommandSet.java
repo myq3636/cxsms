@@ -4,25 +4,24 @@ import java.util.HashMap;
 
 import com.king.framework.SystemLogger;
 import com.king.mgt.cmd.user.UserCommand;
-import com.king.mgt.cmd.user.UserCommandAmrT2I;
 import com.king.mgt.cmd.user.UserCommandAntiSpam;
 import com.king.mgt.cmd.user.UserCommandBlacklist;
+import com.king.mgt.cmd.user.UserCommandClientShardsReload;
+import com.king.mgt.cmd.user.UserCommandCoreShardsReload;
+import com.king.mgt.cmd.user.UserCommandDrErrorReload;
+import com.king.mgt.cmd.user.UserCommandModulesReload;
 import com.king.mgt.cmd.user.UserCommandContentBlacklist;
 import com.king.mgt.cmd.user.UserCommandContentTpl;
 import com.king.mgt.cmd.user.UserCommandContentWhitelist;
 import com.king.mgt.cmd.user.UserCommandCustomer;
-import com.king.mgt.cmd.user.UserCommandGwVersion;
 import com.king.mgt.cmd.user.UserCommandHelp;
-import com.king.mgt.cmd.user.UserCommandList;
 import com.king.mgt.cmd.user.UserCommandPhonePrefix;
 import com.king.mgt.cmd.user.UserCommandQuit;
 import com.king.mgt.cmd.user.UserCommandRecipientAddressRule;
 import com.king.mgt.cmd.user.UserCommandRecipientBlacklist;
-import com.king.mgt.cmd.user.UserCommandRestart;
 import com.king.mgt.cmd.user.UserCommandRoutingInfo;
 import com.king.mgt.cmd.user.UserCommandSenderBlacklist;
 import com.king.mgt.cmd.user.UserCommandSenderWhitelist;
-import com.king.mgt.cmd.user.UserCommandStartup;
 import com.king.mgt.cmd.user.UserCommandStop;
 import com.king.mgt.cmd.user.UserCommandSwitchDB;
 import com.king.mgt.cmd.user.UserCommandSwitchDNS;
@@ -77,21 +76,16 @@ public class UserCommandSet {
     public void init()
     {
         commandSet.put(UserCommandBlacklist.keyword, UserCommandBlacklist.class);
-        commandSet.put(UserCommandAmrT2I.keyword,UserCommandAmrT2I.class);
         commandSet.put(UserCommandCustomer.keyword, UserCommandCustomer.class);
         commandSet.put(UserCommandHelp.keyword, UserCommandHelp.class);
         commandSet.put(UserCommandStop.keyword,UserCommandStop.class);
-        commandSet.put(UserCommandList.keyword,UserCommandList.class);
         commandSet.put(UserCommandQuit.keyword, UserCommandQuit.class);
-        commandSet.put(UserCommandStartup.keyword, UserCommandStartup.class);
-        commandSet.put(UserCommandRestart.keyword, UserCommandRestart.class);
         commandSet.put(UserCommandRoutingInfo.keyword, UserCommandRoutingInfo.class);
         commandSet.put(UserCommandAntiSpam.keyword, UserCommandAntiSpam.class);
         commandSet.put(UserCommandContentTpl.keyword, UserCommandContentTpl.class);
         commandSet.put(UserCommandSwitchDB.keyword, UserCommandSwitchDB.class);
         commandSet.put(UserCommandSwitchRedis.keyword, UserCommandSwitchRedis.class);
         commandSet.put(UserCommandSwitchDNS.keyword, UserCommandSwitchDNS.class);
-        commandSet.put(UserCommandGwVersion.keyword, UserCommandGwVersion.class);
         commandSet.put(UserCommandPhonePrefix.keyword, UserCommandPhonePrefix.class);
         commandSet.put(UserCommandRecipientAddressRule.keyword, UserCommandRecipientAddressRule.class);
         commandSet.put(UserCommandWhitelist.keyword, UserCommandWhitelist.class);
@@ -102,5 +96,9 @@ public class UserCommandSet {
         commandSet.put(UserCommandRecipientBlacklist.keyword, UserCommandRecipientBlacklist.class);
         commandSet.put(UserCommandVendorContentReplacement.keyword, UserCommandVendorContentReplacement.class);
         commandSet.put(UserCommandVendorReplacement.keyword, UserCommandVendorReplacement.class);
+        commandSet.put(UserCommandDrErrorReload.keyword, UserCommandDrErrorReload.class);
+        commandSet.put(UserCommandCoreShardsReload.keyword, UserCommandCoreShardsReload.class);
+        commandSet.put(UserCommandClientShardsReload.keyword, UserCommandClientShardsReload.class);
+        commandSet.put(UserCommandModulesReload.keyword, UserCommandModulesReload.class);
     }
 }

@@ -11,7 +11,6 @@ import java.net.Socket;
 
 import com.king.framework.SystemLogger;
 import com.king.mgt.context.ContextManager;
-import com.king.mgt.context.ModuleDispatcher;
 import com.king.mgt.util.InfoTable;
 import com.king.mgt.util.UserInterfaceUtility;
 
@@ -35,7 +34,6 @@ public abstract class UserSession extends Thread {
     protected UserCommandSet commandSet;
     protected UserInterfaceUtility util;
     protected ContextManager context;
-    protected ModuleDispatcher dispatcher;
     protected InfoTable info=InfoTable.getInstance();
     protected BufferedReader reader = null;
     protected BufferedWriter writer = null;
@@ -47,7 +45,6 @@ public abstract class UserSession extends Thread {
         util = UserInterfaceUtility.getInstance();
         commandSet = util.getUserCommandSet();
         factory=util.getSessionFactory();
-        dispatcher=new ModuleDispatcher();
     }
 
     public void closeConnection() {

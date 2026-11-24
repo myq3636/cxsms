@@ -1,7 +1,6 @@
 package com.king.mgt.cmd.user;
 
 import com.king.framework.SystemLogger;
-import com.king.mgt.cmd.system.*;
 import com.king.mgt.connection.FTP4Client;
 
 /**
@@ -26,16 +25,6 @@ public class UserCommandCustomer
     public static final String keyword = "customer";
     public UserCommandCustomer() {
         super(UserCommand.Notify_None);
-    }
-
-    /**
-     * buildSystemCommand
-     *
-     * @return SystemCommand
-     * @todo Implement.mgt.cmd.user.UserCommand method
-     */
-    public SystemCommand buildSystemCommand() {
-        return new SystemCommandCustomer(this);
     }
 
     /**
@@ -76,11 +65,6 @@ public class UserCommandCustomer
                 FTP4Client ftp = new FTP4Client();
                 return ftp.downloadConfigFile(keyword);
             }
-            case TYPE_ACTIVE:
-	        {
-	            this.notifyType = Notify_All;
-	        	return processor.handleCommandActive();
-	        }
             default: {
                 log.error("Unknow command type: {}" , type);
             }

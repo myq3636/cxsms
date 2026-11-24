@@ -95,6 +95,27 @@ public class ServerBatch2IT extends ItSupport {
 		check(recv >= 0 && in > recv && put > in && toCore > put,
 				"S2-01a submit chain: [RECV] pdu -> [SUBMIT-IN] -> [STREAM-PUT] -> [SUBMIT-TO-CORE]");
 		check(indexOf(L, 0, "Smpp receive message") < 0, "S2-01b full message dump no longer at INFO");
+		// S2-01h the submit log names its pending shard and the Core owning it (as the shard check saw it)
+		com.king.redis.RedisClient rc = com.king.gmms.GmmsUtility.getInstance().getRedisClient();
+		StringBuilder all = new StringBuilder();
+		for (int i = 0; i < com.king.gmms.GmmsUtility.getInstance().getTotalShards(); i++) {
+			all.append(i == 0 ? "" : ",").append(i);
+		}
+		String ownerKey = "system:shards:core:CoreEngineS2:1";
+		rc.setString(ownerKey, com.king.gmms.GmmsUtility.getInstance().getTotalShards() + "|" + all, 60);
+		com.king.gmms.ha.ShardAssignmentChecker.check(rc);
+		a.submit("12345", "8613800000030", "s201e-submit");
+		check(waitFor(() -> a.okResp.get() == 2, 5000), "S2-01h setup: second submit accepted");
+		Thread.sleep(300);
+		List<String> eLines = logLines();
+		int eAt = indexOf(eLines, toCore + 1, "[SUBMIT-TO-CORE]", "ssid=29", "ESME_ROK");
+		String eLine = eAt < 0 ? "" : eLines.get(eAt);
+		java.util.regex.Matcher sm = java.util.regex.Pattern.compile("shard=(\\d+) core=(\\S+)").matcher(eLine);
+		boolean shown = sm.find() && Integer.parseInt(sm.group(1)) < com.king.gmms.GmmsUtility.getInstance().getTotalShards()
+				&& java.util.Arrays.asList(sm.group(2).split(",")).contains("CoreEngineS2");
+		check(shown, "S2-01h [SUBMIT-TO-CORE] shows the shard and core=CoreEngineS2: " + eLine.trim());
+		rc.getStateRedis().delKey(ownerKey);
+		com.king.gmms.ha.ShardAssignmentChecker.check(rc);
 		int get = indexOf(L, 0, "S201DR", "[STREAM-GET]");
 		int out = indexOf(L, get, "S201DR", "[DR-OUT]");
 		int resp = indexOf(L, out, "S201DR", "[DR-RESP]");

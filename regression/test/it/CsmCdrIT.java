@@ -14,7 +14,7 @@ import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
 
 /**
- * CDRs of a 3-segment long SMS reassembled in Redis (CsmReassembleMode=redis): each segment through the real Core
+ * CDRs of a 3-segment long SMS reassembled in Redis: each segment through the real Core
  * entry, then this program plays the Client (a submit_resp and a vendor DR per MT sent out). Twice: a channel
  * that takes the long message as it is, and one that splits it again by its own length (ChlMsgSplit, MsgSplitLen).
  * Every CDR line of the message is counted by type.

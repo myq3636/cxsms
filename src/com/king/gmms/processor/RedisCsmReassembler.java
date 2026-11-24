@@ -7,6 +7,8 @@ import java.util.List;
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
 import com.king.message.gmms.GmmsMessage;
+import com.king.gmms.messagequeue.ShardHash;
+import com.king.redis.RedisClient;
 import com.king.redis.RedisConnection;
 import com.king.redis.SerializableHandler;
 
@@ -27,7 +29,10 @@ import com.king.redis.SerializableHandler;
  * {@link #complete} 收尾。崩溃在 produce 之前 → hash 完整保留 → 重投重组重发。过期未集齐由
  * {@code csm:index} ZSET 过期索引 + {@link CsmExpirySweeper} 处理（回客户过期 DR）。
  *
- * <p>依赖 STATE Redis，且该 Redis 必须 {@code maxmemory-policy noeviction}（半条 hash 被淘汰 = 丢段）。
+ * <p>在 submit Redis 上（docs/长短信合并数据迁移设计.md）：一组的所有 key 和它在 {@code csm:index} 里的成员都在按组 key
+ * 用 {@link ShardHash} 选出的那个 submit 主上（{@link #master}），每个 submit 主各有一个 {@code csm:index}，过期扫描逐个主领取。
+ * submit Redis 必须 {@code maxmemory-policy noeviction}（半条 hash 被淘汰 = 丢段）。改 submit 主的个数会让正在等分段的组
+ * 映射到别的主，只能在维护时改。
  */
 public class RedisCsmReassembler {
 
@@ -94,18 +99,14 @@ public class RedisCsmReassembler {
 		return INSTANCE;
 	}
 
-	/** CsmReassembleMode: redis (default) or legacy (in-memory cache + CSMQ). */
-	public static boolean enabled() {
-		return !"legacy".equalsIgnoreCase(
-				GmmsUtility.getInstance().getCommonProperty("CsmReassembleMode", "redis").trim());
-	}
-
-	private RedisConnection redis() {
-		return GmmsUtility.getInstance().getRedisClient().getStateRedis();
+	/** the submit MQ master of a group (all its keys and its csm:index member) */
+	public static RedisConnection master(String hashKey) {
+		RedisConnection[] m = RedisClient.getInstance().mqs(true);
+		return m.length == 1 ? m[0] : m[ShardHash.of(hashKey, m.length)];
 	}
 
 	private int ttlSeconds() {
-		int ms = GmmsUtility.getInstance().getCsmIntegrityCacheTimeout(); // 默认 3600000ms
+		int ms = GmmsUtility.getInstance().getCsmIntegrityCacheTimeout(); // 默认 3600000ms：分段等齐的时间
 		int s = ms / 1000;
 		return s > 0 ? s : 3600;
 	}
@@ -149,7 +150,7 @@ public class RedisCsmReassembler {
 		String msgId = seg.getMsgID() == null ? "" : seg.getMsgID();
 		List<?> r;
 		try {
-			r = (List<?>) redis().evalScript(STORE_LUA, groupKeys(key), Arrays.asList(
+			r = (List<?>) master(key).evalScript(STORE_LUA, groupKeys(key), Arrays.asList(
 					String.valueOf(seg.getSarSegmentSeqNum()), payload, msgId,
 					String.valueOf(seg.getSarTotalSeqments()), String.valueOf(ttl + EXPIRE_GRACE_SECONDS),
 					String.valueOf(indexScore), owner, String.valueOf(now),
@@ -191,21 +192,24 @@ public class RedisCsmReassembler {
 	}
 
 	void finish(String hashKey) {
-		redis().evalScript(FINISH_LUA, groupKeys(hashKey),
+		master(hashKey).evalScript(FINISH_LUA, groupKeys(hashKey),
 				Arrays.asList(String.valueOf(ttlSeconds() + EXPIRE_GRACE_SECONDS)));
 	}
 
 	/**
-	 * 领取最多 batch 个已到期的组：在索引中把它们的到期时间推后 leaseMs，别的扫描者在此期间看不到；
+	 * 从每个 submit 主各领取最多 batch 个已到期的组：在索引中把它们的到期时间推后 leaseMs，别的扫描者在此期间看不到；
 	 * 处理完调用 {@link #finish}，处理中崩溃则占用到期后被重新领取。
 	 */
 	List<String> claimExpired(long nowMs, int batch, long leaseMs) {
-		List<?> r = (List<?>) redis().evalScript(CLAIM_LUA, Arrays.asList(INDEX_ZSET),
-				Arrays.asList(String.valueOf(nowMs), String.valueOf(batch), String.valueOf(nowMs + leaseMs)));
+		// each submit master has the index of its groups: up to batch from each
 		List<String> out = new ArrayList<String>();
-		for (Object o : r) {
-			if (o != null) {
-				out.add(String.valueOf(o));
+		for (RedisConnection m : RedisClient.getInstance().mqs(true)) {
+			List<?> r = (List<?>) m.evalScript(CLAIM_LUA, Arrays.asList(INDEX_ZSET),
+					Arrays.asList(String.valueOf(nowMs), String.valueOf(batch), String.valueOf(nowMs + leaseMs)));
+			for (Object o : r) {
+				if (o != null) {
+					out.add(String.valueOf(o));
+				}
 			}
 		}
 		return out;

@@ -9,7 +9,6 @@ import com.king.gmms.GmmsUtility;
 import com.king.gmms.domain.ModuleManager;
 import com.king.gmms.ha.ModuleStatusReporter;
 import com.king.gmms.processor.CsmExpirySweeper;
-import com.king.gmms.processor.CsmProcessorHandler;
 import com.king.gmms.processor.DelayedInDRDispatcher;
 import com.king.gmms.messagequeue.ChannelReleaseDispatcher;
 import com.king.gmms.messagequeue.CoreMQMStreamConsumer;
@@ -50,7 +49,6 @@ public class DeliveryRouter implements A2PService{
 		gmmsUtility.initCDRManager();
 		DeliveryRouterHandler.getInstance();
 		MessageProcessorHandler.getInstance();
-		CsmProcessorHandler.getInstance();
 		DBBackupHandler.getInstance();
 		// Core module stream consumers
 		MTStreamConsumer.getInstance().start();
@@ -63,7 +61,6 @@ public class DeliveryRouter implements A2PService{
 		CoreMQMStreamConsumer.getInstance().start();
 		DelayedInDRDispatcher.getInstance().startDispatcher();
 		com.king.gmms.processor.FakeDrTimeoutScheduler.getInstance().start();
-		com.king.gmms.processor.LegacyDelayDrMigrator.startOnce();
 		if (!joining) {
 			ChannelReleaseDispatcher.getInstance().start();
 			CsmExpirySweeper.getInstance().start();

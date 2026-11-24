@@ -1,6 +1,5 @@
 package com.king.mgt.cmd.user;
 
-import com.king.mgt.cmd.system.SystemCommand;
 
 /**
  * <p>Title: </p>
@@ -21,15 +20,6 @@ public class UserCommandQuit
 
     public UserCommandQuit(){
         super(UserCommand.Notify_None);
-    }
-    /**
-     * buildSystemCommand
-     *
-     * @return SystemCommand
-     * @todo Implement.mgt.cmd.user.UserCommand method
-     */
-    public SystemCommand buildSystemCommand() {
-        return null;
     }
 
     /**

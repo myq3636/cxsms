@@ -5,7 +5,6 @@ import java.util.LinkedList;
 import java.util.Iterator;
 
 import com.king.framework.lifecycle.LifecycleListener;
-import com.king.framework.lifecycle.cmd.SystemCommand;
 
 /**
  * Lifecycle event
@@ -137,11 +136,4 @@ public abstract class Event {
     {
         return eventSubType;
     }
-    /**
-     * event subtype commonly is the arguments following command. eg.
-     * GEMD> stop file  -- stop service and write back msg queue to file
-     * @param args String[]
-     */
-
-    public abstract boolean parseArgs(SystemCommand cmd);
 }

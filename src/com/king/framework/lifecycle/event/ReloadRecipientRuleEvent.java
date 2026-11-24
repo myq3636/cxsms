@@ -1,6 +1,5 @@
 package com.king.framework.lifecycle.event;
 
-import com.king.framework.lifecycle.cmd.SystemCommand;
 
 /**
  * <p>Title: </p>
@@ -21,7 +20,4 @@ public class ReloadRecipientRuleEvent
         super(Event.TYPE_RECEIPIENT_RULE_RELOAD);
     }
 
-    public boolean parseArgs(SystemCommand cmd) {
-        return true;
-    }
 }

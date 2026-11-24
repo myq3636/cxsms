@@ -23,6 +23,7 @@
 | S2-01c/d | 一条 DR，客户正常应答 | 日志依次出现 `[STREAM-GET]` → `[DR-OUT]` → `[DR-RESP]` → `[DR-RESULT-TO-CORE]`；`[STREAM-ACK]` 出现在 `[DR-RESP]` 之后 | P0 |
 | S2-01e/f | 同上 | `[STREAM-GET]` 只打印简短形式；重复的 `resolved session` 不再是 INFO | P1 |
 | S2-01g | 热加载 `SmppPduLogEnable=false` | 不再有 PDU 日志，业务日志仍然保留 | P1 |
+| S2-01h | 分片检查看到某个 Core 负责全部分片后发一条 submit | `[SUBMIT-TO-CORE]` 带 `shard=`（写入的 `stream:mt:pending` 分片）和 `core=`（这个 Core） | P1 |
 | S2-02 | 再建立 20 个连接 | 没有 `ServerSessionTrd` 线程；共享的 `SmppSessionKeeper` 线程不超过 4 个；新增 20 个读线程和 20 个写线程（每连接 2 个） | P0 |
 | S2-03a | 不 bind | 约 2 秒后被关闭（`SmppServerBindTimeoutMs`），共享调度下仍然生效 | P0 |
 | S2-03b | bind 后不再发任何 PDU（`ConnectionSilentTime` 3 秒） | 约 3 到 4 秒后被关闭 | P0 |

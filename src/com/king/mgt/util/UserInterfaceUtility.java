@@ -6,7 +6,6 @@ import java.io.IOException;
 import java.util.Properties;
 
 import com.king.framework.SystemLogger;
-import com.king.gmms.domain.ModuleManager;
 import com.king.mgt.cmd.user.UserCommandAntiSpam;
 import com.king.mgt.cmd.user.UserCommandBlacklist;
 import com.king.mgt.cmd.user.UserCommandContentTpl;
@@ -38,8 +37,6 @@ public class UserInterfaceUtility {
     private SessionFactory sessionFactory=null;
     private UserCommandSet commandSet = null;
     private InfoTable infoTable;
-    private boolean enableNotification=true;
-    private boolean isHa=false;
     public UserInterfaceUtility() {
     }
     public SessionFactory getSessionFactory()
@@ -109,15 +106,6 @@ public class UserInterfaceUtility {
     {
         long start = System.currentTimeMillis();
         log.info("SmsUI core utilities init start.");
-        String enable=this.getProperty("enableNotification","yes");
-        if ("no".equalsIgnoreCase(enable) || "disable".equalsIgnoreCase(enable) ||
-            "false".equalsIgnoreCase(enable)) {
-            this.enableNotification=false;
-        }
-        else
-        {
-            enableNotification=true;
-        }
         infoTable=InfoTable.getInstance();
         sessionFactory=new SessionFactory();
         sessionFactory.init();
@@ -170,24 +158,6 @@ public class UserInterfaceUtility {
                 initConfigFiles();
             }
         }, "SmsUiConfigInitThread");
-        thread.setDaemon(true);
-        thread.start();
-    }
-
-    public void initModuleManagerAsync()
-    {
-        Thread thread = new Thread(new Runnable() {
-            public void run() {
-                long start = System.currentTimeMillis();
-                log.info("SmsUI module manager init start.");
-                try {
-                    ModuleManager.getInstance().initSmsUI();
-                    log.info("SmsUI module manager init done. elapsedMs={}", System.currentTimeMillis() - start);
-                } catch (Throwable e) {
-                    log.error("Initial smsui module manager load failed.", e);
-                }
-            }
-        }, "SmsUiModuleInitThread");
         thread.setDaemon(true);
         thread.start();
     }
@@ -266,25 +236,8 @@ public class UserInterfaceUtility {
         return infoTable;
     }
 
-    public boolean isEnableNotification() {
-        return enableNotification;
-    }
-
-
     public void setInfoTable(InfoTable infoTable) {
         this.infoTable = infoTable;
     }
 
-    public void setEnableNotification(boolean enableNotification) {
-        this.enableNotification = enableNotification;
-    }
-
-    public boolean isHa() {
-        return isHa;
-    }
-
-    public void setHa() {
-        isHa = true;
-        log.info("HA mode!");
-    }
 }

@@ -2,18 +2,12 @@ package com.king.mgt.cmd.user;
 
 import java.util.Arrays;
 
-import com.king.mgt.cmd.system.SystemCommand;
-import com.king.mgt.cmd.system.SystemCommandSwitchDB;
 
 public class UserCommandSwitchDB extends UserCommand {
 	public static final String keyword = "switchdb";
     public UserCommandSwitchDB(){
         super(UserCommand.Notify_Fix);
     }
-	@Override
-	public SystemCommand buildSystemCommand() {
-		return new SystemCommandSwitchDB(this);
-	}
 
 	@Override
 	public boolean parseArgs(String[] args) {
@@ -30,8 +24,8 @@ public class UserCommandSwitchDB extends UserCommand {
 
 	@Override
 	public boolean process() {
-		processor.handleSwitchDB();
-	    return true;
+		// published on the control channel (RedisControlCommands), not run here
+		return false;
 	}
 
 }

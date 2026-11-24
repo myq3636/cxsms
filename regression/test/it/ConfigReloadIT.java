@@ -16,7 +16,7 @@ public class ConfigReloadIT extends ItSupport {
 		{ "CoreOutboundOutboxRecheckMs", "30000" },
 		{ "RedisStreamMaxDeliveries", "5" }, { "CoreStreamTaskMaxBatches", "4" }, { "CoreStreamTaskMaxMs", "1500" },
 		{ "CoreResultStreamSharded", "false" }, { "CoreDrResultIdempotency", "false" },
-		{ "CoreDbFallbackInline", "false" }, { "CsmReassembleMode", "legacy" }, { "CoreCsmExpirySweep", "false" },
+		{ "CoreDbFallbackInline", "false" }, { "CoreCsmExpirySweep", "false" },
 		{ "CoreCsmExpiryIntervalSec", "30" }, { "CoreCsmExpiryBatch", "100" }, { "CoreCsmExpiryLeaseMs", "120000" },
 		{ "ClientSendIdempotency", "false" }, { "ClientSendLeaseMs", "30000" },
 		{ "ClientStreamTaskMaxBatches", "5" }, { "ClientStreamTaskMaxMs", "1000" },
@@ -40,9 +40,8 @@ public class ConfigReloadIT extends ItSupport {
 				check(kv[1].equals(gu.getCommonProperty(kv[0], "-")), "CFG-01 " + kv[0] + "=" + kv[1] + " applied by hot reload");
 			}
 			check(StreamQueueManager.getInstance().isServerDrShardFilterEnabled(), "CFG-02 ServerDrStreamShardFilter read as true by the code");
-			check(!com.king.gmms.processor.RedisCsmReassembler.enabled()
-					&& !com.king.gmms.processor.DBBackupHandler.getInstance().inlineEnabled(),
-					"CFG-02 CsmReassembleMode=legacy and CoreDbFallbackInline=false read by the code");
+			check(!com.king.gmms.processor.DBBackupHandler.getInstance().inlineEnabled(),
+					"CFG-02 CoreDbFallbackInline=false read by the code");
 			check(!com.king.gmms.messagequeue.ClientSendMarker.enabled(), "CFG-02 ClientSendIdempotency=false read by the code");
 
 			// invalid number: the whole reload is rejected, values stay

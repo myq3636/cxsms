@@ -14,22 +14,16 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import org.dom4j.Document;
-import org.dom4j.DocumentException;
-import org.dom4j.Element;
-import org.dom4j.io.SAXReader;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.util.SystemConstants;
 import com.king.message.gmms.GmmsMessage;
-import com.king.mgt.context.Module;
-import com.king.mgt.util.ConfigurationException;
-import com.king.mgt.util.UserInterfaceUtility;
 import com.king.redis.RedisClient;
 
 /**
- * Init ModuleManagement.xml
+ * The modules: conf/a2p_modules.conf and the module registry in Redis (applyRegistry). ModuleManagement.xml is
+ * not read any more (docs/流模式下系统管理和模块间连接代码清理分析.md 3.4).
  * 
  * @author jianmingyang
  * 
@@ -44,28 +38,14 @@ public class ModuleManager {
 	private Map<String, ModuleConnectionInfo> clientConnectionMap = null;
 	private Map<String, ModuleConnectionInfo> mqmConnectionMap = null;
 	private Map<String, ModuleConnectionInfo> systemMgtConnectionMap = null;
-	private ModuleConnectionInfo connectionInfoOfMasterMGT = null;
-	private ModuleConnectionInfo connectionInfoOfSlaveMGT = null;
 	private Map<String, ArrayList<String>> moduleTypeMap = null; // module prefix,module name list
-	private Map<String, ArrayList<String>> moduleStatusMap = null;// module name,module status list
 	/** the lists follow the registry: a position in them says nothing any more */
 	private volatile boolean registryApplied = false;
 	private volatile List<String> routerList = null;
 	private volatile List<String> serverList = null;
 	private volatile List<String> clientList = null;
 	private volatile List<String> mqmList = null;
-	private List<String> functionModuleList = null;
-	private List<String> systemMgtList = null;
-	private Set<String> moduleUrls = null;
-	private final String moduleConfigFile = "ModuleManagement.xml";
 	private final String moduleListConfigFile = "a2p_modules.conf";
-	// below for smsui
-	private HashMap<String, Module> mapName2Module = new HashMap<String, Module>();
-	private ArrayList<String> directStopModules = new ArrayList<String>();
-	private ArrayList<String> activeModules = new ArrayList<String>();
-	private UserInterfaceUtility uiUtil = null;
-	public Module A2P;
-	private Object mutex = new Object();
 	//random for loadbalance routing;
 	private int loadbalanceRandom = 0;
 
@@ -77,16 +57,10 @@ public class ModuleManager {
 		mqmConnectionMap = new ConcurrentHashMap<String, ModuleConnectionInfo>();
 		systemMgtConnectionMap = new ConcurrentHashMap<String, ModuleConnectionInfo>();
 		moduleTypeMap = new ConcurrentHashMap<String, ArrayList<String>>();
-		moduleStatusMap = new ConcurrentHashMap<String, ArrayList<String>>();
 		routerList = new ArrayList<String>();
 		serverList = new ArrayList<String>();
 		clientList = new ArrayList<String>();
 		mqmList = new ArrayList<String>();
-		systemMgtList = new ArrayList<String>();
-		moduleUrls = new HashSet<String>();
-		functionModuleList = new ArrayList<String>();
-		uiUtil = UserInterfaceUtility.getInstance();
-		ensureSmsUiRootModule();
 	}
 
 	/**
@@ -106,25 +80,6 @@ public class ModuleManager {
 	 * init ConnectionMap
 	 */
 	private void initConnectionMap() {
-		String configFilePath = System.getProperty("a2p_home",
-				"/usr/local/a2p/")
-				+ "conf/" + moduleConfigFile;
-		File moduleConfig = new File(configFilePath);
-		if (moduleConfig.exists()) {
-			try {
-				SAXReader saxReader = new SAXReader();
-				Document doc = saxReader.read(configFilePath);
-				Element rootElement = doc.getRootElement();
-				initModuleElement(rootElement);
-			} catch (DocumentException e) {
-				log.error("init module configFile " + moduleConfigFile
-						+ " conf file error!!!", e);
-				System.out.println("init module configFile " + moduleConfigFile
-						+ " conf file error:" + e.getMessage());
-			}
-		} else {
-			log.info("{} not found, module list will be loaded from {}.", configFilePath, moduleListConfigFile);
-		}
 		initModuleListConfig();
 	}
 
@@ -181,7 +136,6 @@ public class ModuleManager {
 		if (moduleName.length() == 0) {
 			return;
 		}
-		addInitialModuleStatus(moduleName);
 		if (getConnectionInfo(moduleName) != null) {
 			return;
 		}
@@ -277,9 +231,6 @@ public class ModuleManager {
 		} else if (SystemConstants.MGT_MODULE_TYPE.equalsIgnoreCase(fullModuleType)) {
 			connectionInfo.setModuleType(SystemConstants.MGT_MODULE_TYPE);
 			systemMgtConnectionMap.put(moduleName, connectionInfo);
-			if (addToLists) {
-				systemMgtList.add(moduleName);
-			}
 		} else if (fullModuleType.endsWith(SystemConstants.SERVER_MODULE_TYPE)) {
 			connectionInfo.setModuleType(SystemConstants.SERVER_MODULE_TYPE);
 			serverConnectionMap.put(moduleName, connectionInfo);
@@ -294,15 +245,10 @@ public class ModuleManager {
 			}
 		} else {
 			functionConnectionMap.put(moduleName, connectionInfo);
-			if (addToLists) {
-				functionModuleList.add(moduleName);
-			}
 		}
 		if (addToLists) {
 			addModuleType(moduleName, fullModuleType);
 		}
-		addInitialModuleStatus(moduleName);
-		moduleUrls.add(connectionInfo.getURL());
 		log.info("Module added from {}. module={}, role={}, fullType={}, cmdPort={}",
 				moduleListConfigFile, moduleName, role, fullModuleType, connectionInfo.getCmdPort());
 	}
@@ -393,372 +339,6 @@ public class ModuleManager {
 		}
 	}
 
-	private void addInitialModuleStatus(String moduleName) {
-		if (moduleStatusMap.containsKey(moduleName)) {
-			return;
-		}
-		ArrayList<String> statusList = new ArrayList<String>();
-		statusList.add(SystemConstants.INITIAL_MODULE_STATUS);
-		statusList.add(SystemConstants.INITIAL_MODULE_STATUS);
-		moduleStatusMap.put(moduleName, statusList);
-	}
-
-	/**
-	 * init module element
-	 * 
-	 * @param root
-	 */
-	private void initModuleElement(Element root) {
-		Iterator itInner = root.elementIterator();
-		while (itInner.hasNext()) {
-			Element sub = (Element) itInner.next();
-			String moduleName = sub.getName();
-			String fullModuleType = getStringAttrValue(sub, "type");
-			ModuleConnectionInfo connectionInfo = this.initConnectionInfo(sub);
-			connectionInfo.setFullModuleType(fullModuleType);
-			if (fullModuleType.endsWith(SystemConstants.ROUTER_MODULE_TYPE)) {
-				connectionInfo
-						.setModuleType(SystemConstants.ROUTER_MODULE_TYPE);
-				routerConnectionMap.put(moduleName, connectionInfo);
-				routerList.add(moduleName);
-			} else if (fullModuleType
-					.endsWith(SystemConstants.SERVER_MODULE_TYPE)) {
-				connectionInfo
-						.setModuleType(SystemConstants.SERVER_MODULE_TYPE);
-				serverConnectionMap.put(moduleName, connectionInfo);
-				serverList.add(moduleName);
-			} else if (fullModuleType
-					.endsWith(SystemConstants.CLIENT_MODULE_TYPE)) {
-				connectionInfo
-						.setModuleType(SystemConstants.CLIENT_MODULE_TYPE);
-				clientConnectionMap.put(moduleName, connectionInfo);
-				clientList.add(moduleName);
-			} else if (SystemConstants.MQM_MODULE_TYPE
-					.equalsIgnoreCase(fullModuleType)) {
-				connectionInfo.setModuleType(SystemConstants.MQM_MODULE_TYPE);
-				mqmConnectionMap.put(moduleName, connectionInfo);
-				mqmList.add(moduleName);
-			} else if (SystemConstants.MGT_MODULE_TYPE
-					.equalsIgnoreCase(fullModuleType)) {
-				connectionInfo.setModuleType(SystemConstants.MGT_MODULE_TYPE);
-				String value = getStringAttrValue(sub, "value");
-				if (SystemConstants.MASTER_MODULE_TYPE.equalsIgnoreCase(value)) {
-					connectionInfoOfMasterMGT = connectionInfo;
-				} else if (SystemConstants.SLAVE_MODULE_TYPE
-						.equalsIgnoreCase(value)) {
-					connectionInfoOfSlaveMGT = connectionInfo;
-				}
-				systemMgtConnectionMap.put(moduleName, connectionInfo);
-				systemMgtList.add(moduleName);
-			} else {
-				functionConnectionMap.put(moduleName, connectionInfo);
-				functionModuleList.add(moduleName);
-			}
-			if (moduleTypeMap.containsKey(fullModuleType)) {
-				moduleTypeMap.get(fullModuleType).add(moduleName);
-			} else {
-				ArrayList<String> moduleList = new ArrayList<String>();
-				moduleList.add(moduleName);
-				moduleTypeMap.put(fullModuleType, moduleList);
-			}
-		}
-	}
-
-	/**
-	 * get ConnectionInfo
-	 * 
-	 * @param root
-	 * @return
-	 */
-	private ModuleConnectionInfo initConnectionInfo(Element root) {
-		Iterator itInner = root.elementIterator();
-		String moduleName = root.getName();
-		ModuleConnectionInfo connectionInfo = new ModuleConnectionInfo();
-		connectionInfo.setModuleName(moduleName);
-		connectionInfo.setUserName(moduleName);
-		connectionInfo.setConnectionName(moduleName);
-		while (itInner.hasNext()) {
-			Element sub = (Element) itInner.next();
-			String elemName = sub.getName();
-			String elemValue = sub.getTextTrim();
-			if ("url".equalsIgnoreCase(elemName)) {
-				connectionInfo.setURL(elemValue);
-				moduleUrls.add(elemValue);
-			} else if ("classpath".equalsIgnoreCase(elemName)) {
-				connectionInfo.setClassPath(elemValue);
-			} else if ("msg_port".equalsIgnoreCase(elemName)) {
-				try {
-					int port = Integer.parseInt(elemValue);
-					connectionInfo.setPort(port);
-				} catch (NumberFormatException e) {
-					log.error(e,e);
-				}
-			} else if ("sys_port".equalsIgnoreCase(elemName)) {
-				try {
-					int port = Integer.parseInt(elemValue);
-					connectionInfo.setSysPort(port);
-				} catch (NumberFormatException e) {
-					log.error(e,e);
-				}
-			} else if ("cmd_port".equalsIgnoreCase(elemName)) {
-				try {
-					int port = Integer.parseInt(elemValue);
-					connectionInfo.setCmdPort(port);
-				} catch (NumberFormatException e) {
-					log.error(e,e);
-				}
-			} else if ("MinSenderNumber".equalsIgnoreCase(elemName)) {
-				try {
-					int senderNum = Integer.parseInt(elemValue);
-					connectionInfo.setMinSenderNum(senderNum);
-				} catch (NumberFormatException e) {
-					log.error(e,e);
-				}
-			} else if ("MaxSenderNumber".equalsIgnoreCase(elemName)) {
-				try {
-					int senderNum = Integer.parseInt(elemValue);
-					connectionInfo.setMaxSenderNum(senderNum);
-				} catch (NumberFormatException e) {
-					log.error(e,e);
-				}
-			} else if ("MinReceiverNumber".equalsIgnoreCase(elemName)) {
-				try {
-					int receiverNum = Integer.parseInt(elemValue);
-					connectionInfo.setMinReceiverNum(receiverNum);
-				} catch (NumberFormatException e) {
-					log.error(e,e);
-				}
-			} else if ("MaxReceiverNumber".equalsIgnoreCase(elemName)) {
-				try {
-					int receiverNum = Integer.parseInt(elemValue);
-					connectionInfo.setMaxReceiverNum(receiverNum);
-				} catch (NumberFormatException e) {
-					log.error(e,e);
-				}
-			} else if ("InBindSessionNumber".equalsIgnoreCase(elemName)) {
-				try {
-					int sessionNum = Integer.parseInt(elemValue);
-					connectionInfo.setInSessionNum(sessionNum);
-				} catch (NumberFormatException e) {
-					log.error(e,e);
-				}
-			} else if ("OutBindSessionNumber".equalsIgnoreCase(elemName)) {
-				try {
-					int sessionNum = Integer.parseInt(elemValue);
-					connectionInfo.setOutSessionNum(sessionNum);
-				} catch (NumberFormatException e) {
-					log.error(e,e);
-				}
-			}
-		}
-		return connectionInfo;
-	}
-
-	/**
-	 * init for smsui
-	 */
-	public void initSmsUI() {
-		ensureSmsUiRootModule();
-		String dStopModules = uiUtil.getProperty("DirectStopModules");
-		if (dStopModules != null && !dStopModules.equalsIgnoreCase("")) {
-			String[] list = dStopModules.trim().split(",");
-			for (int i = 0; i < list.length; i++) {
-				directStopModules.add(list[i].trim());
-				log.info("Add directStopModule:{}", list[i]);
-			}
-		}
-		// local address
-		InetAddress localAddr = null;
-		try {
-			localAddr = InetAddress.getLocalHost();
-		} catch (UnknownHostException e) {
-			log.error(e,e);
-		}
-		System.out.println("InetAddress localAddr=" + localAddr);
-
-		List<String> confModules = new ArrayList<String>();
-		List<String> modules = new ArrayList<String>();
-		confModules.addAll(this.getSystemMgtList());
-		confModules.addAll(this.getRouterModules());
-		confModules.addAll(this.getServerModules());
-		confModules.addAll(this.getClientModules());
-		confModules.addAll(this.getMqmModules());
-		addLocalModues(modules, localAddr, confModules);
-
-		log.trace("modules: {}", modules.toString());
-
-		if (modules.size() == 0) {
-			uiUtil.setEnableNotification(false);
-			log.info("No local smsui legacy command module found. Redis control command path can still be used.");
-			ensureSmsUiRootModule();
-			return;
-		}
-		String[] moduleList = modules.toArray(new String[0]);
-		for (int i = 0; i < moduleList.length; i++) {
-			String name = moduleList[i];
-			if (name == null) {
-				throw new ConfigurationException(
-						"Module configuraiton error. Item " + i);
-			}
-			name = moduleList[i].trim();
-			ModuleConnectionInfo conInfo = this.getConnectionInfo(name);
-			if (conInfo == null) {
-				log.warn("Skip smsui active module without connection info. module={}", name);
-				continue;
-			}
-			String ip = conInfo.getURL();
-			int port = conInfo.getCmdPort();
-			if (port <= 0) {
-				log.info("Skip smsui legacy command module without valid cmd_port. module={}, cmdPort={}", name, port);
-				continue;
-			}
-
-			Module module = new Module(name, ip, port);
-			addModule(module);
-			addActiveModule(name);
-		}
-		if (activeModules.size() == 0) {
-			uiUtil.setEnableNotification(false);
-			log.info("No smsui legacy command modules enabled. Redis control command path can still be used.");
-		}
-		ensureSmsUiRootModule();
-	}
-
-	private void ensureSmsUiRootModule() {
-		if (A2P == null) {
-			A2P = new Module("A2P", null, -1);
-		}
-		addModule(A2P);
-	}
-
-	/**
-	 * add local modules, exclude non local url in ModuleManagement.xml
-	 * 
-	 * @param moduleList
-	 * @param localAddr
-	 * @param confModules
-	 */
-	private void addLocalModues(List<String> moduleList, InetAddress localAddr,
-			List<String> confModules) {
-		ModuleManager domainModuleManager = ModuleManager.getInstance();
-		for (String item : confModules) {
-			ConnectionInfo conInfo = domainModuleManager
-					.getConnectionInfo(item);
-			if (conInfo == null || conInfo.getURL() == null || conInfo.getURL().trim().length() == 0) {
-				log.warn("Skip local module check without url. module={}", item);
-				continue;
-			}
-			String url = conInfo.getURL();
-			System.out.println(item + "url=" + url);
-
-			InetAddress urlAddr = null;
-			try {
-				urlAddr = InetAddress.getByName(url);
-			} catch (UnknownHostException e) {
-				log.error(e,e);
-			}
-
-			if (urlAddr.isLoopbackAddress() || urlAddr.equals(localAddr)) {
-				moduleList.add(item);
-			}
-		}
-	}
-
-	/**
-	 * getActiveModules for smsui
-	 */
-	public String[] getActiveModules() {
-		String[] result = null;
-		if (activeModules.size() == 0) {
-			return null;
-		}
-		synchronized (mutex) {
-			result = new String[activeModules.size()];
-			int i = 0;
-			for (String module : activeModules) {
-				result[i] = module;
-				i++;
-			}
-		}
-		return result;
-	}
-
-	/**
-	 * getActiveModulesSize for smsui
-	 */
-	public int getActiveModulesSize() {
-		synchronized (mutex) {
-			return activeModules.size();
-		}
-	}
-
-	/**
-	 * isActiveModule for smsui
-	 */
-	public boolean isActiveModule(String moduleName) {
-		synchronized (mutex) {
-			if (moduleName == null) {
-				return false;
-			}
-			return activeModules.contains(moduleName.trim());
-		}
-	}
-
-	/**
-	 * isContainModule for smsui
-	 */
-	public boolean isContainModule(String name) {
-		if (name == null) {
-			return false;
-		}
-		return mapName2Module.containsKey(name.trim());
-	}
-
-	/**
-	 * getModuleByName for smsui
-	 */
-	public Module getModuleByName(String name) {
-		if (name == null) {
-			return null;
-		}
-		return mapName2Module.get(name.trim());
-	}
-
-	/**
-	 * isDirectStopModule for smsui
-	 */
-	public boolean isDirectStopModule(String name) {
-		if (name == null) {
-			return false;
-		}
-		return directStopModules.contains(name);
-	}
-
-	/**
-	 * addModule for smsui
-	 */
-	private void addModule(Module module) {
-		if (module == null) {
-			return;
-		}
-		String name = module.getName();
-		if (name == null) {
-			return;
-		}
-		mapName2Module.put(name.trim(), module);
-	}
-
-	/**
-	 * addActiveModule for smsui
-	 */
-	private void addActiveModule(String module) {
-		if (module == null) {
-			return;
-		}
-		activeModules.add(module);
-		log.info("Add active module: {}", module);
-	}
-
 	public int getModuleIndex(String module) {
 		if (module == null) {
 			return 0;
@@ -829,93 +409,6 @@ public class ModuleManager {
 	}
 
 	/**
-	 * get attribute of xml tag
-	 * 
-	 * @param el
-	 * @param name
-	 * @return
-	 */
-	private String getStringAttrValue(Element el, String name) {
-		try {
-			return el.attribute(name).getValue().trim();
-		} catch (Exception e) {
-			return null;
-		}
-	}
-
-	/**
-	 * getConnectionInfo list for function Modules
-	 * 
-	 * @return
-	 */
-	public List<ModuleConnectionInfo> getConnectionInfo4ServiceModule() {
-		List<ModuleConnectionInfo> serverConnectionInfoList = new ArrayList<ModuleConnectionInfo>(
-				serverConnectionMap.values());
-		List<ModuleConnectionInfo> clientConnectionInfoList = new ArrayList<ModuleConnectionInfo>(
-				clientConnectionMap.values());
-		List<ModuleConnectionInfo> mqmConnectionInfoList = new ArrayList<ModuleConnectionInfo>(
-				mqmConnectionMap.values());
-		serverConnectionInfoList.addAll(clientConnectionInfoList);
-		serverConnectionInfoList.addAll(mqmConnectionInfoList);
-		return serverConnectionInfoList;
-	}
-
-	/**
-	 * get connectionInfo list for router modules
-	 * 
-	 * @return
-	 */
-	public List<ModuleConnectionInfo> getConnectionInfo4Router() {
-		List<ModuleConnectionInfo> routerConnectionInfoList = new ArrayList<ModuleConnectionInfo>(
-				routerConnectionMap.values());
-		return routerConnectionInfoList;
-	}
-
-	/**
-	 * get connectionInfo list for router modules
-	 * 
-	 * @return
-	 */
-	public List<ModuleConnectionInfo> getConnectionInfo4Server() {
-		List<ModuleConnectionInfo> serverConnectionInfoList = new ArrayList<ModuleConnectionInfo>(
-				serverConnectionMap.values());
-		return serverConnectionInfoList;
-	}
-
-	/**
-	 * get connectionInfo list for router modules
-	 * 
-	 * @return
-	 */
-	public List<ModuleConnectionInfo> getConnectionInfo4Client() {
-		List<ModuleConnectionInfo> clientConnectionInfoList = new ArrayList<ModuleConnectionInfo>(
-				clientConnectionMap.values());
-		return clientConnectionInfoList;
-	}
-
-	/**
-	 * getConnectionInfo list of System management
-	 * 
-	 * @return
-	 */
-	public List<ModuleConnectionInfo> getConnectionInfo4MGT() {
-		List<ModuleConnectionInfo> mgtConnectionInfoList = new ArrayList<ModuleConnectionInfo>(
-				systemMgtConnectionMap.values());
-		return mgtConnectionInfoList;
-	}
-
-	/**
-	 * getConnectionInfo list of MQM
-	 * 
-	 * @return
-	 */
-	public List<ModuleConnectionInfo> getConnectionInfo4MQM() {
-		List<ModuleConnectionInfo> mqmConnectionInfoList = new ArrayList<ModuleConnectionInfo>(
-				mqmConnectionMap.values());
-		return mqmConnectionInfoList;
-	}
-
-	/**
 	 * get router module names
 	 * 
 	 * @param moduleName
@@ -945,128 +438,7 @@ public class ModuleManager {
 		return clientList;
 	}
 
-	/**
-	 * select router for load balance
-	 * 
-	 * @param msg
-	 * @param moduleName
-	 * @return
-	 */
-	public String selectRouter(GmmsMessage msg) {
-		int size = routerList.size();
-		if (size <= 0) {
-			return null;
-		} else if (size == 1) {
-			return routerList.get(0);
-		}
-		String destAddress = msg.getRecipientAddress();
-		if (destAddress == null) {
-			int index = this.getRandomIndex(size);
-			return routerList.get(index);
-		}
-		try {
-			//int lastInt = destAddress.charAt(destAddress.length() - 1) - '0';
-			//return routerList.get(lastInt % size);
-			int index = (destAddress.hashCode() & Integer.MAX_VALUE)%size;
-			if(index<0){
-				index = Math.abs(index);
-			}
-			return routerList.get(index);
-		} catch (Exception e) {
-			return routerList.get(0);
-		}
-
-		/*int index = loadbalanceRandom%size;
-		loadbalanceRandom++;
-		if (loadbalanceRandom>100000000) {
-			loadbalanceRandom = 0;
-		}
-		return routerList.get(index);*/
-	}
-
-	/**
-	 * select router for load balance
-	 * 
-	 * @param msg
-	 * @param moduleName
-	 * @return
-	 */
-	public String selectAliveRouter(String failedRouter, GmmsMessage msg) {
-		ArrayList<String> aliveRouters = new ArrayList<String>(routerList);
-		aliveRouters.remove(failedRouter);
-		int size = aliveRouters.size();
-		if (size <= 0) {
-			return null;
-		} else if (size == 1) {
-			return aliveRouters.get(0);
-		}
-		String destAddress = msg.getRecipientAddress();
-		if (destAddress == null) {
-			int index = this.getRandomIndex(size);
-			return aliveRouters.get(index);
-		}
-		try {
-			//int lastInt = destAddress.charAt(destAddress.length() - 1) - '0';
-			//return aliveRouters.get(lastInt % size);
-			int index = (destAddress.hashCode() & Integer.MAX_VALUE)%size;
-			if(index<0){
-				index = Math.abs(index);
-			}
-			return aliveRouters.get(index);
-		} catch (Exception e) {
-			return aliveRouters.get(0);
-		}
-		/*int index = loadbalanceRandom%size;
-		loadbalanceRandom++;
-		if (loadbalanceRandom>100000000) {
-			loadbalanceRandom = 0;
-		}
-		return aliveRouters.get(index);*/
-	}
 	
-	/**
-	 * select router for load balance
-	 * 
-	 * @param msg
-	 * @param moduleName
-	 * @return
-	 */
-	public String selectAliveRouter(ArrayList<String> failedRouters, GmmsMessage msg) {
-		ArrayList<String> aliveRouters = new ArrayList<String>(routerList);
-		if(failedRouters != null){
-			for(String failedRouter: failedRouters){
-				aliveRouters.remove(failedRouter);
-			}
-		}
-		int size = aliveRouters.size();
-		if (size <= 0) {
-			return null;
-		} else if (size == 1) {
-			return aliveRouters.get(0);
-		}
-		String destAddress = msg.getRecipientAddress();
-		if (destAddress == null) {
-			int index = this.getRandomIndex(size);
-			return aliveRouters.get(index);
-		}
-		try {
-			//int lastInt = destAddress.charAt(destAddress.length() - 1) - '0';
-			//return aliveRouters.get(lastInt % size);
-			int index = (destAddress.hashCode() & Integer.MAX_VALUE)%size;
-			if(index<0){
-				index = Math.abs(index);
-			}
-			return aliveRouters.get(index);
-		} catch (Exception e) {
-			return aliveRouters.get(0);
-		}
-		/*int index = loadbalanceRandom%size;
-		loadbalanceRandom++;
-		if (loadbalanceRandom>100000000) {
-			loadbalanceRandom = 0;
-		}
-		return aliveRouters.get(index);*/
-	}
 	
 
 	/**
@@ -1101,17 +473,6 @@ public class ModuleManager {
 	 * 
 	 */
 	/**
-	 * select Channel for load balance
-	 * 
-	 * @return moduleName
-	 */
-	public String selectPeeringChannel() {
-		String peeringChannel = getClusterProperty("DefaultPeeringChannel",
-				SystemConstants.PEERING2CLIENT_MODULE_TYPE);
-		return this.selectChannel(peeringChannel);
-	}
-
-	/**
 	 * getRandomIndex
 	 * 
 	 * @param size
@@ -1124,97 +485,6 @@ public class ModuleManager {
 		double d = Math.random() * (double) size + 0.5D;
 		int index = (int) Math.round(d) - 1;
 		return index;
-	}
-
-	/**
-	 * get server/client module's ConnectionInfo
-	 * 
-	 * @param moduleName
-	 * @return
-	 */
-	public ModuleConnectionInfo getServiceConnectionInfo(String moduleName) {
-		ModuleConnectionInfo connectionInfo = null;
-		if (moduleName == null) {
-			return connectionInfo;
-		}
-		if (serverConnectionMap.containsKey(moduleName)) {
-			connectionInfo = serverConnectionMap.get(moduleName);
-		} else if (clientConnectionMap.containsKey(moduleName)) {
-			connectionInfo = clientConnectionMap.get(moduleName);
-		} else if (mqmConnectionMap.containsKey(moduleName)) {
-			connectionInfo = mqmConnectionMap.get(moduleName);
-		} else if (functionConnectionMap.containsKey(moduleName)) {
-			connectionInfo = functionConnectionMap.get(moduleName);
-		}
-		return connectionInfo;
-	}
-
-	/**
-	 * get Router's ConnectionInfo
-	 * 
-	 * @param moduleName
-	 * @return
-	 */
-	public ModuleConnectionInfo getRouterConnectionInfo(String moduleName) {
-		ModuleConnectionInfo connectionInfo = null;
-		if (moduleName == null) {
-			return connectionInfo;
-		}
-		if (routerConnectionMap.containsKey(moduleName)) {
-			connectionInfo = routerConnectionMap.get(moduleName);
-		}
-		return connectionInfo;
-	}
-
-	/**
-	 * get Server's ConnectionInfo
-	 * 
-	 * @param moduleName
-	 * @return
-	 */
-	public ModuleConnectionInfo getServerConnectionInfo(String moduleName) {
-		ModuleConnectionInfo connectionInfo = null;
-		if (moduleName == null) {
-			return connectionInfo;
-		}
-		if (serverConnectionMap.containsKey(moduleName)) {
-			connectionInfo = serverConnectionMap.get(moduleName);
-		}
-		return connectionInfo;
-	}
-
-	/**
-	 * get Client's ConnectionInfo
-	 * 
-	 * @param moduleName
-	 * @return
-	 */
-	public ModuleConnectionInfo getClientConnectionInfo(String moduleName) {
-		ModuleConnectionInfo connectionInfo = null;
-		if (moduleName == null) {
-			return connectionInfo;
-		}
-		if (clientConnectionMap.containsKey(moduleName)) {
-			connectionInfo = clientConnectionMap.get(moduleName);
-		}
-		return connectionInfo;
-	}
-
-	/**
-	 * get MQM's ConnectionInfo
-	 * 
-	 * @param moduleName
-	 * @return
-	 */
-	public ModuleConnectionInfo getMQMConnectionInfo(String moduleName) {
-		ModuleConnectionInfo connectionInfo = null;
-		if (moduleName == null) {
-			return connectionInfo;
-		}
-		if (mqmConnectionMap.containsKey(moduleName)) {
-			connectionInfo = mqmConnectionMap.get(moduleName);
-		}
-		return connectionInfo;
 	}
 
 	/**
@@ -1275,236 +545,6 @@ public class ModuleManager {
 	}
 
 	/**
-	 * getConnectionInfo of system management module
-	 */
-	public ModuleConnectionInfo getConnectionInfoOfMasterMGT() {
-		return connectionInfoOfMasterMGT;
-	}
-
-	/**
-	 * getConnectionInfo of system management module
-	 */
-	public ModuleConnectionInfo getConnectionInfoOfSlaveMGT() {
-		return connectionInfoOfSlaveMGT;
-	}
-
-	/**
-	 * getClusterProperty
-	 * 
-	 * @param properpty
-	 * @param defaultValue
-	 * @return
-	 */
-	public String getClusterProperty(String properpty, String defaultValue) {
-		GmmsUtility gmmsUtility = GmmsUtility.getInstance();
-		return gmmsUtility.getCommonProperty(properpty, defaultValue);
-	}
-
-	/**
-	 * getter
-	 * 
-	 * @return
-	 */
-	public Map<String, ModuleConnectionInfo> getSystemMgtConnectionMap() {
-		return systemMgtConnectionMap;
-	}
-
-	/**
-	 * when module stop
-	 * 
-	 * @param moduleName
-	 */
-	public void updateModuleStatus2Down(String moduleName) {
-		log.trace("updateModuleStatus2Down:{}", moduleName);
-		ArrayList<String> statusList = moduleStatusMap.get(moduleName);// current
-																		// status,
-																		// last
-																		// status
-		if (statusList == null || statusList.isEmpty()) {
-			log.info("Ignore module down status update because module is not loaded from {}. module={}",
-					moduleListConfigFile, moduleName);
-			return;
-		}
-		String currentStatus = SystemConstants.DOWN_MODULE_STATUS;
-		String lastStatus = statusList.get(0);
-		statusList.clear();
-		statusList.add(currentStatus);
-		statusList.add(lastStatus);
-		moduleStatusMap.put(moduleName, statusList);
-	}
-
-	/**
-	 * when module start
-	 * 
-	 * @param moduleName
-	 */
-	public void updateModuleStatus2Up(String moduleName) {
-		log.trace("updateModuleStatus2Up:{}", moduleName);
-		ArrayList<String> statusList = moduleStatusMap.get(moduleName);// current status,last status
-		if (statusList == null || statusList.isEmpty()) {
-			log.info("Ignore module up status update because module is not loaded from {}. module={}",
-					moduleListConfigFile, moduleName);
-			return;
-		}
-		String currentStatus = SystemConstants.UP_MODULE_STATUS;
-		String lastStatus = statusList.get(0);
-		statusList.clear();
-		statusList.add(currentStatus);
-		statusList.add(lastStatus);
-		moduleStatusMap.put(moduleName, statusList);
-	}
-
-	public Map<String, ArrayList<String>> getModuleStatusMap() {
-		return moduleStatusMap;
-	}
-
-	private boolean isAliveModuleByLocalMap(String module) {
-		List<String> modList = this.moduleStatusMap.get(module);
-		if (modList == null || modList.isEmpty()) {
-			return false;
-		}
-		String status = modList.get(0);
-		return SystemConstants.UP_MODULE_STATUS.equals(status);
-	}
-
-	private Boolean isAliveModuleByRedis(String module) {
-		String role = resolveModuleStatusRole(module);
-		if (role == null || role.length() == 0) {
-			return null;
-		}
-		RedisClient redis = null;
-		try {
-			redis = GmmsUtility.getInstance().getRedisClient();
-		} catch (Exception e) {
-			return null;
-		}
-		if (redis == null) {
-			return null;
-		}
-		Set<String> nodes = new HashSet<String>();
-		boolean redisRead = addModuleStatusNodes(redis, nodes, "system:nodes:" + role);
-		if ("server".equalsIgnoreCase(role)) {
-			redisRead = addModuleStatusNodes(redis, nodes, "system:server:nodes") || redisRead;
-		} else if ("httpserver".equalsIgnoreCase(role)) {
-			redisRead = addModuleStatusNodes(redis, nodes, "system:httpserver:nodes") || redisRead;
-		}
-		if (!redisRead) {
-			return null;
-		}
-		if (nodes.isEmpty()) {
-			return Boolean.FALSE;
-		}
-		for (String nodeId : nodes) {
-			if (nodeId == null || nodeId.length() == 0) {
-				continue;
-			}
-			String key = "module:status:" + role + ":" + module + ":" + nodeId;
-			try {
-				String status = redis.getString(key);
-				if ("ONLINE".equalsIgnoreCase(status)) {
-					return Boolean.TRUE;
-				}
-			} catch (Exception e) {
-				log.warn("Failed to read redis module status. module={}, role={}, nodeId={}, key={}",
-						module, role, nodeId, key, e);
-				return null;
-			}
-		}
-		return Boolean.FALSE;
-	}
-
-	private boolean addModuleStatusNodes(RedisClient redis, Set<String> nodes, String key) {
-		try {
-			Set<String> members = redis.smembers(key);
-			if (members != null) {
-				nodes.addAll(members);
-			}
-			return true;
-		} catch (Exception e) {
-			log.warn("Failed to read redis module node set. key={}", key, e);
-			return false;
-		}
-	}
-
-	private String resolveModuleStatusRole(String module) {
-		ModuleConnectionInfo info = this.getConnectionInfo(module);
-		String fullModuleType = info != null ? info.getFullModuleType() : null;
-		if ((fullModuleType == null || fullModuleType.length() == 0) && module != null) {
-			fullModuleType = resolveFullModuleType(module, null);
-		}
-		if (SystemConstants.ROUTER_MODULE_TYPE.equalsIgnoreCase(fullModuleType)) {
-			return "core";
-		}
-		if (SystemConstants.MQM_MODULE_TYPE.equalsIgnoreCase(fullModuleType)) {
-			return "mqm";
-		}
-		if (SystemConstants.MGT_MODULE_TYPE.equalsIgnoreCase(fullModuleType)) {
-			return null;
-		}
-		if (SystemConstants.COMMONHTTPSERVER_MODULE_TYPE.equalsIgnoreCase(fullModuleType)) {
-			return "httpserver";
-		}
-		if (fullModuleType != null && fullModuleType.endsWith(SystemConstants.SERVER_MODULE_TYPE)) {
-			return "server";
-		}
-		if (fullModuleType != null && fullModuleType.endsWith(SystemConstants.CLIENT_MODULE_TYPE)) {
-			return "client";
-		}
-		return null;
-	}
-
-	/**
-	 * getModules By Type
-	 * 
-	 * @param fullModuleType
-	 * @return
-	 */
-	public List<String> getModulesWithFullType(String fullModuleType) {
-		List<String> modules = this.moduleTypeMap.get(fullModuleType);
-		return modules;
-	}
-	/**
-	 * getAliveModules By Type
-	 * 
-	 * @param fullModuleType
-	 * @return
-	 */
-	public List<String> getAliveModulesWithSameType(String moduleName) {
-		ModuleConnectionInfo modInfo = this.getConnectionInfo(moduleName);
-		if (modInfo == null) {
-			return new ArrayList<String>();
-		}
-		String fullModuleType = modInfo.getFullModuleType();
-		List<String> modules = this.moduleTypeMap.get(fullModuleType);
-		List<String> aliveModules = new ArrayList<String>();
-		if (modules == null) {
-			return aliveModules;
-		}
-		for (String module : modules) {
-			Boolean redisAlive = isAliveModuleByRedis(module);
-			if (Boolean.TRUE.equals(redisAlive)
-					|| (redisAlive == null && isAliveModuleByLocalMap(module))) {
-				aliveModules.add(module);
-			}
-		}
-		return aliveModules;
-	}
-
-	/**
-	 * isAliveModule
-	 * 
-	 * @param module
-	 * @return
-	 */
-	public boolean isAliveModule(String module) {
-		Boolean redisAlive = isAliveModuleByRedis(module);
-		if (redisAlive != null) {
-			return redisAlive.booleanValue();
-		}
-		return isAliveModuleByLocalMap(module);
-	}
-
-	/**
 	 * assign sessionOfModules
 	 * 
 	 * @param cinfo
@@ -1549,14 +589,6 @@ public class ModuleManager {
 		return getSessionNumberOfModule(sessionLimit, moduleName);
 	}
 
-	public List<String> getFunctionModuleList() {
-		return functionModuleList;
-	}
-
-	public List<String> getSystemMgtList() {
-		return systemMgtList;
-	}
-
 	/**
 	 * is core engine
 	 * 
@@ -1567,21 +599,4 @@ public class ModuleManager {
 		return routerList.contains(module);
 	}
 
-	/**
-	 * is system manager
-	 * 
-	 * @param module
-	 * @return
-	 */
-	public boolean isSystemManager(String module) {
-		return systemMgtList.contains(module);
-	}
-
-	public List<String> getMqmModules() {
-		return mqmList;
-	}
-
-	public Set<String> getModuleUrls() {
-		return moduleUrls;
-	}
 }

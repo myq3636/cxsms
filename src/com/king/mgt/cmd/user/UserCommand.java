@@ -2,9 +2,7 @@ package com.king.mgt.cmd.user;
 
 import java.util.*;
 
-import com.king.mgt.cmd.system.*;
 import com.king.mgt.context.*;
-import com.king.mgt.context.Module;
 import com.king.mgt.processor.*;
 
 /**
@@ -52,8 +50,6 @@ public abstract class UserCommand {
     private StringBuffer resp = null;
 
     protected int notifyType = -1;
-    protected Module[] notifyModules = null;
-    protected SystemCommand[] systemCommands = null;
 
     protected String cmdLine;
     protected int GroupId ;
@@ -67,21 +63,8 @@ public abstract class UserCommand {
         processor = new CommandProcessor(this);
     }
 
-    public void setSystemCommands(SystemCommand[] cmds) {
-        this.systemCommands = cmds;
-    }
-
-    public void setFixNotifyModules(Module ...modules) {
-        this.notifyType = Notify_Fix;
-        notifyModules = modules;
-    }
-
     public int getNotifyType() {
         return notifyType;
-    }
-
-    public Module[] getNotifyModules() {
-        return notifyModules;
     }
 
     public int getType() {
@@ -141,10 +124,6 @@ public abstract class UserCommand {
         return this.args;
     }
 
-    public SystemCommand[] getSystemCommands() {
-        return systemCommands;
-    }
-
     public String getCmdLine() {
         return cmdLine;
     }
@@ -153,31 +132,5 @@ public abstract class UserCommand {
 
     public abstract boolean process();
 
-    public abstract SystemCommand buildSystemCommand();
 
-    public boolean isSuccess() {
-        for (int i = 0; i < systemCommands.length; i++) {
-            SystemResponse res = systemCommands[i].getResponse();
-            if (res == null || !res.isSuccess()) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    public SystemCommand[] getFailedCmds() {
-        SystemCommand[] failed = new SystemCommand[systemCommands.length];
-        int num = 0;
-        for (int i = 0; i < systemCommands.length; i++) {
-            if (!systemCommands[i].getResponse().isSuccess()) {
-                failed[num++] = systemCommands[i];
-            }
-        }
-        if (num == 0)
-            return null;
-        SystemCommand[] rtnval = new SystemCommand[num];
-        System.arraycopy(failed, 0, rtnval, 0, num);
-        return rtnval;
-
-    }
 }

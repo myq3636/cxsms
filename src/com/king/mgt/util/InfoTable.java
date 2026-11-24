@@ -41,15 +41,17 @@ public class InfoTable {
         this.add(ARGS_ERROR, "Syntax Error.");
         this.add(SYSTEM_RESPONSE_ERROR, "Execution Error.");
         this.add(BLACKLIST_RELOAD_FTP_FAILED, "FTP error when downloading blacklist.cfg");
-        this.add(HELP_INFO, "list: Show all available modules of A2P that covered by current management interface\n"
-                 + "quit: Close the current user session.\n"
-                 + "startup: start modules\n"
-                 + "shutdown: stop modules\n"
-                 + "restart: stop and start modules\n"
+        this.add(HELP_INFO, "quit: Close the current user session.\n"
+                 + "shutdown: shutdown -a | shutdown module ...\n"
                  + "switchdb: switchdb [master|slave]\n"
                  + "switchredis: switchredis [master|slave]\n"
                  + "switchdns: switchdns [master|slave]\n"
-                 + "version: query GW version\n"
+                 + "reload (every module): customer, routingInfo, blacklist, whitelist, senderBL, senderWL, contentBL, contentWL,\n"
+                 + "    recipientBL, recipientRule, antiSpam, contentTemplate, senderReplacement, vendorRP, vendorContentRP: <name> -a\n"
+                 + "drError -a: reload the DR error codes (conf/drErrorCode.cfg, conf/drErrorMapping.cfg)\n"
+                 + "coreShards -a [module ...]: reload the Core shards\n"
+                 + "clientShards -a [module ...]: reload the Client shards\n"
+                 + "modules -a: reload the module registry\n"
                  + "help: List all supported commands with a simple description");
     }
     public static InfoTable getInstance()

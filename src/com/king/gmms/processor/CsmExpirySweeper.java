@@ -17,10 +17,10 @@ import com.king.message.gmms.MessageStoreManager;
 import com.king.redis.SerializableHandler;
 
 /**
- * Expiry of CSM groups that never got all their segments (redis mode, {@link RedisCsmReassembler}).
+ * Expiry of CSM groups that never got all their segments ({@link RedisCsmReassembler}, on the submit Redis).
  *
  * <p>Every Core runs it (CoreCsmExpirySweep, default true): each CoreCsmExpiryIntervalSec it claims
- * up to CoreCsmExpiryBatch groups due in csm:index, hiding them from other sweepers for
+ * up to CoreCsmExpiryBatch groups due in the csm:index of each submit master, hiding them from other sweepers for
  * CoreCsmExpiryLeaseMs. For an incomplete group whose segments asked for a DR, the expired DR
  * (EXPIRED, or UNDELIVERABLE when the customer takes no expired DR) is produced inline, one per
  * received segment; only then the group is finished. A crash or a failed DR leaves the claim to
@@ -157,7 +157,7 @@ public class CsmExpirySweeper {
 	}
 
 	private static List<GmmsMessage> readSegments(String key) {
-		List<?> flat = (List<?>) GmmsUtility.getInstance().getRedisClient().getStateRedis().evalScript(
+		List<?> flat = (List<?>) RedisCsmReassembler.master(key).evalScript(
 				"return redis.call('HGETALL', KEYS[1])", Arrays.asList(key), Collections.<String>emptyList());
 		List<GmmsMessage> segs = new ArrayList<GmmsMessage>();
 		for (int i = 0; i + 1 < flat.size(); i += 2) {

@@ -1,7 +1,6 @@
 package com.king.mgt.cmd.user;
 
 import com.king.framework.SystemLogger;
-import com.king.mgt.cmd.system.*;
 import com.king.mgt.connection.FTP4Client;
 
 /**
@@ -26,16 +25,6 @@ public class UserCommandPhonePrefix
     public static final String keyword = "senderReplacement";
     public UserCommandPhonePrefix() {
         super(UserCommand.Notify_None);
-    }
-
-    /**
-     * buildSystemCommand
-     *
-     * @return SystemCommand
-     * @todo Implement.mgt.cmd.user.UserCommand method
-     */
-    public SystemCommand buildSystemCommand() {
-        return new SystemCommandPhonePrefix(this);
     }
 
     /**
@@ -74,15 +63,6 @@ public class UserCommandPhonePrefix
 				FTP4Client ftp = new FTP4Client();
 				return ftp.downloadConfigFile(keyword);
 			}
-			case TYPE_RELOAD: {
-				FTP4Client ftp = new FTP4Client();
-				ftp.downloadConfigFile(keyword);
-			}
-            case TYPE_ACTIVE:
-	        {
-	            this.notifyType = Notify_All;
-	        	return processor.handleCommandActive();
-	        }
             default: {
                 log.error("Unknow command type: {}" , type);
             }

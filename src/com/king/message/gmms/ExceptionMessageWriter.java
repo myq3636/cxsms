@@ -258,13 +258,12 @@ public class ExceptionMessageWriter {
      */
     private synchronized void swichFile() {
         if(System.currentTimeMillis() - lastFileTime >= maxFileTime()) {
-        	if (log.isInfoEnabled()) {
-        		log.info("ExceptoinMsgWriter up to file max time");
-            }
+            // nothing written in this period: nothing to switch, nothing logged (it was an INFO line every period)
             if (!isOpen || (currentFileSize == 0)) {
                 lastFileTime = System.currentTimeMillis();
                 return;
             }
+            log.info("Exception message file switched by time ({} chars)", currentFileSize);
             rotate();
         }
     }

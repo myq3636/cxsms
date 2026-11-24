@@ -45,6 +45,9 @@ public final class ShardAssignmentChecker {
 	private static String lastSummary = "";
 	/** group this module publishes under instead of its module role (HTTP clients: httpclient) */
 	private static volatile String groupOverride = null;
+	/** shard -> the Core module(s) owning it as of the last check; null before the first one (only logged) */
+	private static volatile Map<Integer, String> coreOwners = null;
+	private static volatile java.util.concurrent.ScheduledExecutorService refresher;
 
 	private ShardAssignmentChecker() {
 	}
@@ -56,6 +59,46 @@ public final class ShardAssignmentChecker {
 	/** Publish this module's shards under group instead of its role (set before the heartbeat starts). */
 	public static void setShardGroup(String group) {
 		groupOverride = group;
+	}
+
+	/**
+	 * The Core module(s) owning a shard as the last check saw them (every 60 s with the heartbeat, and soon after a
+	 * RELOAD_CORE_SHARDS): what a Server logs with a submit. "?" before the first check, "none" for a shard no Core
+	 * owns; a shard just moved can show the old owner until the next check.
+	 */
+	public static String coreOf(int shard) {
+		Map<Integer, String> owners = coreOwners;
+		if (owners == null) {
+			return "?";
+		}
+		String core = owners.get(shard);
+		return core == null ? "none" : core;
+	}
+
+	/** Check again in a few seconds (the Cores publish their shards at once after a RELOAD_CORE_SHARDS). */
+	public static void checkSoon() {
+		final RedisClient redis = GmmsUtility.getInstance().getRedisClient();
+		if (redis == null || coreOwners == null) {
+			return;   // no check here yet (a module without the heartbeat): nothing to refresh
+		}
+		if (refresher == null) {
+			synchronized (ShardAssignmentChecker.class) {
+				if (refresher == null) {
+					refresher = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+						Thread t = new Thread(r, "ShardCheckSoon");
+						t.setDaemon(true);
+						return t;
+					});
+				}
+			}
+		}
+		refresher.schedule(() -> {
+			try {
+				check(redis);
+			} catch (Exception e) {
+				log.warn("[SHARD-CHECK] check after RELOAD_CORE_SHARDS failed", e);
+			}
+		}, 3, java.util.concurrent.TimeUnit.SECONDS);
 	}
 
 	/** Publish this node's shard view (called with each module status heartbeat), then check if due. */
@@ -88,6 +131,7 @@ public final class ShardAssignmentChecker {
 	public static synchronized List<String> check(RedisClient redis) {
 		Map<String, Integer> totals = new TreeMap<String, Integer>();
 		Map<String, Map<String, Set<Integer>>> owned = new TreeMap<String, Map<String, Set<Integer>>>();
+		Map<Integer, Set<String>> cores = new java.util.HashMap<Integer, Set<String>>();
 		for (String key : redis.getStateRedis().scanAll(PREFIX + "*")) {
 			String[] k = key.split(":", 5);
 			String value = redis.getString(key);
@@ -101,6 +145,16 @@ public final class ShardAssignmentChecker {
 			} catch (NumberFormatException e) {
 				continue;
 			}
+			if ("core".equals(role)) {
+				for (Integer shard : parse(value.substring(value.indexOf('|') + 1))) {
+					Set<String> modules = cores.get(shard);
+					if (modules == null) {
+						modules = new TreeSet<String>();
+						cores.put(shard, modules);
+					}
+					modules.add(k[3]);
+				}
+			}
 			if (!"server".equals(role)) {
 				Map<String, Set<Integer>> byNode = owned.get(role);
 				if (byNode == null) {
@@ -110,6 +164,11 @@ public final class ShardAssignmentChecker {
 				byNode.put(node, parse(value.substring(value.indexOf('|') + 1)));
 			}
 		}
+		Map<Integer, String> coreView = new java.util.HashMap<Integer, String>();
+		for (Map.Entry<Integer, Set<String>> c : cores.entrySet()) {
+			coreView.put(c.getKey(), String.join(",", c.getValue()));
+		}
+		coreOwners = coreView;
 		List<String> problems = new ArrayList<String>();
 		Set<Integer> distinct = new TreeSet<Integer>(totals.values());
 		if (distinct.size() > 1) {
