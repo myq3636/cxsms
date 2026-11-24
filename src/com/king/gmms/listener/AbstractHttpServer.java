@@ -19,7 +19,6 @@ import com.king.framework.A2PThreadGroup;
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.customerconnectionfactory.CustomerConnectionFactory;
-import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.domain.ModuleConnectionInfo;
 import com.king.gmms.domain.ModuleManager;
 import com.king.gmms.ha.ModuleStatusReporter;
@@ -43,8 +42,6 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 			.getSystemLogger(AbstractHttpServer.class);
 	protected static GmmsUtility gmmsUtility;
 	protected int cmdPort;
-	protected static InternalAgentListener agentListener = null;
-	protected static InternalAgentConnectionFactory agentFactory = null;
 	protected static Object mutex = new Object();
 	protected String protocol = null;
 	protected static volatile boolean initAgent = false;
@@ -159,30 +156,6 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 		
 	}
 
-	/**
-	 * start agent message queue and listener
-	 */
-	protected void startAgentConnection(CustomerConnectionFactory factory) {
-		if (initAgent) {
-			return;
-		}
-		agentFactory = InternalAgentConnectionFactory.getInstance();
-		agentFactory.setCustomerFactory(factory);
-		ModuleManager moduleManager = ModuleManager.getInstance();
-		List<String> moduleNameList = moduleManager.getRouterModules();
-		if (moduleNameList != null) {
-			for (String routerModuleName : moduleNameList) {
-				agentFactory.initInternalConnectionFactory(routerModuleName);
-			}
-		}
-		ModuleConnectionInfo cinfo = moduleManager.getConnectionInfo(moduleName);
-		int inSessionNum = cinfo.getInSessionNum();
-		if(inSessionNum>0){
-			agentListener = InternalAgentListener.getInstance();
-			agentListener.start();
-		}
-		initAgent = true;
-	}
 
 	/**
 	 * put message to Router queue
@@ -227,72 +200,13 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 		return putGmmsMessage2InternalRouter(msg);
 	}
 
-	/** the internal router connection (before Redis Stream), for the message types without a stream */
+	/** a message type without a stream (before Redis Stream it went over the internal router connection) */
 	private boolean putGmmsMessage2InternalRouter(GmmsMessage msg) {
-		ModuleManager moduleManager = ModuleManager.getInstance();
-		InternalAgentConnectionFactory factory = InternalAgentConnectionFactory
-				.getInstance();
-		String routerQueue = null;
-		String deliveryChannelQueue = null;
-		OperatorMessageQueue msgQueue = null;
-		if (GmmsMessage.MSG_TYPE_INNER_ACK.equalsIgnoreCase(msg
-				.getMessageType())) {
-			TransactionURI innerTransaction = msg.getInnerTransaction();
-			if (innerTransaction != null) {
-				routerQueue = innerTransaction.getConnectionName();
-				msgQueue = factory.getMessageQueue(msg, routerQueue);
-				deliveryChannelQueue = routerQueue;
-			} else {
-				return false;
-			}
-		} else if (GmmsMessage.MSG_TYPE_SUBMIT_RESP.equalsIgnoreCase(msg
-				.getMessageType())
-				|| GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP
-						.equalsIgnoreCase(msg.getMessageType())) {
-			TransactionURI transaction = msg.getInnerTransaction();
-			if (transaction != null) {
-				routerQueue = transaction.getConnectionName();
-				msgQueue = factory.getMessageQueue(msg, routerQueue);
-			}
-			deliveryChannelQueue = routerQueue;
-		} else {
-			routerQueue = moduleManager.selectRouter(msg);
-			msgQueue = factory.getMessageQueue(msg, routerQueue);
-			deliveryChannelQueue = routerQueue;
-			if (msgQueue == null) {
-				String aliveRouterQueue = moduleManager.selectAliveRouter(routerQueue, msg);
-				msgQueue = factory.getMessageQueue(msg, aliveRouterQueue);
-				if(msgQueue == null){
-            		ArrayList<String> failedRouters = new ArrayList<String>();
-            		failedRouters.add(routerQueue);
-            		failedRouters.add(aliveRouterQueue);
-            		aliveRouterQueue = moduleManager.selectAliveRouter(failedRouters, msg);
-            		while(aliveRouterQueue != null){
-            			msgQueue = factory.getMessageQueue(msg, aliveRouterQueue);
-            			if(msgQueue == null){
-            				failedRouters.add(aliveRouterQueue);
-            				aliveRouterQueue = moduleManager.selectAliveRouter(failedRouters, msg);
-            			}else{
-            				break;
-            			}
-            		}
-            	}
-				deliveryChannelQueue = aliveRouterQueue;
-			}
-		}
-		if(log.isInfoEnabled()){
-			log.info(msg, "Send {} to {}",msg.getMessageType(), deliveryChannelQueue);
-		}		
-		if (msgQueue == null) {
-			if(log.isInfoEnabled()){
-				log.info(msg, "Can not find the alive delivery router");
-			}
-			msg.setDeliveryChannel(moduleName);
-			return false;
-		} else {
-			msg.setDeliveryChannel(moduleName+":"+deliveryChannelQueue);
-			return msgQueue.putMsg(msg);
-		}
+		// the internal router connection is gone (docs/流模式下系统管理和模块间连接代码清理分析.md 3.4): a type without a
+		// stream (a DR query) is not sent
+		log.warn(msg, "{} not sent to Core: no stream for it", msg.getMessageType());
+		msg.setDeliveryChannel(moduleName);
+		return false;
 	}
 
 	/**

@@ -7,7 +7,6 @@ import java.util.concurrent.ThreadLocalRandom;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PCustomerManager;
 import com.king.gmms.milter.AntiSpamMilter;
@@ -20,14 +19,12 @@ public class MessageProcessor {
 	private static SystemLogger log = SystemLogger
 			.getSystemLogger(MessageProcessor.class);
 	protected GmmsUtility gmmsUtility;
-	protected InternalAgentConnectionFactory factory = null;
 	private A2PCustomerManager ctm;
 	private static final String SUFFIX_DEMO = "(1/1)";
 
 	public MessageProcessor() {
 		gmmsUtility = GmmsUtility.getInstance();
 		ctm = gmmsUtility.getCustomerManager();
-		factory = InternalAgentConnectionFactory.getInstance();
 	}
 
 	public boolean antiSpam(GmmsMessage msg, A2PCustomerInfo customerInfo) {

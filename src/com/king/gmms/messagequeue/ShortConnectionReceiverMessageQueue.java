@@ -10,13 +10,11 @@ import javax.servlet.http.HttpServletResponse;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.customerconnectionfactory.CommonHttpServerFactory;
-import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.http.HttpInterface;
 import com.king.gmms.ha.TransactionURI;
 import com.king.gmms.listener.commonhttpserver.CommonHttpDRServlet;
 import com.king.gmms.listener.commonhttpserver.CommonHttpServlet;
-import com.king.gmms.listener.commonhttpserver.CommonRESTHttpDRQueryServlet;
 import com.king.gmms.listener.commonhttpserver.CommonRESTHttpDRServlet;
 import com.king.gmms.listener.commonhttpserver.CommonRESTHttpServlet;
 import com.king.gmms.listener.commonhttpserver.RESTMultiAddrServletResponseParameter;
@@ -57,14 +55,11 @@ public class ShortConnectionReceiverMessageQueue extends ReceiverMessageQueue {
 								.equalsIgnoreCase(queuedMsg.getMessageType())) {
 					queuedMsg.setStatusCode(1);
 					queuedMsg.setMessageType(GmmsMessage.MSG_TYPE_INNER_ACK);
-					TransactionURI innerTransaction = queuedMsg
-							.getInnerTransaction();
-					routerQueue = innerTransaction.getConnectionName();
-					InternalAgentConnectionFactory factory = InternalAgentConnectionFactory
-							.getInstance();
-					OperatorMessageQueue msgQueue = factory.getMessageQueue(
-							queuedMsg, routerQueue);
-					msgQueue.putMsg(queuedMsg);
+					// it went back over the internal connection to Core: none in stream mode
+					// (docs/流模式下系统管理和模块间连接代码清理分析.md 3.4)
+					if (log.isInfoEnabled()) {
+						log.info(queuedMsg, "timeout inner ack not sent: no internal connection in stream mode");
+					}
 				}
 			}
 		} catch (Exception ex) {
@@ -191,20 +186,8 @@ public class ShortConnectionReceiverMessageQueue extends ReceiverMessageQueue {
 					}
 					return;
 				}
-				if (servletparam instanceof RESTServletResponseParameter) {
-
-					String interfaceName = servletparam.getInterfaceName();
-
-					HttpStatus hs = servletparam.getHttpStatus();
-					HttpServletResponse response = servletparam.getResponse();
-					CommonRESTHttpDRQueryServlet servlet = (CommonRESTHttpDRQueryServlet) servletparam
-							.getServlet();
-					servlet.response(interfaceName, hs, msg, response,
-							(RESTServletResponseParameter) servletparam);
-
-				} else {
-					return;
-				}
+				// the REST DR query servlet is gone (no customer queries DRs): nothing to answer
+				return;
 
 			}
 

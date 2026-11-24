@@ -7,7 +7,6 @@ import java.util.List;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.connectionpool.session.PeeringTcp2Session;
-import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.customerconnectionfactory.MultiSmppServerFactory;
 import com.king.gmms.customerconnectionfactory.PeeringTcp2ServerFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
@@ -30,7 +29,6 @@ import com.king.gmms.listener.AbstractServer;
 public class PeeringTcp2Server extends AbstractServer {
     private static SystemLogger log = SystemLogger.getSystemLogger(PeeringTcp2Server.class);
     private final static String PROTOCOL_NAME = "Peering2";
-    private InternalAgentConnectionFactory agentFactory = null;
     private PeeringTcp2ServerFactory serverFactory = null;
     public PeeringTcp2Server() {
     	this.port = Integer.parseInt(gmmsUtility.getModuleProperty("Port","3203"));
@@ -77,7 +75,6 @@ public class PeeringTcp2Server extends AbstractServer {
              if(!isRegister){
              	log.warn("module register failed!");
              }
-             startAgentConnection();    
              initConnectionFactory();
             return isRegister;
         }catch(Exception ex) {
@@ -95,20 +92,5 @@ public class PeeringTcp2Server extends AbstractServer {
     	super.stopService();
         
         return true;
-    }
-    /**
-     * start agent message queue and listener
-     */
-    private void startAgentConnection(){
-    	 //start MessageQueue of InternalAgent
-        agentFactory = InternalAgentConnectionFactory.getInstance();
-        agentFactory.setCustomerFactory(serverFactory);
-        ModuleManager moduleManager = ModuleManager.getInstance();
-        List<String> moduleNameList = moduleManager.getRouterModules();
-        if(moduleNameList != null){
-        	for(String routerModuleName:moduleNameList){
-        		agentFactory.initInternalConnectionFactory(routerModuleName);
-        	}
-        }
     }
 }

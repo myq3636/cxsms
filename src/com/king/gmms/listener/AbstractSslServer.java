@@ -16,7 +16,6 @@ public abstract class AbstractSslServer implements A2PService, Runnable {
 	protected volatile boolean running;
 	protected String module;
 	protected ServerSocket server = null;
-	protected InternalAgentListener agentListener = null;
 	protected ServerSocket serverSocket;// Init in run
 	protected Thread serverThread;
 	protected int port; // smpp server listener port
@@ -26,7 +25,6 @@ public abstract class AbstractSslServer implements A2PService, Runnable {
 	public AbstractSslServer() {
 		this.gmmsUtility = GmmsUtility.getInstance();
 		running = true;
-		agentListener = InternalAgentListener.getInstance();
 		module = System.getProperty("module");
 		port = Integer.parseInt(gmmsUtility.getModuleProperty("Port").trim());
 		canHandover = gmmsUtility.isDBHandover();

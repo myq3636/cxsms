@@ -5,7 +5,6 @@ import java.util.concurrent.ExecutorService;
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.connectionpool.sessionfactory.SessionFactory;
-import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.ModuleManager;
 import com.king.gmms.ha.TransactionURI;
@@ -103,10 +102,10 @@ public class ShortConnectionCustomerMessageQueue implements OperatorMessageQueue
 			}else{
 				routerQueue = moduleManager.selectRouter(msg);
 			}
-	    	InternalAgentConnectionFactory factory = InternalAgentConnectionFactory.getInstance();
-	    	OperatorMessageQueue msgQueue = factory.getMessageQueue(msg, routerQueue);
-	    	if(msgQueue != null){
-	    		msgQueue.putMsg(msg);
+	    	// the failure went back over the internal connection to Core, which stream mode does not have: Core's outbox
+	    	// times out an MT without a result (docs/流模式下系统管理和模块间连接代码清理分析.md 3.4)
+	    	if (log.isInfoEnabled()) {
+	    		log.info(msg, "{} for {} not sent back: no internal connection in stream mode", msg.getMessageType(), routerQueue);
 	    	}
 		} catch (Exception e) {
 			log.warn(msg, "ShortConnectionCustomerMessageQueue exception:" + e);

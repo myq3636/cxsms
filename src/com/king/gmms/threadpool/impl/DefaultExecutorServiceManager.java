@@ -22,7 +22,6 @@ import com.king.framework.SystemLogger;
 import com.king.framework.lifecycle.LifecycleListener;
 import com.king.framework.lifecycle.LifecycleSupport;
 import com.king.framework.lifecycle.event.Event;
-import com.king.gmms.connectionpool.session.AbstractInternalSession;
 import com.king.gmms.threadpool.ExecutorServiceManager;
 import com.king.gmms.threadpool.RunnableMsgTask;
 import com.king.gmms.threadpool.ThreadPoolFactory;
@@ -295,11 +294,7 @@ public class DefaultExecutorServiceManager implements ExecutorServiceManager, Li
     private void onThreadPoolCreated(ExecutorService executorService, Object source) {
         // add to list of thread pools
     	// do this so that shutdown sequence would be: first customer(receiver/sender) pool, then internal pool
-    	if (source instanceof AbstractInternalSession) {
-    		poolList.addLast(executorService);
-    	} else {
-    		poolList.addFirst(executorService);
-    	}
+    	poolList.addFirst(executorService);
     }
 
     private ThreadFactory createThreadFactory(String name) {

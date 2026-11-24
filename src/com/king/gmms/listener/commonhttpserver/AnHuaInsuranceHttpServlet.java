@@ -100,7 +100,6 @@ public class AnHuaInsuranceHttpServlet extends AbstractHttpServer {
 					log.info("No client is started directly.");
 				}
 				//receiverThreadPool = executorServiceManager.newFixedThreadPool(this, "IntReceiver_commonHttpServer", 10);
-				startAgentConnection(factory);
 			}
 			super.startService();
 		} catch (Exception ex) {

@@ -35,7 +35,6 @@ import com.king.gmms.connectionpool.ConnectionStatus;
 import com.king.gmms.connectionpool.connection.ConnectionManager;
 import com.king.gmms.connectionpool.ssl.SslConfiguration;
 import com.king.gmms.connectionpool.ssl.SslContextFactory;
-import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PSingleConnectionInfo;
 import com.king.gmms.domain.ConnectionInfo;
@@ -604,12 +603,6 @@ public abstract class HttpSession extends Session {
 			lastRouterQueuePutResult = false;
 			return false;
 		}
-		ModuleManager moduleManager = ModuleManager.getInstance();
-		InternalAgentConnectionFactory factory = InternalAgentConnectionFactory
-				.getInstance();
-		String routerQueue = null;	
-		String deliveryChannelQueue = null;
-		OperatorMessageQueue msgQueue = null;
 		if (GmmsMessage.MSG_TYPE_INNER_ACK.equalsIgnoreCase(msg
 				.getMessageType())
 				|| GmmsMessage.MSG_TYPE_SUBMIT_RESP.equalsIgnoreCase(msg
@@ -626,45 +619,12 @@ public abstract class HttpSession extends Session {
 			}
 			lastRouterQueuePutResult = com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceResult(msg);
 			return lastRouterQueuePutResult;
-		} else {
-			routerQueue = moduleManager.selectRouter(msg);
-			msgQueue = factory.getMessageQueue(msg, routerQueue);
-			deliveryChannelQueue = routerQueue;
-			if (msgQueue == null) {
-				String aliveRouterQueue = moduleManager.selectAliveRouter(routerQueue, msg);
-				msgQueue = factory.getMessageQueue(msg, aliveRouterQueue);
-				if(msgQueue == null){
-            		ArrayList<String> failedRouters = new ArrayList<String>();
-            		failedRouters.add(routerQueue);
-            		failedRouters.add(aliveRouterQueue);
-            		aliveRouterQueue = moduleManager.selectAliveRouter(failedRouters, msg);
-            		while(aliveRouterQueue != null){
-            			msgQueue = factory.getMessageQueue(msg, aliveRouterQueue);
-            			if(msgQueue == null){
-            				failedRouters.add(aliveRouterQueue);
-            				aliveRouterQueue = moduleManager.selectAliveRouter(failedRouters, msg);
-            			}else{
-            				break;
-            			}
-            		}
-            	}
-				deliveryChannelQueue = aliveRouterQueue;
-			}
-			if(log.isInfoEnabled()){
-				log.info(msg, "Send {} to {}",msg.toString(), deliveryChannelQueue);
-			}
 		}
-		
-		if (msgQueue == null) {
-			log.warn(msg, "Can not find the alive delivery router");
-			msg.setDeliveryChannel(module);
-			lastRouterQueuePutResult = false;
-			return false;
-		} else {
-			msg.setDeliveryChannel(module+":"+deliveryChannelQueue);
-			lastRouterQueuePutResult = msgQueue.putMsg(msg);
-			return lastRouterQueuePutResult;
-		}
+		// nothing else goes to Core from an HTTP session: the internal connection between the modules is gone
+		// (a DR or MO polled from the channel; the polling is not used, docs/流模式下系统管理和模块间连接代码清理分析.md 3.4)
+		log.warn(msg, "{} not sent to Core: only responses go there from an HTTP session in stream mode", msg.getMessageType());
+		lastRouterQueuePutResult = false;
+		return false;
 	}
 
 	protected void resetLastRouterQueuePutResult() {

@@ -11,7 +11,6 @@ import com.king.gmms.GmmsUtility;
 import com.king.gmms.connectionpool.ConnectionStatus;
 import com.king.gmms.connectionpool.sessionthread.ClientSessionThread;
 import com.king.gmms.connectionpool.sessionthread.ServerSessionThread;
-import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.customerconnectionfactory.PeeringTcp2ServerFactory;
 import com.king.gmms.domain.*;
 import com.king.gmms.ha.ModuleURI;
@@ -928,70 +927,17 @@ public class PeeringTcp2Session extends AbstractCommonSession {
     	if(msg == null){
     		return false;
     	}
-    	ModuleManager moduleManager = ModuleManager.getInstance();
-    	InternalAgentConnectionFactory factory = InternalAgentConnectionFactory.getInstance();
-    	OperatorMessageQueue msgQueue = null;
-    	String deliveryChannelQueue = null;
-    	String routerQueue = null;
-    	String moduleName = null;
-    	ModuleURI moduleURI = transaction.getModule();
-		if(moduleURI!=null){
-			moduleName = moduleURI.getModule();
-		}
-    	if(GmmsMessage.MSG_TYPE_INNER_ACK.equalsIgnoreCase(msg.getMessageType())
-    		|| GmmsMessage.MSG_TYPE_SUBMIT_RESP.equalsIgnoreCase(msg.getMessageType())
-    		||GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP.equalsIgnoreCase(msg.getMessageType())){
-    		
-    		TransactionURI innerTransaction = msg.getInnerTransaction();
-    		if(innerTransaction == null){
-    			if(log.isInfoEnabled()){
-					log.info(msg,"Cannot get the inner transaction");
-    			}
-				return false;
-    		}
-    		routerQueue = innerTransaction.getConnectionName();
-    		msgQueue = factory.getMessageQueue(msg, routerQueue);
-    		deliveryChannelQueue = routerQueue;
-    	}else{
-        	routerQueue = moduleManager.selectRouter(msg);
-        	msgQueue = factory.getMessageQueue(msg, routerQueue);
-        	deliveryChannelQueue = routerQueue;
-        	if(msgQueue == null){
-            	String aliveRouterQueue = moduleManager.selectAliveRouter(routerQueue,msg);
-            	msgQueue = factory.getMessageQueue(msg, aliveRouterQueue);
-            	if(msgQueue == null){
-            		ArrayList<String> failedRouters = new ArrayList<String>();
-            		failedRouters.add(routerQueue);
-            		failedRouters.add(aliveRouterQueue);
-            		aliveRouterQueue = moduleManager.selectAliveRouter(failedRouters, msg);
-            		while(aliveRouterQueue != null){
-            			msgQueue = factory.getMessageQueue(msg, aliveRouterQueue);
-            			if(msgQueue == null){
-            				failedRouters.add(aliveRouterQueue);
-            				aliveRouterQueue = moduleManager.selectAliveRouter(failedRouters, msg);
-            			}else{
-            				break;
-            			}
-            		}
-            	}
-            	deliveryChannelQueue = aliveRouterQueue;
-        	}
+    	// Redis Stream: the responses to the results stream; nothing else goes to Core from here (the internal
+    	// connection between the modules is gone, docs/流模式下系统管理和模块间连接代码清理分析.md 3.4)
+    	String type = msg.getMessageType();
+    	if (GmmsMessage.MSG_TYPE_INNER_ACK.equalsIgnoreCase(type)
+    			|| GmmsMessage.MSG_TYPE_SUBMIT_RESP.equalsIgnoreCase(type)
+    			|| GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP.equalsIgnoreCase(type)
+    			|| GmmsMessage.MSG_TYPE_DELIVERY_REPORT_QUERY_RESP.equalsIgnoreCase(type)) {
+    		return com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceResult(msg);
     	}
-		/*
-		 * if(log.isInfoEnabled()){ log.info(
-		 * msg,"putGmmsMessage2RouterQueue transaction={};msgType={};outmsgid={};routerQueue={}"
-		 * ,transaction,msg.getMessageType(),msg.getOutMsgID(),deliveryChannelQueue); }
-		 */     	
-    	if(msgQueue == null){
-    		if(log.isInfoEnabled()){
-				log.info(msg,"Can not find the alive delivery router");
-    		}
-    		msg.setDeliveryChannel(moduleName);
-    		return false;
-    	}else{
-    		msg.setDeliveryChannel(moduleName+":"+deliveryChannelQueue);
-    		return msgQueue.putMsg(msg);
-    	}
+    	log.warn(msg, "{} not sent to Core: only responses go there from this session in stream mode", type);
+    	return false;
     }
     private void clearActiveTestCount() {
         synchronized (mutex) {

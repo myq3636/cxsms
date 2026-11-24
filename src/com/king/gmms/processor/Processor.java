@@ -2,7 +2,6 @@ package com.king.gmms.processor;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.ha.TransactionURI;
 import com.king.gmms.messagequeue.OperatorMessageQueue;
 import com.king.message.gmms.GmmsMessage;
@@ -12,11 +11,9 @@ import com.king.message.gmms.GmmsStatus;
 public class Processor {
     private static SystemLogger log = SystemLogger.getSystemLogger(Processor.class);
     protected GmmsUtility gmmsUtility;
-    protected InternalAgentConnectionFactory factory = null;
 
     public Processor() {
         gmmsUtility = GmmsUtility.getInstance();
-        factory = InternalAgentConnectionFactory.getInstance();
     }
 
    public void logFail(GmmsMessage message) {
@@ -48,17 +45,8 @@ public class Processor {
        if(log.isInfoEnabled()){
 			log.info(message,"Log failed, statuscode:{}",message.getStatus());
        }
-	   	TransactionURI transaction = message.getInnerTransaction();
-	   	String routerQueue = null;
-	   	if(transaction != null){
-	   		routerQueue = transaction.getConnectionName();
-			OperatorMessageQueue msgQueue = factory.getMessageQueue(message, routerQueue);
-			if(msgQueue != null){
-				msgQueue.putMsg(message);
-			}
-	   	}else{
-	   		log.warn(message,"Can not find the transaction");
-	   	}
+	   	// the failure went back over the internal connection to Core: none in stream mode
+	   	// (docs/流模式下系统管理和模块间连接代码清理分析.md 3.4)
 
   }
 

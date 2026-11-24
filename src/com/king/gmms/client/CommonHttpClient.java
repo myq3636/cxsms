@@ -6,7 +6,6 @@ import java.util.List;
 import com.king.framework.A2PThreadGroup;
 import com.king.framework.SystemLogger;
 import com.king.gmms.customerconnectionfactory.CommonHttpClientFactory;
-import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PSingleConnectionInfo;
 import com.king.gmms.domain.ModuleManager;

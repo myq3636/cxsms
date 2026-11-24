@@ -10,7 +10,6 @@ import com.king.framework.SystemLogger;
 import com.king.gmms.connectionpool.session.SslSmppSession;
 import com.king.gmms.connectionpool.ssl.SslConfiguration;
 import com.king.gmms.connectionpool.ssl.SslContextFactory;
-import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.customerconnectionfactory.MultiSmppServerFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.ModuleManager;
@@ -36,7 +35,6 @@ public class SslSmppServer extends AbstractSslServer {
     private boolean smppAsync;
 
     private MultiSmppServerFactory serverFactory = null;
-    private InternalAgentConnectionFactory agentFactory = null;
     private SslContextFactory sslContextFactory = null;
     
     public SslSmppServer() {
@@ -170,7 +168,6 @@ public class SslSmppServer extends AbstractSslServer {
             if(!isRegister){
             	log.warn("module register failed!");
             }
-            startAgentConnection();    
             smppAsync = Boolean.parseBoolean(gmmsUtility.getModuleProperty(
                 "Asynchronous", "true").toLowerCase().trim());
             if (smppAsync) {
@@ -190,23 +187,6 @@ public class SslSmppServer extends AbstractSslServer {
         }
     }
     /**
-     * start agent message queue and listener
-     */
-    private void startAgentConnection(){
-    	 //start MessageQueue of InternalAgent
-        agentFactory = InternalAgentConnectionFactory.getInstance();
-        agentFactory.setCustomerFactory(serverFactory);
-        ModuleManager moduleManager = ModuleManager.getInstance();
-        List<String> moduleNameList = moduleManager.getRouterModules();
-        if(moduleNameList != null){
-        	for(String routerModuleName:moduleNameList){
-        		agentFactory.initInternalConnectionFactory(routerModuleName);
-        	}
-        }
-        agentListener.start();
-    }
-
-    /**
      * stopService
      *
      * @return boolean
@@ -214,15 +194,7 @@ public class SslSmppServer extends AbstractSslServer {
      */
     public boolean stopService() {
     	super.stopService();
-        try {
-            agentListener.stop();
-        }
-        catch (Exception ioe) {
-            log.error("Error occur while attempt to stop SMPP Server.", ioe);
-        }
-        finally {
-            running = false;
-        }
+        running = false;
         return true;
     }
     

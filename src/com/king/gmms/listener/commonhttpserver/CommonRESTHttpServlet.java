@@ -82,7 +82,6 @@ public class CommonRESTHttpServlet extends AbstractHttpServer {
 				else {
 					log.info("No client is started directly.");
 				}
-				startAgentConnection(factory);
 			}
 			super.startService();
 		} catch (Exception ex) {

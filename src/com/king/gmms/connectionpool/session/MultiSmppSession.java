@@ -20,7 +20,6 @@ import com.king.gmms.connectionpool.connection.MultiServerConnectionImpl;
 import com.king.gmms.connectionpool.connection.NodeConnectionManagerInterface;
 import com.king.gmms.connectionpool.sessionthread.ServerSessionThread;
 import com.king.gmms.connectionpool.sessionthread.SessionThread;
-import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.customerconnectionfactory.MultiSmppServerFactory;
 import com.king.gmms.messagequeue.StreamQueueManager;
 import com.king.gmms.routing.ADSServerMonitor;

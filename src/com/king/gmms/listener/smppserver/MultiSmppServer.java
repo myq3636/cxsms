@@ -41,7 +41,6 @@ public class MultiSmppServer
     private boolean smppAsync;
 
     private MultiSmppServerFactory serverFactory = null;
-    private InternalAgentConnectionFactory agentFactory = null;
     private ScheduledExecutorService sessionRegistryReconcileExecutor = null;
     public MultiSmppServer() {
     	this.port = Integer.parseInt(gmmsUtility.getModuleProperty("Port","16272"));
@@ -180,21 +179,6 @@ public class MultiSmppServer
             sessionRegistryReconcileExecutor = null;
         }
     }
-    /**
-     * start agent message queue and listener
-     */
-    private void startAgentConnection(){
-    	 //start MessageQueue of InternalAgent
-			/*
-			 * agentFactory = InternalAgentConnectionFactory.getInstance();
-			 * agentFactory.setCustomerFactory(serverFactory); ModuleManager moduleManager =
-			 * ModuleManager.getInstance(); List<String> moduleNameList =
-			 * moduleManager.getRouterModules(); if(moduleNameList != null){ for(String
-			 * routerModuleName:moduleNameList){
-			 * agentFactory.initInternalConnectionFactory(routerModuleName); } }
-			 */
-    }
-
     /**
      * stopService
      *

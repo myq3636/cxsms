@@ -4,7 +4,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.king.framework.SystemLogger;
-import com.king.gmms.customerconnectionfactory.InternalAgentConnectionFactory;
 import com.king.gmms.customerconnectionfactory.PeeringTcp2ClientFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PMultiConnectionInfo;
