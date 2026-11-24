@@ -103,7 +103,6 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
     protected Integer activeTestCount = 0;
     protected MultiSmppPduProcessor processor;
     protected Unprocessed unprocessed = new Unprocessed();
-    protected InternalAgentConnectionFactory agentFactory = null;
     protected MessageIdGenerator messageIdGenerator = MessageIdGenerator.getInstance();
     protected ExceptionMessageManager exMsgManager = ExceptionMessageManager.getInstance();
     protected volatile SmppPendingSubmitManager pendingSubmitManager = null;
@@ -145,8 +144,6 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
         catch (Exception ex) {
             log.error(ex, ex);
         }
-        
-        agentFactory = InternalAgentConnectionFactory.getInstance();
         
         int connectionSilentTime = Integer.parseInt(gmmsUtility.
             getCommonProperty("MaxSilentTime", "600")) * 1000;
@@ -196,7 +193,6 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             	startGuavaCache(customerInfo);
             }
             
-            agentFactory = InternalAgentConnectionFactory.getInstance();
             
         }
         catch (Exception ex) {
@@ -803,84 +799,6 @@ public class MultiSmppSession extends AbstractCommonSession implements PendingSu
             log.warn("Fail to send response. status=" + status
                     + ", seq=" + (request != null ? request.getSequenceNumber() : -1), e);
         }
-    }
-    /**
-     * put message to Router queue
-     * @param msg
-     */
-    private boolean putGmmsMessage2RouterQueue(GmmsMessage msg){
-    	if(msg == null){
-    		return false;
-    	}
-    	ModuleManager moduleManager = ModuleManager.getInstance();
-    	String routerQueue = null;
-    	OperatorMessageQueue msgQueue = null;
-    	String moduleName = null;
-    	ModuleURI moduleURI = transaction.getModule();
-		if(moduleURI!=null){
-			moduleName = moduleURI.getModule();
-		}
-		String deliverChannelQueue = null;
-    	if(GmmsMessage.MSG_TYPE_INNER_ACK.equalsIgnoreCase(msg.getMessageType())
-    		||GmmsMessage.MSG_TYPE_SUBMIT_RESP.equalsIgnoreCase(msg.getMessageType())
-    		||GmmsMessage.MSG_TYPE_DELIVERY_REPORT_RESP.equalsIgnoreCase(msg.getMessageType())){
-    		TransactionURI innerTransaction = msg.getInnerTransaction();
-    		if(innerTransaction == null){
-    			if(log.isInfoEnabled()){
-					log.info(msg,"Cannot get the inner transaction");
-    			}
-				return false;
-    		}
-    		routerQueue = innerTransaction.getConnectionName();  
-    		deliverChannelQueue = routerQueue;
-    		msgQueue = agentFactory.getMessageQueue(msg, routerQueue);
-    	}else{
-        	routerQueue = moduleManager.selectRouter(msg);
-        	msgQueue = agentFactory.getMessageQueue(msg, routerQueue);
-        	deliverChannelQueue = routerQueue;
-        	if(msgQueue == null){
-            	String aliveRouterQueue = moduleManager.selectAliveRouter(routerQueue,msg);
-            	msgQueue = agentFactory.getMessageQueue(msg, aliveRouterQueue);
-            	if(msgQueue == null){
-            		ArrayList<String> failedRouters = new ArrayList<String>();
-            		failedRouters.add(routerQueue);
-            		failedRouters.add(aliveRouterQueue);
-            		aliveRouterQueue = moduleManager.selectAliveRouter(failedRouters, msg);
-            		while(aliveRouterQueue != null){
-            			msgQueue = agentFactory.getMessageQueue(msg, aliveRouterQueue);
-            			if(msgQueue == null){
-            				failedRouters.add(aliveRouterQueue);
-            				aliveRouterQueue = moduleManager.selectAliveRouter(failedRouters, msg);
-            			}else{
-            				break;
-            			}
-            		}
-            	}
-            	deliverChannelQueue = aliveRouterQueue;
-            	if(log.isDebugEnabled()){
-            		log.debug(msg,"putGmmsMessage2RouterQueue aliveRouterQueue={}",aliveRouterQueue);
-            	}
-        	}
-    	}
-    	
-		/*
-		 * if(log.isDebugEnabled()){
-		 * log.debug(msg,"putGmmsMessage2RouterQueue transaction={};msgType={}"
-		 * ,transaction,msg.getMessageType()); }
-		 */
-    	if(msgQueue == null){
-    		if(log.isInfoEnabled()){
-				log.info(msg,"Can not find the alive delivery router");
-    		}
-    		msg.setDeliveryChannel(moduleName);
-    		return false;
-    	}else{
-    		msg.setDeliveryChannel(moduleName+":"+deliverChannelQueue);
-    		if(log.isInfoEnabled()){
-    			log.info(msg,"Send {} to {}",msg.getMessageType(),routerQueue);
-        	}
-    		return msgQueue.putMsg(msg);
-    	}
     }
     /**
      * handle outbind request

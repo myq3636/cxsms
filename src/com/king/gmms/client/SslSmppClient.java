@@ -19,7 +19,6 @@ public class SslSmppClient extends AbstractClient {
 	private static SystemLogger log = SystemLogger
 			.getSystemLogger(SslSmppClient.class);
 	private final String PROTOCOL_NAME = "SSLSMPP";
-	private InternalAgentConnectionFactory agentFactory = null;
 	private SslSmppClientFactory customerFactory = null;
 	private ReportInMsgCountTimer reportInMsgCountTimer = null;
 
@@ -66,22 +65,6 @@ public class SslSmppClient extends AbstractClient {
 			}
 		} catch (Exception ex) {
 			log.debug(ex, ex);
-		}
-	}
-
-	/**
-	 * start agent message queue and listener
-	 */
-	private void startAgentConnection() {
-		// start MessageQueue of InternalAgent
-		agentFactory = InternalAgentConnectionFactory.getInstance();
-		agentFactory.setCustomerFactory(customerFactory);
-		ModuleManager moduleManager = ModuleManager.getInstance();
-		List<String> moduleNameList = moduleManager.getRouterModules();
-		if (moduleNameList != null) {
-			for (String routerModuleName : moduleNameList) {
-				agentFactory.initInternalConnectionFactory(routerModuleName);
-			}
 		}
 	}
 

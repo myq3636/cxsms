@@ -15,7 +15,6 @@ import com.king.message.gmms.GmmsMessage;
 
 public class CommonHttpClient extends AbstractClient {
 	private static SystemLogger log = SystemLogger.getSystemLogger(CommonHttpClient.class);	
-    private InternalAgentConnectionFactory agentFactory = null;
     private CommonHttpClientFactory customerFactory = null;
     
 	public CommonHttpClient(){		 
@@ -24,28 +23,11 @@ public class CommonHttpClient extends AbstractClient {
 			 customerFactory = CommonHttpClientFactory.getInstance();
 			 customerFactory.initQueryMsgThread();	           		 
 	}
-	 /**
-     * start agent message queue and listener
-     */
-    private void startAgentConnection(){
-    	 //start MessageQueue of InternalAgent
-        agentFactory = InternalAgentConnectionFactory.getInstance();
-        agentFactory.setCustomerFactory(customerFactory);
-        ModuleManager moduleManager = ModuleManager.getInstance();
-        List<String> moduleNameList = moduleManager.getRouterModules();
-        if(moduleNameList != null){
-        	for(String routerModuleName:moduleNameList){
-        		agentFactory.initInternalConnectionFactory(routerModuleName);
-        	}
-        }
-    }
-
 	public boolean startService() {
 		customerFactory.initializeAllHttpCustomers();
 		if(!initSystemManagement()){
 	   		  log.warn("module register failed!");
 	    }
-		//startAgentConnection();
         //agentListener.start();
 		return true;
 	}

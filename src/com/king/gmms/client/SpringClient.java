@@ -15,7 +15,6 @@ public class SpringClient extends AbstractClient {
 	private static SystemLogger log = SystemLogger
 			.getSystemLogger(SpringClient.class);
 	private final String PROTOCOL_NAME = "SPRING";
-	private InternalAgentConnectionFactory agentFactory = null;
 	private SpringClientFactory customerFactory = null;
 
 	public SpringClient() {
@@ -44,22 +43,6 @@ public class SpringClient extends AbstractClient {
 		} catch (Exception ex) {
 			log.error(ex, ex);
 
-		}
-	}
-
-	/**
-	 * start agent message queue and listener
-	 */
-	private void startAgentConnection() {
-		// start MessageQueue of InternalAgent
-		agentFactory = InternalAgentConnectionFactory.getInstance();
-		agentFactory.setCustomerFactory(customerFactory);
-		ModuleManager moduleManager = ModuleManager.getInstance();
-		List<String> moduleNameList = moduleManager.getRouterModules();
-		if (moduleNameList != null) {
-			for (String routerModuleName : moduleNameList) {
-				agentFactory.initInternalConnectionFactory(routerModuleName);
-			}
 		}
 	}
 

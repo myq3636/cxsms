@@ -2283,6 +2283,11 @@ public class A2PCustomerManager implements LifecycleListener {
 	 * clear for ConnectionManagement
 	 */
 	private void clearConnectionManagement(int ssid) {
+		// the connection management serves SystemManager only: without it (stream mode) a first call built it for
+		// every SMPP customer (a NodeManager and its pool for each multi-node one) and dropped it again
+		if (!GmmsUtility.getInstance().isSystemManageEnable()) {
+			return;
+		}
 		ArrayList<Integer> ssids = new ArrayList<Integer>();
 		ssids.add(ssid);
 		String module = System.getProperty("module");
@@ -2299,6 +2304,11 @@ public class A2PCustomerManager implements LifecycleListener {
 	 * init for ConnectionManagement
 	 */
 	private void reloadConnectionManagement(int ssid) {
+		// the connection management serves SystemManager only: without it (stream mode) a first call built it for
+		// every SMPP customer (a NodeManager and its pool for each multi-node one) and dropped it again
+		if (!GmmsUtility.getInstance().isSystemManageEnable()) {
+			return;
+		}
 		ArrayList<Integer> ssids = new ArrayList<Integer>();
 		ssids.add(ssid);
 		String module = System.getProperty("module");

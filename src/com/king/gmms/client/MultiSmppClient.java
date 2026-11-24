@@ -17,7 +17,6 @@ public class MultiSmppClient extends AbstractClient {
 	private static SystemLogger log = SystemLogger
 			.getSystemLogger(MultiSmppClient.class);
 	private final String PROTOCOL_NAME = "SMPP";
-	private InternalAgentConnectionFactory agentFactory = null;
 	private MultiSmppClientFactory customerFactory = null;
 	public MultiSmppClient() {
 		customerFactory = MultiSmppClientFactory.getInstance();
@@ -62,22 +61,6 @@ public class MultiSmppClient extends AbstractClient {
 			}
 		} catch (Exception ex) {
 			log.debug(ex, ex);
-		}
-	}
-
-	/**
-	 * start agent message queue and listener
-	 */
-	private void startAgentConnection() {
-		// start MessageQueue of InternalAgent
-		agentFactory = InternalAgentConnectionFactory.getInstance();
-		agentFactory.setCustomerFactory(customerFactory);
-		ModuleManager moduleManager = ModuleManager.getInstance();
-		List<String> moduleNameList = moduleManager.getRouterModules();
-		if (moduleNameList != null) {
-			for (String routerModuleName : moduleNameList) {
-				agentFactory.initInternalConnectionFactory(routerModuleName);
-			}
 		}
 	}
 
