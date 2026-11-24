@@ -3,7 +3,6 @@ package it;
 import java.util.List;
 
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.connectionpool.session.InternalCoreEngineSession;
 import com.king.gmms.messagequeue.StreamAttempt;
 import com.king.gmms.processor.CsmExpirySweeper;
 import com.king.gmms.processor.CsmStoreResult;
@@ -36,7 +35,7 @@ public class Batch7IT extends ItSupport {
 		StreamAttempt.begin(m, owner);
 		boolean ok = false;
 		try {
-			ok = InternalCoreEngineSession.getReactiveInstance().processSubmitFromStream(m);
+			ok = com.king.gmms.processor.CoreMessageProcessor.getInstance().processSubmitFromStream(m);
 		} finally {
 			if (ok) {
 				StreamAttempt.finish("stream:it:none", "g", "0-1");   // ack + delete the marker
@@ -86,7 +85,7 @@ public class Batch7IT extends ItSupport {
 			public void run() {
 				try {
 					StreamAttempt.begin(a2, "crashed:1");
-					InternalCoreEngineSession.getReactiveInstance().processSubmitFromStream(a2);
+					com.king.gmms.processor.CoreMessageProcessor.getInstance().processSubmitFromStream(a2);
 					java.lang.reflect.Method flush = StreamAttempt.class.getDeclaredMethod("flush", boolean.class, boolean.class);
 					flush.setAccessible(true);
 					flush.invoke(StreamAttempt.current(), false, false);
@@ -110,7 +109,7 @@ public class Batch7IT extends ItSupport {
 		crashed(new Runnable() {
 			public void run() {
 				StreamAttempt.begin(a2c, "crashed:1");
-				InternalCoreEngineSession.getReactiveInstance().processSubmitFromStream(a2c);
+				com.king.gmms.processor.CoreMessageProcessor.getInstance().processSubmitFromStream(a2c);
 			}
 		});
 		Thread.sleep(900);

@@ -12,7 +12,6 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import com.king.framework.SystemLogger;
-import com.king.gmms.connectionpool.session.InternalCoreEngineSession;
 import com.king.gmms.metrics.MetricsCollector;
 import com.king.gmms.metrics.MetricsNames;
 import com.king.message.gmms.GmmsMessage;
@@ -277,7 +276,7 @@ public class InboundDRStreamConsumer {
                 // The DR to the customer is produced on this thread, before the ack below
                 processed = MessageStoreManager.withInlineDrDispatch(new Callable<Boolean>() {
                     public Boolean call() {
-                        return InternalCoreEngineSession.getReactiveInstance().handleInboundDRInternal(msg, null);
+                        return com.king.gmms.processor.CoreMessageProcessor.getInstance().handleInboundDRInternal(msg);
                     }
                 });
             } finally {

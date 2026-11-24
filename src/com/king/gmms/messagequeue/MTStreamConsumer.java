@@ -12,7 +12,6 @@ import java.util.concurrent.TimeUnit;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.connectionpool.session.InternalCoreEngineSession;
 import com.king.gmms.metrics.MetricsCollector;
 import com.king.gmms.metrics.MetricsNames;
 import com.king.message.gmms.GmmsMessage;
@@ -297,7 +296,7 @@ public class MTStreamConsumer {
             }
             boolean processed = false;
             try {
-                processed = InternalCoreEngineSession.getReactiveInstance().processSubmitFromStream(msg);
+                processed = com.king.gmms.processor.CoreMessageProcessor.getInstance().processSubmitFromStream(msg);
             } finally {
                 if (attempt && !processed) {
                     StreamAttempt.abandon();

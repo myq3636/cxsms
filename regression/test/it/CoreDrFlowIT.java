@@ -184,20 +184,20 @@ public class CoreDrFlowIT {
 		bad.setStatus(GmmsStatus.SUCCESS);
 		q.produceResult(bad);
 		check(waitFor(() -> jedis.exists("drl:OUT-IT5"), 10000), "3b: lookup for OUT-IT5 cached");
-		Field msmField = com.king.gmms.connectionpool.session.InternalCoreEngineSession.class.getDeclaredField("msgStoreManager");
+		Field msmField = com.king.gmms.processor.CoreMessageProcessor.class.getDeclaredField("msgStoreManager");
 		msmField.setAccessible(true);
-		Object realMsm = msmField.get(com.king.gmms.connectionpool.session.InternalCoreEngineSession.getReactiveInstance());
-		msmField.set(com.king.gmms.connectionpool.session.InternalCoreEngineSession.getReactiveInstance(), null);
+		Object realMsm = msmField.get(com.king.gmms.processor.CoreMessageProcessor.getInstance());
+		msmField.set(com.king.gmms.processor.CoreMessageProcessor.getInstance(), null);
 		long pendingBefore = drPendingCount();
 		q.produceInboundDeliveryReport(vendorDr("OUT-IT5", "8_DR5"));
 		check(waitFor(() -> logLine("8_DR5", "STREAM-NACK") != null, 10000), "3b: failing DR is nacked (left pending for retry)");
 		check(jedis.exists("drl:OUT-IT5") && drPendingCount() == pendingBefore,
 				"3b: lookup entry kept after the failure, no DR produced");
-		msmField.set(com.king.gmms.connectionpool.session.InternalCoreEngineSession.getReactiveInstance(), realMsm);
+		msmField.set(com.king.gmms.processor.CoreMessageProcessor.getInstance(), realMsm);
 		final GmmsMessage replay = vendorDr("OUT-IT5", "8_DR5");
 		boolean retried = MessageStoreManager.withInlineDrDispatch(() ->
-				com.king.gmms.connectionpool.session.InternalCoreEngineSession.getReactiveInstance()
-						.handleInboundDRInternal(replay, null));
+				com.king.gmms.processor.CoreMessageProcessor.getInstance()
+						.handleInboundDRInternal(replay));
 		check(retried && drPendingCount() == pendingBefore + 1, "3b: retry finds the original again and forwards the DR");
 		check(!jedis.exists("drl:OUT-IT5"), "3b: lookup entry deleted after the successful retry");
 

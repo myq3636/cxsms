@@ -11,7 +11,6 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import com.king.framework.SystemLogger;
-import com.king.gmms.connectionpool.session.InternalCoreEngineSession;
 import com.king.gmms.metrics.MetricsCollector;
 import com.king.gmms.metrics.MetricsNames;
 import com.king.message.gmms.GmmsMessage;
@@ -304,7 +303,7 @@ public class ResultStreamConsumer {
                 }
                 return;
             }
-            if (!InternalCoreEngineSession.getReactiveInstance().handleOutboundResultInternal(msg)) {
+            if (!com.king.gmms.processor.CoreMessageProcessor.getInstance().handleOutboundResultInternal(msg)) {
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.counter(MetricsNames.COMPONENT_CONSUMER,
                         MetricsNames.FLOW_PROCESS, msg, MetricsNames.ACTION_FAIL));
                 queueManager.logNack(streamKey, groupName, consumerName, msg, false, "core_rejected_outbound_result");

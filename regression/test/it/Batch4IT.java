@@ -9,7 +9,6 @@ import java.util.Map;
 
 import com.king.framework.lifecycle.event.ShutdownEvent;
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.connectionpool.session.InternalCoreEngineSession;
 import com.king.gmms.ha.ShardAssignmentChecker;
 import com.king.gmms.messagequeue.InboundDRStreamConsumer;
 import com.king.gmms.messagequeue.MTStreamConsumer;
@@ -95,10 +94,10 @@ public class Batch4IT extends ItSupport {
 		GmmsMessage orig = mt("8888_DLQ3", 8888, 8, 0);
 		orig.setOutMsgID("OUT-DLQ3");
 		jedis.set("drl:OUT-DLQ3", com.king.redis.SerializableHandler.convertGmmsMessage2RedisMessage(orig));
-		Field msmField = InternalCoreEngineSession.class.getDeclaredField("msgStoreManager");
+		Field msmField = com.king.gmms.processor.CoreMessageProcessor.class.getDeclaredField("msgStoreManager");
 		msmField.setAccessible(true);
-		Object real = msmField.get(InternalCoreEngineSession.getReactiveInstance());
-		msmField.set(InternalCoreEngineSession.getReactiveInstance(), null); // every attempt fails
+		Object real = msmField.get(com.king.gmms.processor.CoreMessageProcessor.getInstance());
+		msmField.set(com.king.gmms.processor.CoreMessageProcessor.getInstance(), null); // every attempt fails
 		props.setProperty("RedisStreamAutoClaimEnable", "true");
 		props.setProperty("RedisStreamAutoClaimIdleMs", "300");
 		props.setProperty("RedisStreamAutoClaimIntervalMs", "700");
@@ -115,7 +114,7 @@ public class Batch4IT extends ItSupport {
 		check(moved && streamLen("stream:core:inbound-dr:8:*") == 0,
 				"DLQ-07 inbound DR failing every time: after 3 deliveries moved to stream:dlq:report by the auto-claim runner");
 		check(streamLen("stream:dr:pending:*") == 0, "DLQ-08 no DR produced for it (no failure DR)");
-		msmField.set(InternalCoreEngineSession.getReactiveInstance(), real);
+		msmField.set(com.king.gmms.processor.CoreMessageProcessor.getInstance(), real);
 		props.setProperty("RedisStreamAutoClaimEnable", "false");
 	}
 

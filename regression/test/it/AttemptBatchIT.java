@@ -7,7 +7,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 
-import com.king.gmms.connectionpool.session.InternalCoreEngineSession;
 import com.king.gmms.messagequeue.InboundDRStreamConsumer;
 import com.king.gmms.messagequeue.StreamAttempt;
 import com.king.gmms.messagequeue.StreamQueueManager;
@@ -68,7 +67,7 @@ public class AttemptBatchIT extends ItSupport {
 	static boolean process(GmmsMessage m) throws Exception {
 		return MessageStoreManager.withInlineDrDispatch(new Callable<Boolean>() {
 			public Boolean call() {
-				return InternalCoreEngineSession.getReactiveInstance().handleInboundDRInternal(m, null);
+				return com.king.gmms.processor.CoreMessageProcessor.getInstance().handleInboundDRInternal(m);
 			}
 		});
 	}

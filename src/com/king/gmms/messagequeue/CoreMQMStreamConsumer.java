@@ -12,7 +12,6 @@ import java.util.concurrent.TimeUnit;
 
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
-import com.king.gmms.connectionpool.session.InternalCoreEngineSession;
 import com.king.gmms.metrics.MetricsCollector;
 import com.king.gmms.metrics.MetricsNames;
 import com.king.message.gmms.GmmsMessage;
@@ -287,8 +286,8 @@ public class CoreMQMStreamConsumer {
                     return;
                 }
                 boolean processed = submitMq
-                        ? InternalCoreEngineSession.getReactiveInstance().processMqmSubmitFromStream(msg)
-                        : InternalCoreEngineSession.getReactiveInstance().processMqmReportFromStream(msg);
+                        ? com.king.gmms.processor.CoreMessageProcessor.getInstance().processMqmSubmitFromStream(msg)
+                        : com.king.gmms.processor.CoreMessageProcessor.getInstance().processMqmReportFromStream(msg);
                 if (processed) {
                     incrementSsidProcessed(msg);
                     boolean acked = queueManager.ackById(streamKey, groupName, sourceRedisId, msg, submitMq);

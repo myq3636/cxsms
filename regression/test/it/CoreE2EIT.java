@@ -5,7 +5,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import com.king.gmms.connectionpool.session.InternalCoreEngineSession;
 import com.king.gmms.messagequeue.MTStreamConsumer;
 import com.king.gmms.messagequeue.StreamAttempt;
 import com.king.gmms.messagequeue.ResultStreamConsumer;
@@ -60,7 +59,7 @@ public class CoreE2EIT extends ItSupport {
 		Thread crashed = new Thread() {
 			public void run() {
 				StreamAttempt.begin(m2, "crashed:1");
-				InternalCoreEngineSession.getReactiveInstance().processSubmitFromStream(m2);
+				com.king.gmms.processor.CoreMessageProcessor.getInstance().processSubmitFromStream(m2);
 				// process exits here: no ack, lease left behind
 			}
 		};

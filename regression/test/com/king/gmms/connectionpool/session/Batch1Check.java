@@ -79,7 +79,7 @@ public class Batch1Check {
 	}
 
 	/** Session whose processInnerAck result is chosen by the test. */
-	public static class StubSession extends InternalCoreEngineSession {
+	public static class StubSession extends com.king.gmms.processor.CoreMessageProcessor {
 		Boolean innerAckResult;
 		int innerAckCalls;
 
@@ -146,11 +146,11 @@ public class Batch1Check {
 		manager = ctm;
 		GmmsUtility.getInstance().setGmmsCustomerManager(ctm);
 		StubSession session = alloc(StubSession.class);
-		set(InternalCoreEngineSession.class, session, "redis", redisClient);
-		set(InternalCoreEngineSession.class, session, "isRedisEnable", true);
-		set(InternalCoreEngineSession.class, session, "isStoreDRModeEnable", false);
-		set(InternalCoreEngineSession.class, session, "ctm", ctm);
-		set(AbstractInternalSession.class, session, "gmmsUtility", GmmsUtility.getInstance());
+		set(com.king.gmms.processor.CoreMessageProcessor.class, session, "redis", redisClient);
+		set(com.king.gmms.processor.CoreMessageProcessor.class, session, "isRedisEnable", true);
+		set(com.king.gmms.processor.CoreMessageProcessor.class, session, "isStoreDRModeEnable", false);
+		set(com.king.gmms.processor.CoreMessageProcessor.class, session, "ctm", ctm);
+		set(com.king.gmms.processor.CoreMessageProcessor.class, session, "gmmsUtility", GmmsUtility.getInstance());
 
 		Date dateIn = new Date(1793069850000L);
 		GmmsMessage original = new GmmsMessage();
@@ -171,18 +171,18 @@ public class Batch1Check {
 		// 1. processing fails: lookup entry must stay for the retry
 		stub.store.put("drl:OUT1", body);
 		session.innerAckResult = Boolean.FALSE;
-		boolean r1 = session.handleInboundDRInternal(dr(GmmsStatus.DELIVERED), null);
+		boolean r1 = session.handleInboundDRInternal(dr(GmmsStatus.DELIVERED));
 		check(!r1 && session.innerAckCalls == 1, "failed processing returns false (not acked)");
 		check(stub.deletes.isEmpty() && stub.store.containsKey("drl:OUT1"), "lookup entry kept after failed processing");
 
 		// 2. processing throws: same
 		session.innerAckResult = null;
-		boolean r2 = session.handleInboundDRInternal(dr(GmmsStatus.DELIVERED), null);
+		boolean r2 = session.handleInboundDRInternal(dr(GmmsStatus.DELIVERED));
 		check(!r2 && stub.deletes.isEmpty() && stub.store.containsKey("drl:OUT1"), "lookup entry kept when processing throws");
 
 		// 3. retry succeeds: entry deleted with its date hash
 		session.innerAckResult = Boolean.TRUE;
-		boolean r3 = session.handleInboundDRInternal(dr(GmmsStatus.DELIVERED), null);
+		boolean r3 = session.handleInboundDRInternal(dr(GmmsStatus.DELIVERED));
 		check(r3, "retry finds the original again and succeeds");
 		check(stub.deletes.size() == 1 && stub.deletes.get(0).equals("drl:OUT1") && !stub.store.containsKey("drl:OUT1"),
 				"lookup entry deleted after success " + stub.deletes);
@@ -190,7 +190,7 @@ public class Batch1Check {
 		// 4. ACCEPT (intermediate) DR: never deletes
 		stub.deletes.clear();
 		stub.store.put("drl:OUT1", body);
-		boolean r4 = session.handleInboundDRInternal(dr(GmmsStatus.ACCEPT), null);
+		boolean r4 = session.handleInboundDRInternal(dr(GmmsStatus.ACCEPT));
 		check(r4 && stub.deletes.isEmpty() && stub.store.containsKey("drl:OUT1"), "ACCEPT DR keeps the lookup entry");
 		mqs.set(null, oldMqs);
 	}

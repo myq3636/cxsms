@@ -16,7 +16,6 @@ import com.king.framework.SystemLogger;
 import com.king.gmms.Constant;
 import com.king.gmms.GmmsUtility;
 import com.king.gmms.connectionpool.session.Session;
-import com.king.gmms.customerconnectionfactory.InternalCoreEngineConnectionFactory;
 import com.king.gmms.domain.A2PCustomerInfo;
 import com.king.gmms.domain.A2PCustomerManager;
 import com.king.gmms.domain.A2PMultiConnectionInfo;
@@ -38,7 +37,6 @@ public class MessageProcessorThread extends RunnableMsgTask{
 
 	private A2PCustomerManager ctm;
 	private GmmsUtility gmmsUtility;
-	private InternalCoreEngineConnectionFactory factory = null;
 	private MessageProcessor processor = null;
 	private DBBackupHandler dbHandler = null;
 	private MessageStoreManager msm = null;
@@ -49,7 +47,6 @@ public class MessageProcessorThread extends RunnableMsgTask{
 		this.message = msg;
 		gmmsUtility = GmmsUtility.getInstance();
 		ctm = gmmsUtility.getCustomerManager();
-		factory = InternalCoreEngineConnectionFactory.getInstance();
 		processor = new MessageProcessor();
 		dbHandler = DBBackupHandler.getInstance();
 		msm = gmmsUtility.getMessageStoreManager();
@@ -669,25 +666,11 @@ public class MessageProcessorThread extends RunnableMsgTask{
 					messageList.offer(message);
 				}
 			} else {
-				ModuleManager moduleManager = ModuleManager.getInstance();
-				String channel = moduleManager.selectPeeringChannel();
-				OperatorMessageQueue messagequeue = factory.getMessageQueue(
-						message, channel);
-				if (messagequeue != null) {
-					message.setTransaction(null);
-					message.setDeliveryChannel(message.getDeliveryChannel()+":"+channel);
-					if (!messagequeue.putMsg(message)) {
-						message.setStatus(GmmsStatus.COMMUNICATION_ERROR);
-						dbHandler.putMsg(message);
-					} else {
-						if(log.isInfoEnabled()){
-	    					log.info(message, "Send {} to {}",message.getMessageType(), channel);
-						}
-					}
-				} else {
-					message.setStatus(GmmsStatus.COMMUNICATION_ERROR);
-					dbHandler.putMsg(message);
-				}
+				// to another A2P (peering): it went over the internal connection to the peering module, which the
+				// stream mode does not have (docs/流模式下系统管理和模块间连接代码清理分析.md 3.4)
+				log.warn(message, "MT for another A2P: no peering path in stream mode, COMMUNICATION_ERROR");
+				message.setStatus(GmmsStatus.COMMUNICATION_ERROR);
+				dbHandler.putMsg(message);
 				return;
 			}
 		} catch (Exception e) {
@@ -909,33 +892,10 @@ public class MessageProcessorThread extends RunnableMsgTask{
 				}
 			}
 		} else if (ctm.isA2P(oA2P) || ctm.isPartition(oA2P)) {
-			ModuleManager moduleManager = ModuleManager.getInstance();
-			String channel = moduleManager.selectPeeringChannel();
-			message.setDeliveryChannel(message.getDeliveryChannel()+":"+channel);
-			InternalCoreEngineConnectionFactory factory = InternalCoreEngineConnectionFactory
-					.getInstance();
-			OperatorMessageQueue msgQueue = factory.getMessageQueue(message,
-					channel);
-			if (msgQueue == null) {
-				log
-						.warn(message,
-								"This DR can't send out because can't get available session.");
-				message.setStatusCode(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT
-						.getCode());
-				dbHandler.putMsg(message);
-			} else {
-				message.setTransaction(null);
-				if (!msgQueue.putMsg(message)) {
-					message
-							.setStatusCode(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT
-									.getCode());
-					dbHandler.putMsg(message);
-				} else {
-					if(log.isInfoEnabled()){
-						log.info(message, "Send {} to {}",message.getMessageType(), channel);
-					}
-				}
-			}
+			// DR for another A2P (peering): no internal connection in stream mode, as the MT above
+			log.warn(message, "This DR can't send out because can't get available session.");
+			message.setStatusCode(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT.getCode());
+			dbHandler.putMsg(message);
 		}
 	}
 
@@ -1011,32 +971,12 @@ public class MessageProcessorThread extends RunnableMsgTask{
 			return;
 		}
 
-		OperatorMessageQueue messagequeue = factory.getMessageQueue(message,
-				moduleName);
-
-		if (messagequeue != null) {
-			message.setTransaction(transaction);
-			if (!messagequeue.putMsg(message)) {
-				if(log.isInfoEnabled()){
-					log.info(message, "Can not put the message to sender queue");
-				}
-				message.setStatusCode(GmmsStatus.FAIL_QUERY_DELIVERREPORT
-						.getCode());
-				dbHandler.putMsg(message);
-			} else {
-				if(log.isInfoEnabled()){
-					log.info(message, "Send {} to {}",message.getMessageType(), moduleName);
-				}
-			}
-		} else {
-			if(log.isInfoEnabled()){
-				log.info(message, "Can not find sender queue");
-			}
-			message
-					.setStatusCode(GmmsStatus.FAIL_QUERY_DELIVERREPORT
-							.getCode());
-			dbHandler.putMsg(message);
+		// a DR query to the channel went over the internal connection: none in stream mode (queries are not used)
+		if(log.isInfoEnabled()){
+			log.info(message, "Can not find sender queue");
 		}
+		message.setStatusCode(GmmsStatus.FAIL_QUERY_DELIVERREPORT.getCode());
+		dbHandler.putMsg(message);
 	}
 	
 	public static void main(String[] args) {

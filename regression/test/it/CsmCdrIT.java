@@ -4,7 +4,6 @@ import java.io.File;
 import java.nio.file.*;
 import java.util.*;
 
-import com.king.gmms.connectionpool.session.InternalCoreEngineSession;
 import com.king.gmms.ha.ModuleURI;
 import com.king.gmms.ha.TransactionURI;
 import com.king.gmms.messagequeue.InboundDRStreamConsumer;
@@ -42,7 +41,7 @@ public class CsmCdrIT extends CoreBizSupport {
 		StreamAttempt.begin(m, "core:it");
 		boolean ok = false;
 		try {
-			ok = InternalCoreEngineSession.getReactiveInstance().processSubmitFromStream(m);
+			ok = com.king.gmms.processor.CoreMessageProcessor.getInstance().processSubmitFromStream(m);
 		} finally {
 			if (ok) StreamAttempt.finish("stream:it:none", "g", "0-1"); else StreamAttempt.abandon();
 		}
