@@ -141,6 +141,28 @@ public class CDRAsynWriter implements LifecycleListener, SignalHandler {
 		}
 	}
 
+	/**
+	 * The webapp (CommonHttpServer) stops without the JVM going down (GmmsUtility.shutdown): new CDRs go to the
+	 * synchronous writer, the queue is written, both threads stopped and the file closed (moved to link/).
+	 */
+	public static void shutdown() {
+		CDRAsynWriter w = instance;
+		if (w == null || !w.isInitialize) {
+			return;
+		}
+		w.isAlow.set(false);
+		w.monitor.stop();
+		w.cdrWriter.stop(2000L);
+		w.drain();
+		synchronized (w.mutex) {
+			if (w.isOpen) {
+				w.isOpen = false;
+				w.close();
+			}
+		}
+		log.info("CDR asyn writer closed");
+	}
+
 	private boolean createFolder(String folderName) {
 		File d = new File(folderName);
 		if (d.exists() == false) {
@@ -302,6 +324,8 @@ public class CDRAsynWriter implements LifecycleListener, SignalHandler {
 						Thread.sleep(waitTime);
 					}
 					swichFile();
+				} catch (InterruptedException e) {
+					// stop() wakes it up: the loop ends on running
 				} catch (Exception e) {
 					log.error(e, e);
 				}
@@ -309,16 +333,22 @@ public class CDRAsynWriter implements LifecycleListener, SignalHandler {
 			log.info("CDRFileMonitor thread stop!");
 		}
 
+		private Thread thread = null;
+
 		public void start() {
 			running = true;
-			Thread monitor = new Thread(A2PThreadGroup.getInstance(), this,
+			thread = new Thread(A2PThreadGroup.getInstance(), this,
 					"CDRFileMonitor");
-			monitor.start();
+			thread.start();
 			log.info("CDRFileMonitor thread start!");
 		}
 
+		/** it sleeps until the next file switch: woken up, so that it ends now */
 		public void stop() {
 			running = false;
+			if (thread != null) {
+				thread.interrupt();
+			}
 		}
 	}
 
@@ -333,6 +363,8 @@ public class CDRAsynWriter implements LifecycleListener, SignalHandler {
 					if (cdr != null) {
 						write(cdr);
 					}
+				} catch (InterruptedException e) {
+					// stop() wakes it up: the loop ends on running
 				} catch (Exception e) {
 					log.error(e, e);
 				}
@@ -340,16 +372,33 @@ public class CDRAsynWriter implements LifecycleListener, SignalHandler {
 			log.info("CDRFileMonitor thread stop!");
 		}
 
+		private Thread thread = null;
+
 		public void start() {
 			running = true;
-			Thread monitor = new Thread(A2PThreadGroup.getInstance(), this,
+			thread = new Thread(A2PThreadGroup.getInstance(), this,
 					"CDRFileWriter");
-			monitor.start();
+			thread.start();
 			log.info("CDRFileWriter thread start!");
 		}
 
 		public void stop() {
 			running = false;
+			if (thread != null) {
+				thread.interrupt();
+			}
+		}
+
+		/** stopped and waited for (at most waitMs), so that nothing writes the file after it */
+		public void stop(long waitMs) {
+			stop();
+			if (thread != null) {
+				try {
+					thread.join(waitMs);
+				} catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+				}
+			}
 		}
 	}
 

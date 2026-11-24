@@ -49,6 +49,15 @@ public class CDRManager {
 		CDRWriter.getInstance().stopCDRFileMonitor();
 	}
 
+	/**
+	 * The webapp stops without the JVM going down (GmmsUtility.shutdown): the asynchronous writer first (it hands
+	 * the new CDRs to the synchronous one), then the synchronous one; their threads stopped, their files closed.
+	 */
+	public void shutdown() {
+		CDRAsynWriter.shutdown();
+		CDRWriter.shutdown();
+	}
+
 	public static long getMaxFileTime() {
 		long seconds = GmmsUtility.getInstance().getCdrMaxTime();
 		return seconds > 0 ? seconds * 1000L : maxFileTime;

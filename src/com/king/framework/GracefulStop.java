@@ -56,6 +56,14 @@ public final class GracefulStop implements LifecycleListener {
 		});
 	}
 
+	/**
+	 * The webapp (CommonHttpServer) stops without the JVM going down (GmmsUtility.shutdown): the same jobs, within
+	 * ModuleStopMaxWaitSeconds, no exit afterwards (Tomcat goes on, or ends by itself once a2p's threads are gone).
+	 */
+	public static void runNow(String why) {
+		runTasks(why, waitMs() - EXIT_MARGIN_MS);
+	}
+
 	public int OnEvent(Event event) {
 		if (event.getEventType() == Event.TYPE_SHUTDOWN) {
 			runTasks("SHUTDOWN", waitMs() - EXIT_MARGIN_MS);

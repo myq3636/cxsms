@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+	<!--
+		This config file is based on King HTTP Protocol Interface Spec- V1.0
+	-->
+<interface name="CommonCainiao">
+	
+	<!--
+		Mapping between Gmms status code and HTTP interface status(code and
+		text).
+	-->
+	<!-- Applly to Out_Submit response and Out_DR request. -->
+	<StatusMapping>
+		<!-- for submit -->
+		<!-- Element value is Gmms status code -->
+		<SUBMITRESP>		
+			<SUCCESS value="0">
+			  <!-- items code and text are parameters value of http response(Out_Submit) or request(Out_DR) -->
+				<code>200</code>
+				<text>OK</text>
+			</SUCCESS>
+			<INVALID_MSG_FIELD value="2100">
+				<code>0</code>
+				<text>Error</text>
+			</INVALID_MSG_FIELD>
+			<INVALID_MSG_FIELD value="2100">
+				<code>0</code>
+				<text>Missing password</text>
+			</INVALID_MSG_FIELD>
+			<INVALID_MSG_FIELD value="2100">
+				<code>0</code>
+				<text>Missing message content</text>
+			</INVALID_MSG_FIELD>
+			<INVALID_MSG_FIELD value="2100">
+				<code>0</code>
+				<text>Missing recipient</text>
+			</INVALID_MSG_FIELD>
+			<RECIPIENT_ADDR_ERROR value="2120">
+				<code>0</code>
+				<text>Incorrect recipient number</text>
+			</RECIPIENT_ADDR_ERROR>
+			<INVALID_MSG_FIELD value="2100">
+				<code>0</code>
+				<text>Message encoding error</text>
+			</INVALID_MSG_FIELD>
+			<INVALID_SERVICETYPEID value="2150">
+				<code>512</code>
+				<text>Invalid ServiceTypeID</text>
+			</INVALID_SERVICETYPEID>
+			<DUPLICATE_MSG value="2160">
+				<code>513</code>
+				<text>Duplicate Message</text>
+			</DUPLICATE_MSG>
+			<INVALID_SCHEDULED_TIME value="2170">
+				<code>514</code>
+				<text>Invalid Scheduled Delivery Time</text>
+			</INVALID_SCHEDULED_TIME>
+			<AUTHEN_ERROR value="5000">
+				<code>521</code>
+				<text>Authenticate error</text>
+			</AUTHEN_ERROR>
+			<SENDER_ADDR_ERROR value="2110">
+				<code>601</code>
+				<text>Source address is not valid</text>
+			</SENDER_ADDR_ERROR>
+			<REJECTED_BYANTISPAM value="2210">
+				<code>605</code>
+				<text>Validate customer black list failed</text>
+			</REJECTED_BYANTISPAM>
+			<UNKNOWN_ERROR_SUBMIT value="9000">
+				<code>0</code>
+				<text>Errora</text>
+			</UNKNOWN_ERROR_SUBMIT>
+		</SUBMITRESP>
+		<!-- for DR -->
+		<DR>
+			<DELIVERED value="10000">
+				<code>2</code>
+				<text>Delivered</text>
+			</DELIVERED>
+			<ACCEPT value="10001">
+				<code>0</code>
+				<text>Accepted</text>
+			</ACCEPT>
+			<UNDELIVERABLE value="10400">
+				<code>3</code>
+				<text>Failed</text>
+			</UNDELIVERABLE>
+			<REJECTED value="10500">
+				<code>1</code>
+				<text>Rejected</text>
+			</REJECTED>
+			<UNKNOWN_ERROR_DR value="10900">
+				<code>3</code>
+				<text>Failed</text>
+			</UNKNOWN_ERROR_DR>
+		</DR>
+		<DRRESP>
+                         <DELIVERED value="10000">
+                                <code>2</code>
+                                <text>Delivered</text>
+                        </DELIVERED>
+                        <ACCEPT value="10001">
+                                <code>0</code>
+                                <text>Accepted</text>
+                        </ACCEPT>
+                        <UNDELIVERABLE value="10400">
+                                <code>3</code>
+                                <text>Failed</text>
+                        </UNDELIVERABLE>
+                        <REJECTED value="10500">
+                                <code>1</code>
+                                <text>Rejected</text>
+                        </REJECTED>
+                        <UNKNOWN_ERROR_DR value="10900">
+                                <code>3</code>
+                                <text>Failed</text>
+                        </UNKNOWN_ERROR_DR>
+		</DRRESP>
+	</StatusMapping>
+
+	<!-- Mobile originating HTTP request configuration -->
+	<MO>
+		<SubmitRequest>
+			
+			<HandlerClass>com.king.gmms.protocol.commonhttp.CommonMessageHttpHandler
+			</HandlerClass>
+		</SubmitRequest>
+		<SubmitResponse>
+			<HandlerClass>com.king.gmms.protocol.commonhttp.CommonMessageHttpHandler
+			</HandlerClass>
+		</SubmitResponse>
+		<DRRequest>
+			<inMsgID>reference</inMsgID>
+			<StatusCode>statuscode</StatusCode>
+			<!-- DRRequest Optional begin -->
+			<StatusText>description</StatusText>
+			<!-- DRRequest Optional end -->
+			<senderAddress>sent</senderAddress>
+			<recipientAddress>received</recipientAddress>
+			<HandlerClass>com.king.gmms.protocol.commonhttp.AliCainiaoDeliveryReportHttpHandler</HandlerClass>
+		</DRRequest>
+		<DRResponse>
+			<HandlerClass>com.king.gmms.protocol.commonhttp.AliCainiaoDeliveryReportHttpHandler</HandlerClass>
+		</DRResponse>
+	</MO>
+
+	<!-- Mobile terminating HTTP request configuration -->
+	<MT>
+		<SubmitRequest>
+			
+			<!-- SubmitRequest Optional end -->
+			<HandlerClass>com.king.gmms.protocol.commonhttp.CommonMessageHttpHandler
+			</HandlerClass>
+		</SubmitRequest>
+		<SubmitResponse>			
+			<HandlerClass>com.king.gmms.protocol.commonhttp.CommonMessageHttpHandler
+			</HandlerClass>
+		</SubmitResponse>
+		<DRRequest>
+			<outMsgID>REFERENCE</outMsgID>
+			<StatusCode>STATUS</StatusCode>
+			<!-- DRRequest Optional begin -->
+			<StatusText>STATUSDESCRIPTION</StatusText>
+			<!-- DRRequest Optional end -->
+			<recipientAddress>GSM</recipientAddress>
+			<HandlerClass>com.king.gmms.protocol.commonhttp.CommonDeliveryReportHttpHandler
+			</HandlerClass>
+		</DRRequest>
+		<DRResponse>
+			<HandlerClass>com.king.gmms.protocol.commonhttp.CommonDeliveryReportHttpHandler
+			</HandlerClass>
+		</DRResponse>
+	</MT>
+</interface>

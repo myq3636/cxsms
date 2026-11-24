@@ -36,9 +36,11 @@ public class SystemListener extends HttpServlet implements ServletContextListene
 
 	}
 
+	/** the webapp stops (Tomcat stop or undeploy): a2p's threads and connections too, so that Tomcat's JVM can end */
 	public void contextDestroyed(ServletContextEvent sce) {
 		log.info("destory context....");
 		timer.cancel();
+		GmmsUtility.getInstance().shutdown();
 	}
 
 }

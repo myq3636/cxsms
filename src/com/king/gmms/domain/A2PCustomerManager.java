@@ -2002,9 +2002,10 @@ public class A2PCustomerManager implements LifecycleListener {
 			loadVendorTemplateReplacement();
 			loadVendorReplacement(true);
 
-			ConfigMonitor configMonitor = new ConfigMonitor();
-			new Thread(A2PThreadGroup.getInstance(), configMonitor,
-					"OPModeConfigMonitor").start();
+			configMonitor = new ConfigMonitor();
+			configMonitorThread = new Thread(A2PThreadGroup.getInstance(), configMonitor,
+					"OPModeConfigMonitor");
+			configMonitorThread.start();
 		} catch (CustomerConfigurationException ce) {
 			log.error("Failed to initCustomerConfigure!{}", ce.getMessage());
 		}
@@ -5583,14 +5584,28 @@ public class A2PCustomerManager implements LifecycleListener {
 		return this.ssidsInDRStoreMode.contains(ssid);
 	}
 
+	private ConfigMonitor configMonitor = null;
+	private Thread configMonitorThread = null;
+
+	/** The webapp stops without the JVM going down (GmmsUtility.shutdown): OPModeConfigMonitor ends. */
+	public void stopConfigMonitor() {
+		if (configMonitor != null) {
+			configMonitor.running = false;
+		}
+		if (configMonitorThread != null) {
+			configMonitorThread.interrupt();
+		}
+	}
+
 	class ConfigMonitor implements Runnable {
 		String configFileName = System.getProperty("a2p_home")
 				+ "conf/OperatorMode.properties";
 		public long lastModifiedTime = -1;
+		volatile boolean running = true;
 
 		public void run() {
 			File aFile = null;
-			while (true) {
+			while (running) {
 				aFile = new File(configFileName);
 				if (aFile.exists()) {
 					if (this.lastModifiedTime != aFile.lastModified()) {

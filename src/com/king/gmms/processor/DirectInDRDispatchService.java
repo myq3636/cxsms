@@ -95,7 +95,7 @@ public class DirectInDRDispatchService {
 			String moduleName = resolveModuleName(message, server);
 			String streamKey = null;
 			boolean produced;
-			if ("HTTP".equalsIgnoreCase(server.getProtocol())) {
+			if (server.isHttpProtocol()) {
 				message.setDeliveryChannel(moduleName);
 				produced = StreamQueueManager.getInstance().produceHttpDeliveryReport(message);
 			} else {

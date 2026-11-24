@@ -726,7 +726,7 @@ public class MessageProcessorThread extends RunnableMsgTask{
 		for (GmmsMessage msg : messageList) {			
 			
 			// V4.1 Decentralized HTTP Outbound: Dispatch via Redis Stream
-			if (server != null && "HTTP".equalsIgnoreCase(server.getProtocol())) {
+			if (server != null && server.isHttpProtocol()) {
 				String moduleName = moduleManager.selectChannel(queue);
 				msg.setDeliveryChannel(moduleName); // Preserve selected module label
 				if (com.king.gmms.messagequeue.StreamQueueManager.getInstance().produceHttpSubmitMessage(msg)) {
@@ -913,7 +913,7 @@ public class MessageProcessorThread extends RunnableMsgTask{
 			String streamKey = null;
 			com.king.gmms.messagequeue.StreamQueueManager streamQueueManager =
 					com.king.gmms.messagequeue.StreamQueueManager.getInstance();
-			if (server != null && "HTTP".equalsIgnoreCase(server.getProtocol())) {
+			if (server != null && server.isHttpProtocol()) {
 				message.setDeliveryChannel(moduleName);
 				success = streamQueueManager.produceHttpDeliveryReport(message);
 			} else {

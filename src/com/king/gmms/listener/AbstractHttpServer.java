@@ -29,6 +29,7 @@ import com.king.gmms.ha.systemmanagement.SystemSession;
 import com.king.gmms.ha.systemmanagement.SystemSessionFactory;
 import com.king.gmms.ha.systemmanagement.pdu.ModuleRegisterAck;
 import com.king.gmms.messagequeue.OperatorMessageQueue;
+import com.king.gmms.messagequeue.StreamQueueManager;
 import com.king.gmms.metrics.MetricsCollector;
 import com.king.gmms.metrics.MetricsNames;
 import com.king.gmms.protocol.smpp.pdu.Response;
@@ -214,10 +215,46 @@ public abstract class AbstractHttpServer extends HttpServlet implements
 	 * 
 	 * @param msg
 	 */
+	/**
+	 * Redis Stream mode: a submit to mt:pending (as the SMPP server and CommonJsonHttpServlet), a vendor DR to
+	 * core:inbound-dr (as CommonHttpDRServlet); an inner ack is not needed (the stream entry is the hand-over). Other
+	 * types (e.g. a DR query) have no stream and keep the internal router connection.
+	 */
 	protected boolean putGmmsMessage2RouterQueue(GmmsMessage msg) {
 		if (msg == null) {
 			return false;
 		}
+		String type = msg.getMessageType();
+		if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(type)) {
+			recordHttpSubmitReceived(msg);
+			boolean produced = StreamQueueManager.getInstance().produceSubmitMessage(msg);
+			if (produced) {
+				recordHttpSubmitAccepted(msg);
+			} else {
+				recordHttpSubmitRejected(msg);
+				log.warn(msg, "Failed to produce HTTP submit to Redis Stream");
+			}
+			return produced;
+		}
+		if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(type)) {
+			recordHttpDrReceived(msg);
+			boolean produced = StreamQueueManager.getInstance().produceInboundDeliveryReport(msg);
+			if (produced) {
+				recordHttpDrWrittenToRedis(msg);
+			} else {
+				recordHttpDrRejected(msg);
+				log.warn(msg, "Failed to produce HTTP DR to Redis Stream");
+			}
+			return produced;
+		}
+		if (GmmsMessage.MSG_TYPE_INNER_ACK.equalsIgnoreCase(type)) {
+			return true;
+		}
+		return putGmmsMessage2InternalRouter(msg);
+	}
+
+	/** the internal router connection (before Redis Stream), for the message types without a stream */
+	private boolean putGmmsMessage2InternalRouter(GmmsMessage msg) {
 		ModuleManager moduleManager = ModuleManager.getInstance();
 		InternalAgentConnectionFactory factory = InternalAgentConnectionFactory
 				.getInstance();

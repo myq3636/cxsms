@@ -116,12 +116,10 @@ public abstract class HttpSession extends Session {
 		 
 		gmmsUtility = GmmsUtility.getInstance();
 		A2PSingleConnectionInfo sInfo = (A2PSingleConnectionInfo) info;
-		serverAddress = sInfo.getChlURL()[0];
-		if (sInfo.getChlDRURL() == null) {
-			serverDRAddress = sInfo.getChlURL()[0];
-		} else {
-			serverDRAddress = sInfo.getChlDRURL();
-		}
+		// a customer that only gets its DRs pushed may have ChlDRURL alone, a channel ChlURL alone
+		String[] urls = sInfo.getChlURL();
+		serverAddress = urls != null ? urls[0] : sInfo.getChlDRURL();
+		serverDRAddress = sInfo.getChlDRURL() != null ? sInfo.getChlDRURL() : serverAddress;
 
 		systemId = sInfo.getChlAcctName();
 		password = sInfo.getChlPassword();

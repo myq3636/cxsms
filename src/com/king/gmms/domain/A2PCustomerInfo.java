@@ -537,6 +537,15 @@ public abstract class A2PCustomerInfo {
 		return protocol;
 	}
 
+	/**
+	 * an HTTP customer or channel: Protocol HTTP, or an HTTP interface (Protocol is its name: Common, CommonCainiao,
+	 * Glory, ...) on the HTTP client queue; its MTs and DRs go through the http streams (CommonHttpClient)
+	 */
+	public boolean isHttpProtocol() {
+		return "HTTP".equalsIgnoreCase(protocol)
+				|| (chlQueue != null && "CommonHttpClient".equalsIgnoreCase(chlQueue.trim()));
+	}
+
 	public void setProtocol(String protocol) {
 		this.protocol = protocol;
 	}

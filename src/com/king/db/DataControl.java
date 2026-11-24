@@ -265,6 +265,26 @@ public class DataControl {
 		}
 	}
 
+	/** The webapp (CommonHttpServer) stops without the JVM going down (GmmsUtility.shutdown): every pool closed. */
+	public static void close() {
+		if (dataSources == null || dataSources.isEmpty()) {
+			return;
+		}
+		Enumeration dsNames = dataSources.keys();
+		while (dsNames.hasMoreElements()) {
+			String dsName = (String) dsNames.nextElement();
+			Object source = dataSources.get(dsName);
+			if (source instanceof HikariDataSource && !((HikariDataSource) source).isClosed()) {
+				try {
+					((HikariDataSource) source).close();
+					log.info("DB pool closed. dsName={}", dsName);
+				} catch (Exception e) {
+					log.warn("DB pool not closed. dsName={}", dsName, e);
+				}
+			}
+		}
+	}
+
 	public static void logPoolStats() {
 		if (dataSources == null || dataSources.isEmpty()) {
 			return;

@@ -262,7 +262,7 @@ public class CommonJsonHttpServlet extends AbstractHttpServer {
 						
 						if(sInfo.isSmsOptionChargeCountryByGateWay()){
                             try {
-                            	String cc = PhoneUtils.getRegionCodeByPhone(msg.getRecipientAddress());
+                            	String cc = PhoneUtils.getRegionCodeByPhone(gmmsMessage.getRecipientAddress());
                             	Long stock = gmmsUtility.getRedisClient().stock("stock:"+sInfo.getSSID()+":"+cc, 1);
           					     if (stock!=null && stock<0) {
           					    	 if(log.isInfoEnabled()){

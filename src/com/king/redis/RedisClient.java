@@ -292,6 +292,29 @@ public class RedisClient {
 		}, "AsyncRedisWriterShutdown"));
 	}
 
+	/**
+	 * The webapp (CommonHttpServer) stops without the JVM going down (GmmsUtility.shutdown): the async writer
+	 * writes its queue and ends, then every pool (state, submit and report MQ masters) is closed.
+	 */
+	public void close() {
+		asyncWriterRunning = false;
+		try {
+			if (asyncWriterThread != null) asyncWriterThread.join(5000);
+		} catch (InterruptedException ie) {
+			Thread.currentThread().interrupt();
+		}
+		java.util.Set<RedisConnection> all = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<RedisConnection, Boolean>());
+		for (RedisConnection c : new RedisConnection[] { stateRedis, submitMqRedis, reportMqRedis }) {
+			if (c != null) all.add(c);
+		}
+		for (RedisConnection c : submitMqs) if (c != null) all.add(c);
+		for (RedisConnection c : reportMqs) if (c != null) all.add(c);
+		for (RedisConnection c : all) {
+			c.destroy();
+		}
+		log.info("Redis client closed: {} pool(s)", all.size());
+	}
+
 	public void asyncLpush(String key, String value) {
 		if (!asyncRedisQueue.offer(new RedisConnection.RedisTask(RedisConnection.RedisTask.Type.LPUSH, key, value))) lpush(key, value);
 	}

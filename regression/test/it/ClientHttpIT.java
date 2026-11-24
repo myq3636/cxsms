@@ -170,9 +170,13 @@ public class ClientHttpIT extends CoreRetryIT {
 			delayMs = 0;
 			System.out.println("INFO submit slow " + show(r));
 			check(r != null && r.getStatusCode() == 9000, "HT-08d read timeout: 9000: " + show(r));
+			int plainBefore = bodies.size();
 			r = result(submit(53), 8000);
 			System.out.println("INFO plain " + show(r));
-			check(r != null && r.getStatusCode() == 2500 && logLine(r.getMsgID(), "Can't send empty message") != null, "HT-07g channel without HandlerClass: the default handler builds nothing, no request, 2500: " + show(r));
+			// the default handler (CommonMessageHttpHandler) sends the Common XML that CommonHttpServlet takes (it built nothing before)
+			check(r != null && bodies.size() == plainBefore + 1 && last().contains("<MESSAGES>") && last().contains("<PRODUCTTOKEN>")
+					&& last().contains("<TO>") && logLine(r.getMsgID(), "Can't send empty message") == null,
+					"HT-07g channel without HandlerClass: the default handler sends the Common XML: " + show(r) + " " + (bodies.isEmpty() ? "" : last()));
 
 			// ---- DR pushed to an HTTP customer ----
 			bodies.clear();

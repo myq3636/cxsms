@@ -90,6 +90,22 @@ public class CDRWriter {
 		}
 	}
 
+	/** The webapp stops without the JVM going down (GmmsUtility.shutdown): the monitor stopped, the file closed (moved to link/). */
+	public static void shutdown() {
+		CDRWriter w = instance;
+		if (w == null || !w.isInitialize) {
+			return;
+		}
+		w.stopCDRFileMonitor();
+		synchronized (w.mutex) {
+			if (w.isOpen) {
+				w.isOpen = false;
+				w.close();
+			}
+		}
+		log.info("CDR writer closed");
+	}
+
 	private boolean createFolder(String folderName) {
 		File d = new File(folderName);
 		if (d.exists() == false) {
@@ -243,6 +259,8 @@ public class CDRWriter {
 						Thread.sleep(waitTime);
 					}
 					swichFile();
+				} catch (InterruptedException e) {
+					// stop() wakes it up: the loop ends on running
 				} catch (Exception e) {
 					log.error(e, e);
 				}
@@ -250,16 +268,22 @@ public class CDRWriter {
 			log.info("CDRFileMonitor thread stop!");
 		}
 
+		private Thread thread = null;
+
 		public void start() {
 			running = true;
-			Thread monitor = new Thread(A2PThreadGroup.getInstance(), this,
+			thread = new Thread(A2PThreadGroup.getInstance(), this,
 					"CDRFileMonitor");
-			monitor.start();
+			thread.start();
 			log.info("CDRFileMonitor thread start!");
 		}
 
+		/** it sleeps until the next file switch: woken up, so that it ends now */
 		public void stop() {
 			running = false;
+			if (thread != null) {
+				thread.interrupt();
+			}
 		}
 	}
 

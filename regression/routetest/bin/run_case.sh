@@ -88,7 +88,12 @@ fi
 
 echo "[$(date '+%F %T')] run"
 # RT_JAVA_OPTS: options of the test tool JVM (e.g. -Xss256k for the many-connection case: a thread per connection)
-"$JAVA" ${RT_JAVA_OPTS:-} -cp "$RT/lib/routetest.jar" rt.RouteCase "$CASE" "$RT/env.properties"
+# RT_DRIVER: another program plays the case instead of rt.RouteCase (bin/http_case.sh: bin/http_driver.sh), given CASE_DIR
+if [ -n "${RT_DRIVER:-}" ]; then
+	"$RT_DRIVER" "$CASE"
+else
+	"$JAVA" ${RT_JAVA_OPTS:-} -cp "$RT/lib/routetest.jar" rt.RouteCase "$CASE" "$RT/env.properties"
+fi
 rc=$?
 if $SOAK; then
 	touch "$RT_MEMDIR/stop"; wait $MW

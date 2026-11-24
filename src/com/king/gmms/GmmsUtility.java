@@ -245,6 +245,42 @@ public class GmmsUtility {
 		cdrManager.close();
 	}
 
+	/**
+	 * The webapp (CommonHttpServer in Tomcat) stops without the JVM going down (SystemListener.contextDestroyed):
+	 * what memory holds is written (GracefulStop's jobs: SQL queue, CDR queue, ...), then a2p's threads and connections
+	 * are stopped (thread pools, CDR files, OPModeConfigMonitor, Redis, DB pools), so that Tomcat's JVM can end.
+	 */
+	public synchronized void shutdown() {
+		log.info("a2p shutdown (webapp stopped)");
+		try {
+			com.king.framework.GracefulStop.runNow("UNDEPLOY");
+		} catch (Exception e) {
+			log.warn("GracefulStop jobs failed", e);
+		}
+		close();
+		try {
+			if (cdrManager != null) cdrManager.shutdown();
+		} catch (Exception e) {
+			log.warn("CDR writers not closed", e);
+		}
+		try {
+			if (customerManager != null) customerManager.stopConfigMonitor();
+		} catch (Exception e) {
+			log.warn("OPModeConfigMonitor not stopped", e);
+		}
+		try {
+			if (redisClient != null) redisClient.close();
+		} catch (Exception e) {
+			log.warn("Redis client not closed", e);
+		}
+		try {
+			com.king.db.DataControl.close();
+		} catch (Exception e) {
+			log.warn("DB pools not closed", e);
+		}
+		log.info("a2p shutdown done");
+	}
+
     public void initDBManager(DatabaseStatus dbstatus){
 
     	try{

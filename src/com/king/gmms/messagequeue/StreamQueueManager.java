@@ -1344,7 +1344,7 @@ public class StreamQueueManager {
 	}
 
 	public boolean produceOutboundMessage(GmmsMessage msg) {
-		if ("HTTP".equalsIgnoreCase(msg.getProperty("Protocol") != null ? msg.getProperty("Protocol").toString() : "")) {
+		if (isHttpTarget(msg)) {
 			if (GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(msg.getMessageType())) {
 				return produceHttpDeliveryReport(msg);
 			}
@@ -1365,11 +1365,22 @@ public class StreamQueueManager {
 		com.king.gmms.domain.A2PCustomerInfo channel = GmmsUtility.getInstance().getCustomerManager()
 				.getCustomerBySSID(msg.getRSsID());
 		Object protocol = msg.getProperty("Protocol");
-		if ((channel != null && "HTTP".equalsIgnoreCase(channel.getProtocol()))
+		if ((channel != null && channel.isHttpProtocol())
 				|| (protocol != null && "HTTP".equalsIgnoreCase(protocol.toString()))) {
 			return httpSubmitKey(msg);
 		}
 		return routedKey(msg);
+	}
+
+	/** an outbound message for the HTTP client: an MT to an HTTP channel, a DR to an HTTP customer */
+	private static boolean isHttpTarget(GmmsMessage msg) {
+		Object protocol = msg.getProperty("Protocol");
+		if (protocol != null && "HTTP".equalsIgnoreCase(protocol.toString())) {
+			return true;
+		}
+		int ssid = GmmsMessage.MSG_TYPE_DELIVERY_REPORT.equalsIgnoreCase(msg.getMessageType()) ? msg.getOSsID() : msg.getRSsID();
+		com.king.gmms.domain.A2PCustomerInfo target = GmmsUtility.getInstance().getCustomerManager().getCustomerBySSID(ssid);
+		return target != null && target.isHttpProtocol();
 	}
 
 	/** Put an outbound MT into its channel hold stream (idempotent inside an StreamAttempt like any produce). */

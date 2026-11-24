@@ -306,39 +306,44 @@ public class CommonMessageHttpHandler extends HttpHandler {
 		}		
 	}
 	
+	/**
+	 * the submit as the XML CommonHttpServlet takes (AUTHENTICATION/PRODUCTTOKEN, then one MSG); the JAXB marshalling it
+	 * had was commented out (no JAXB on Java 17), so the request was empty and never sent
+	 */
 	private static String createXml(String productToken, GmmsMessage message) {
-        try {
-        	StringWriter sw = new StringWriter();
-        	 JxMessage jxMessage = new JxMessage();
-        	 JxSubMessage jxSubMessage = new JxSubMessage();
-        	 JxToken token = new JxToken();
-        	 token.setPRODUCTTOKEN(productToken);
-        	 jxSubMessage.setDCS(GmmsMessage.AIC_CS_UCS2.equals(message.getContentType())?"8":"0");
-        	 jxSubMessage.setFROM(message.getSenderAddress());
-        	 jxSubMessage.setBODY(message.getTextContent());
-        	 jxSubMessage.setTO(message.getRecipientAddress());
-        	 //jxSubMessage.setRSSID("16");
-        	 if (message.getOutMsgID() == null) {
-        		 String commonMsgID = MessageIdGenerator.generateCommonStringID();
-				message.setOutMsgID(commonMsgID);
-			  }
-        	 jxSubMessage.setREFERENCE(message.getOutMsgID());
-        	 jxMessage.setAUTHENTICATION(token);
-        	 List<JxSubMessage> messages = new ArrayList<>();
-        	 messages.add(jxSubMessage);
-        	 jxMessage.setMSG(messages);
-				/*
-				 * JAXBContext jAXBContext = JAXBContext.newInstance(jxMessage.getClass());
-				 * Marshaller marshaller = jAXBContext.createMarshaller();
-				 * marshaller.marshal(jxMessage, sw);
-				 */
-            return sw.toString();
+		if (message.getOutMsgID() == null) {
+			message.setOutMsgID(MessageIdGenerator.generateCommonStringID());
+		}
+		StringBuilder xml = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?><MESSAGES>");
+		xml.append("<AUTHENTICATION><PRODUCTTOKEN>").append(xmlText(productToken)).append("</PRODUCTTOKEN></AUTHENTICATION>");
+		xml.append("<MSG>");
+		xml.append("<FROM>").append(xmlText(message.getSenderAddress())).append("</FROM>");
+		xml.append("<TO>").append(xmlText(message.getRecipientAddress())).append("</TO>");
+		xml.append("<BODY>").append(xmlText(message.getTextContent())).append("</BODY>");
+		xml.append("<DCS>").append(GmmsMessage.AIC_CS_UCS2.equals(message.getContentType()) ? "8" : "0").append("</DCS>");
+		xml.append("<REFERENCE>").append(xmlText(message.getOutMsgID())).append("</REFERENCE>");
+		xml.append("</MSG></MESSAGES>");
+		return xml.toString();
+	}
 
-        } catch (Exception ex) {
-        	log.error("create xml exception!", ex);
-            return null;
-        } 
-    }
+	private static String xmlText(String s) {
+		if (s == null) {
+			return "";
+		}
+		StringBuilder b = new StringBuilder(s.length() + 16);
+		for (int i = 0; i < s.length(); i++) {
+			char c = s.charAt(i);
+			switch (c) {
+			case '<': b.append("&lt;"); break;
+			case '>': b.append("&gt;"); break;
+			case '&': b.append("&amp;"); break;
+			case '"': b.append("&quot;"); break;
+			case '\'': b.append("&apos;"); break;
+			default: b.append(c);
+			}
+		}
+		return b.toString();
+	}
 	
 
 	private static String doHttpPost(String urlString, String requestString, boolean supportHttps ) {

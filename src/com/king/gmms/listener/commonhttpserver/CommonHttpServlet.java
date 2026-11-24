@@ -268,7 +268,7 @@ public class CommonHttpServlet extends AbstractHttpServer {
 						
 						if(sInfo.isSmsOptionChargeCountryByGateWay()){
                             try {
-                            	String cc = PhoneUtils.getRegionCodeByPhone(msg.getRecipientAddress());
+                            	String cc = PhoneUtils.getRegionCodeByPhone(gmmsMessage.getRecipientAddress());
                             	Long stock = gmmsUtility.getRedisClient().stock("stock:"+sInfo.getSSID()+":"+cc, 1);
           					     if (stock!=null && stock<0) {
           					    	 if(log.isInfoEnabled()){
@@ -284,17 +284,14 @@ public class CommonHttpServlet extends AbstractHttpServer {
 							}       					     
                        	  }    
 						
+						// Redis Stream (mt:pending); not written: the customer gets SERVER_ERROR and sends again, as in
+						// CommonJsonHttpServlet (no REJECTED DR: it would have to go through the same Redis)
 						if (!putGmmsMessage2RouterQueue(gmmsMessage)) {
+							gmmsMessage.setStatus(GmmsStatus.SERVER_ERROR);
+							msg.setStatus(GmmsStatus.SERVER_ERROR);
 							gmmsUtility.getCdrManager().logInSubmit(gmmsMessage);
-							if (gmmsMessage.getDeliveryReport()) {
-								gmmsMessage.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT);
-								gmmsMessage.setRSsID(sInfo.getSSID());
-								gmmsMessage.setOutMsgID(gmmsMessage.getInMsgID());
-								gmmsMessage.setStatus(GmmsStatus.REJECTED);
-								if (!putGmmsMessage2RouterQueue(gmmsMessage)) {
-									gmmsUtility.getCdrManager().logInDeliveryReportRes(gmmsMessage);									
-								}
-							}							
+							this.response(msg, request, response);
+							return;
 						}
 					}
 				}
@@ -511,7 +508,7 @@ public class CommonHttpServlet extends AbstractHttpServer {
 			 * reader = new StringReader(xml); InputSource source = new InputSource(reader);
 			 */
 			SAXBuilder sb = new SAXBuilder();
-			Document doc = sb.build(xml);
+			Document doc = sb.build(new StringReader(xml));   // build(String) takes a URI, not the XML
 			Element root = doc.getRootElement();
 			List node = root.getChildren();
 			if (node == null) {

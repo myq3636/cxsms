@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- HT001: the Gmms webapp with the four servlets under test (the Context's altDDName; WEB-INF/web.xml is not touched).
+     Not the log4j listener of WEB-INF/web.xml: org.apache.logging.log4j.core.web.Log4jContextListener is no longer in log4j-core. -->
+<web-app xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="3.1" metadata-complete="true">
+    <display-name>HT001 CommonHttpServer</display-name>
+    <listener>
+        <listener-class>com.king.gmms.listener.commonhttpserver.SystemListener</listener-class>
+    </listener>
+    <servlet>
+        <servlet-name>CommonRequest</servlet-name>
+        <servlet-class>com.king.gmms.listener.commonhttpserver.CommonHttpServlet</servlet-class>
+        <init-param><param-name>protocol</param-name><param-value>Common</param-value></init-param>
+        <load-on-startup>0</load-on-startup>
+    </servlet>
+    <servlet>
+        <servlet-name>CommonDR</servlet-name>
+        <servlet-class>com.king.gmms.listener.commonhttpserver.CommonHttpDRServlet</servlet-class>
+        <init-param><param-name>protocol</param-name><param-value>Common</param-value></init-param>
+        <load-on-startup>0</load-on-startup>
+    </servlet>
+    <servlet>
+        <servlet-name>CommonJsonRequest</servlet-name>
+        <servlet-class>com.king.gmms.listener.commonhttpserver.CommonJsonHttpServlet</servlet-class>
+        <init-param><param-name>protocol</param-name><param-value>Common</param-value></init-param>
+        <load-on-startup>0</load-on-startup>
+    </servlet>
+    <servlet>
+        <servlet-name>CainiaoRequest</servlet-name>
+        <servlet-class>com.king.gmms.listener.commonhttpserver.AliCainiaoJsonHttpServlet</servlet-class>
+        <init-param><param-name>protocol</param-name><param-value>CommonCainiao</param-value></init-param>
+        <load-on-startup>0</load-on-startup>
+    </servlet>
+    <servlet-mapping><servlet-name>CommonRequest</servlet-name><url-pattern>/Common/MTRequest</url-pattern></servlet-mapping>
+    <servlet-mapping><servlet-name>CommonDR</servlet-name><url-pattern>/Common/DRReply</url-pattern></servlet-mapping>
+    <servlet-mapping><servlet-name>CommonJsonRequest</servlet-name><url-pattern>/CommonJson/MTRequest</url-pattern></servlet-mapping>
+    <servlet-mapping><servlet-name>CainiaoRequest</servlet-name><url-pattern>/CommonCainiao/MTRequest</url-pattern></servlet-mapping>
+</web-app>
