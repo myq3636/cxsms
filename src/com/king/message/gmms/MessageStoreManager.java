@@ -747,8 +747,7 @@ public class MessageStoreManager extends DataManager {
 										message.getMsgID(), message.getInMsgID(), omsgid,
 										message.getRSsID(), supportDR, message.outClientPull(),
 										expirTime, hashKey, expireDate);
-								boolean redisSetOk = redis.setPipeline(omsgid, temp, expirTime,
-										hashKey);
+								boolean redisSetOk = com.king.gmms.messagequeue.DrLookup.put(message, omsgid, temp, expirTime);
 								log.debug(message,
 										"TMP-DRLOOKUP submit cache redis set done. msgId={}, in={}, out={}, rsid={}, supportDR={}, outClientPull={}, ttlSeconds={}, hashKey={}, result={}",
 										message.getMsgID(), message.getInMsgID(), omsgid,
@@ -797,8 +796,7 @@ public class MessageStoreManager extends DataManager {
 										message.getMsgID(), message.getInMsgID(), omsgid,
 										message.getRSsID(), supportDR, message.outClientPull(),
 										expirTime, hashKey);
-								boolean redisSetOk = redis.setPipeline(omsgid, temp, expirTime,
-										hashKey);
+								boolean redisSetOk = com.king.gmms.messagequeue.DrLookup.put(message, omsgid, temp, expirTime);
 								log.debug(message,
 										"TMP-DRLOOKUP submit cache redis set done. reason=no_support_dr_cross_a2p, msgId={}, in={}, out={}, rsid={}, supportDR={}, outClientPull={}, ttlSeconds={}, hashKey={}, result={}",
 										message.getMsgID(), message.getInMsgID(), omsgid,
@@ -1051,8 +1049,7 @@ public class MessageStoreManager extends DataManager {
 										.getRedisExpireTime(message);
 								String hashKey = gmmsUtility
 										.getRedisDateIn(message);
-								if (!redis.setPipeline(omsgid, temp, expirTime,
-										hashKey)) {
+								if (!com.king.gmms.messagequeue.DrLookup.put(message, omsgid, temp, expirTime)) {
 									insertMessageToDB(message, WDQ);
 									if (log.isInfoEnabled()) {
 										log.info(
@@ -1086,8 +1083,7 @@ public class MessageStoreManager extends DataManager {
 
 								String hashKey = gmmsUtility
 										.getRedisDateIn(message);
-								if (!redis.setPipeline(omsgid, temp, expirTime,
-										hashKey)) {
+								if (!com.king.gmms.messagequeue.DrLookup.put(message, omsgid, temp, expirTime)) {
 									insertMessageToDB(message, WDQ);
 									if (log.isInfoEnabled()) {
 										log.info(
@@ -2434,17 +2430,12 @@ public class MessageStoreManager extends DataManager {
 				log.info("handle a DR:{} ", temp.getOutMsgID());
 			}
 			if (isRedisEnable) {
-				String object = redis.getString(temp.getOutMsgID());
-				if (object != null) {
+				com.king.gmms.messagequeue.DrLookup.Hit hit = com.king.gmms.messagequeue.DrLookup.find(temp.getOutMsgID());
+				if (hit != null) {
 					message = SerializableHandler
-							.convertRedisMssage2GmmsMessage(object);
+							.convertRedisMssage2GmmsMessage(hit.value);
 					if (message != null) {
-						String dateKey = gmmsUtility.getRedisDateIn(message);
-						if (dateKey != null) {
-							redis.delPipeline(temp.getOutMsgID(), dateKey);
-						} else {
-							redis.del(temp.getOutMsgID());
-						}
+						com.king.gmms.messagequeue.DrLookup.delete(temp.getOutMsgID(), hit, message);
 					}
 				} else {
 					try {

@@ -31,6 +31,10 @@ import com.king.redis.SerializableHandler;
  * <p>dr:early:{id} (hash: body, end = t0+T) with its member in zset:dr:early (score: when it is due). The MQM job moves
  * the due ones to zset:dr:early:processing (score: the end of its claim) and deletes them once settled; a claim that
  * ran out (MQM stopped) is moved back.
+ *
+ * <p>Where: with the DR lookup ({@link DrLookup}): the state Redis, or (DrLookupStore=report) the report master of the
+ * outMsgId, so that the offer checks the lookup in the same Lua: one written meanwhile is {@link Offer#FOUND}, the DR
+ * is matched at once (docs/DR匹配数据迁移设计.md 3.4). The MQM job takes the due ones of every place that may hold some.
  */
 public final class EarlyDrQueue {
 	private static final SystemLogger log = SystemLogger.getSystemLogger(EarlyDrQueue.class);
@@ -46,12 +50,16 @@ public final class EarlyDrQueue {
 		/** no original within T: dropped */
 		DROPPED,
 		/** not queued (Redis error): leave the DR pending, it is retried */
-		ERROR
+		ERROR,
+		/** not queued: its DR lookup is there now (written since the DR was looked up): match it again */
+		FOUND
 	}
 
-	// KEYS[1]=entry KEYS[2]=ready ARGV: 1 body, 2 end, 3 due, 4 ttl ms. 0: there already (a redelivery of the DR)
+	// KEYS[1]=entry KEYS[2]=ready KEYS[3]=the DR lookup ARGV: 1 body, 2 end, 3 due, 4 ttl ms. 0: there already (a
+	// redelivery of the DR), 2: the lookup is there now, not queued
 	private static final String OFFER_LUA =
-			"if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end "
+			"if redis.call('EXISTS', KEYS[3]) == 1 then return 2 end "
+			+ "if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end "
 			+ "redis.call('HSET', KEYS[1], 'body', ARGV[1], 'end', ARGV[2]) "
 			+ "redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[4])) "
 			+ "redis.call('ZADD', KEYS[2], ARGV[3], KEYS[1]) "
@@ -100,9 +108,40 @@ public final class EarlyDrQueue {
 		return !"false".equalsIgnoreCase(property("EarlyDr.Enable", "true"));
 	}
 
-	private static RedisConnection redis() {
+	private static RedisConnection stateRedis() {
 		RedisClient rc = RedisClient.getInstance();
 		return rc == null ? null : rc.getStateRedis();
+	}
+
+	/** where the early DRs of this outMsgId are queued: with its DR lookup */
+	private static RedisConnection redis(String outMsgId) {
+		return DrLookup.onReport() ? DrLookup.master(outMsgId) : stateRedis();
+	}
+
+	/** the DR lookup key of this outMsgId where the queue is */
+	private static String lookupKey(String outMsgId) {
+		return DrLookup.onReport() ? DrLookup.key(outMsgId) : outMsgId;
+	}
+
+	/** the places whose queues the MQM job takes: where DrLookupStore says, and (DrLookupLegacyRead) the other one */
+	private static List<RedisConnection> queues() {
+		List<RedisConnection> out = new ArrayList<RedisConnection>();
+		boolean report = DrLookup.onReport();
+		boolean both = DrLookup.legacyRead();
+		RedisClient rc = RedisClient.getInstance();
+		if (rc == null) {
+			return out;
+		}
+		if (report || both) {
+			out.addAll(Arrays.asList(rc.mqs(false)));
+		}
+		if (!report || both) {
+			RedisConnection s = rc.getStateRedis();
+			if (s != null && !out.contains(s)) {
+				out.add(s);
+			}
+		}
+		return out;
 	}
 
 	static String entryKey(GmmsMessage dr) {
@@ -152,22 +191,29 @@ public final class EarlyDrQueue {
 			drop(dr, now - t0, t, "no original at the first lookup");
 			return Offer.DROPPED;
 		}
-		RedisConnection r = redis();
+		RedisConnection r = redis(dr.getOutMsgID());
 		String body = SerializableHandler.convertGmmsMessage2RedisMessage(dr);
 		if (body == null) {
 			drop(dr, now - t0, t, "not serializable");
 			return Offer.DROPPED;
 		}
 		if (r == null) {
-			log.warn(dr, "[VDR-EARLY] not queued, no state Redis: left pending. outMsgId={}", dr.getOutMsgID());
+			log.warn(dr, "[VDR-EARLY] not queued, no Redis: left pending. outMsgId={}", dr.getOutMsgID());
 			return Offer.ERROR;
 		}
 		long due = now < t0 + t / 2 ? t0 + t / 2 : end;
 		// only a safety net (an entry is deleted once settled): an hour at least, so that a lagging MQM job finds it
 		long ttlMs = Math.max(TimeUnit.HOURS.toMillis(1), t + longProperty("EarlyDr.ClaimTimeoutMs", 60000L) + 60000L);
 		try {
-			Object n = r.evalScript(OFFER_LUA, Arrays.asList(entryKey(dr), READY_ZSET), Arrays.asList(body,
-					String.valueOf(end), String.valueOf(due), String.valueOf(ttlMs)));
+			Object n = r.evalScript(OFFER_LUA, Arrays.asList(entryKey(dr), READY_ZSET, lookupKey(dr.getOutMsgID())),
+					Arrays.asList(body, String.valueOf(end), String.valueOf(due), String.valueOf(ttlMs)));
+			if (Long.valueOf(2L).equals(n)) {
+				if (log.isInfoEnabled()) {
+					log.info(dr, "[VDR-EARLY] outMsgId={} status={} rssid={} its lookup came meanwhile, matched again",
+							dr.getOutMsgID(), dr.getStatusCode(), dr.getRSsID());
+				}
+				return Offer.FOUND;
+			}
 			if (Long.valueOf(1L).equals(n)) {
 				queued.incrementAndGet();
 				if (log.isInfoEnabled()) {
@@ -208,10 +254,18 @@ public final class EarlyDrQueue {
 	 */
 	public static int dispatchDue() {
 		startStats();
-		RedisConnection r = redis();
-		if (r == null) {
-			return 0;
+		int n = 0;
+		for (RedisConnection r : queues()) {
+			try {
+				n += dispatchDue(r);
+			} catch (Exception e) {
+				log.warn("[VDR-EARLY] due DRs not taken from a Redis, tried again later", e);
+			}
 		}
+		return n;
+	}
+
+	private static int dispatchDue(RedisConnection r) {
 		long now = System.currentTimeMillis();
 		int batch = intProperty("EarlyDr.BatchSize", 500);
 		r.evalScript(REQUEUE_LUA, Arrays.asList(PROCESSING_ZSET, READY_ZSET), Arrays.asList(String.valueOf(now), String.valueOf(batch)));
@@ -238,7 +292,7 @@ public final class EarlyDrQueue {
 		}
 		Set<String> found;
 		try {
-			found = originals(r, outMsgIds);
+			found = originals(outMsgIds);
 		} catch (Exception e) {
 			log.warn("[VDR-EARLY] original lookup failed, {} DR(s) tried again after the claim", due.size(), e);
 			return due.size();
@@ -316,19 +370,17 @@ public final class EarlyDrQueue {
 		return p;
 	}
 
-	/** the outMsgIds that have an original: one MGET on the state Redis, the others in WDQ with one query */
-	private static Set<String> originals(RedisConnection r, List<String> outMsgIds) throws Exception {
+	/** the outMsgIds that have an original: their DR lookups (one MGET a Redis, DrLookup.existing), the others in WDQ with one query */
+	private static Set<String> originals(List<String> outMsgIds) throws Exception {
 		Set<String> found = new HashSet<String>();
 		if (outMsgIds.isEmpty()) {
 			return found;
 		}
-		List<String> values = r.mgetStrict(outMsgIds);
+		found.addAll(DrLookup.existing(outMsgIds));
 		List<String> missing = new ArrayList<String>();
-		for (int i = 0; i < outMsgIds.size(); i++) {
-			if (values != null && i < values.size() && values.get(i) != null) {
-				found.add(outMsgIds.get(i));
-			} else {
-				missing.add(outMsgIds.get(i));
+		for (String id : outMsgIds) {
+			if (!found.contains(id)) {
+				missing.add(id);
 			}
 		}
 		if (!missing.isEmpty()) {

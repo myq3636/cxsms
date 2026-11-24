@@ -143,6 +143,9 @@ public class RetrieveRedisDRThread extends Thread {
 			}
 			
 			redis.setString(DRTime, new StringBuffer(50).append("DR").append(i).toString());
+			// the lookups on the report masters (DrLookupStore=report, docs/DR匹配数据迁移设计.md 3.3), also the ones
+			// left there after a switch back to state
+			moved += com.king.gmms.messagequeue.DrLookup.moveDue(sendRedisDRTime * 1000L, m -> msm.insertMessageToDB(m, table));
 			if (moved > 0) {
 				log.info("Redis DR lookup: {} message(s) still without a final DR after {} minutes moved to {}", moved,
 						sendRedisDRTime / 60, table);

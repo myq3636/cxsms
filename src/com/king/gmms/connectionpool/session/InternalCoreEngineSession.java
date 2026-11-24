@@ -1574,6 +1574,11 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 	 * Shared logic between TCP path and Redis Stream path
 	 */
 	public boolean handleInboundDRInternal(GmmsMessage finalMsg, Pdu finalPdu) {
+		return handleInboundDR(finalMsg, finalPdu, false);
+	}
+
+	/** matchedAgain: its lookup came while it was being offered to the early DR queue, this is the second match */
+	private boolean handleInboundDR(GmmsMessage finalMsg, Pdu finalPdu, boolean matchedAgain) {
 		GmmsMessage message = null;
 		if (finalMsg == null) {
 			log.warn("Null inbound DR from Redis Stream");
@@ -1586,10 +1591,11 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 			}
 			else{
 				boolean deleteLookup = false;
-				String lookupHashKey = null;
+				com.king.gmms.messagequeue.DrLookup.Hit lookup = null;
 				boolean fromDb = false;
 				if(isRedisEnable){
-					String object = redis.getString(finalMsg.getOutMsgID());
+					lookup = com.king.gmms.messagequeue.DrLookup.find(finalMsg.getOutMsgID());
+					String object = lookup == null ? null : lookup.value;
 					if(object != null){
 						log.debug(finalMsg,
 								"TMP-DRLOOKUP inbound DR redis hit. msgId={}, in={}, out={}, rsid={}, status={}/{}, sender={}, recipient={}",
@@ -1607,7 +1613,6 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 							// processed: a failed attempt stays pending and the retry must find it again.
 							if (GmmsStatus.ACCEPT.getCode() != finalMsg.getStatus().getCode()) {
 								deleteLookup = true;
-								lookupHashKey = gmmsUtility.getRedisDateIn(message);
 							}
 							if (log.isInfoEnabled()) {
 								log.info(finalMsg, "[VDR-MATCH] outMsgId={} status={} rssid={} -> msgId={} ossid={} (redis)",
@@ -1663,12 +1668,13 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 					boolean processed = processDeliveryReport(message, finalPdu);
 					if (processed && deleteLookup) {
 						final GmmsMessage dr = finalMsg;
-						final String hashKey = lookupHashKey;
+						final com.king.gmms.messagequeue.DrLookup.Hit hit = lookup;
+						final GmmsMessage original = message;
 						// inside a DR attempt only once _done is written: a redelivery after a crash
 						// must still find the original and take the same path
 						com.king.gmms.messagequeue.StreamAttempt.afterDone(new Runnable() {
 							public void run() {
-								deleteDrLookup(dr, hashKey);
+								deleteDrLookup(dr, hit, original);
 							}
 						});
 					}
@@ -1678,9 +1684,13 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 					// the MQM job tries it again at t0+T/2 and t0+T, then it is dropped, not stored in SDQ
 					// (docs/DR早到重试与outbox应答超时改进设计.md 4); the same entry again (a redelivery) is one queue entry
 					if (isRedisEnable && com.king.gmms.messagequeue.EarlyDrQueue.enabled()) {
-						// ERROR (Redis): not handled, the entry stays pending and is retried
-						return com.king.gmms.messagequeue.EarlyDrQueue.offer(finalMsg)
-								!= com.king.gmms.messagequeue.EarlyDrQueue.Offer.ERROR;
+						// ERROR (Redis): not handled, the entry stays pending and is retried; FOUND: the lookup was
+						// written meanwhile (the offer checks it in the same Lua), matched again now
+						com.king.gmms.messagequeue.EarlyDrQueue.Offer o = com.king.gmms.messagequeue.EarlyDrQueue.offer(finalMsg);
+						if (o == com.king.gmms.messagequeue.EarlyDrQueue.Offer.FOUND) {
+							return !matchedAgain && handleInboundDR(finalMsg, finalPdu, true);
+						}
+						return o != com.king.gmms.messagequeue.EarlyDrQueue.Offer.ERROR;
 					}
 					if (log.isInfoEnabled()) {
 						log.info(finalMsg, "[VDR-STORE] outMsgId={} status={} rssid={} has no original yet, stored for later matching",
@@ -1695,16 +1705,10 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 		}
 	}
 
-	private void deleteDrLookup(GmmsMessage dr, String hashKey) {
+	private void deleteDrLookup(GmmsMessage dr, com.king.gmms.messagequeue.DrLookup.Hit hit, GmmsMessage original) {
 		try {
-			if (hashKey != null) {
-				log.debug(dr, "TMP-DRLOOKUP inbound DR delete redis key with hash. out={}, hashKey={}",
-						dr.getOutMsgID(), hashKey);
-				redis.delPipeline(dr.getOutMsgID(), hashKey);
-			} else {
-				log.debug(dr, "TMP-DRLOOKUP inbound DR delete redis key. out={}", dr.getOutMsgID());
-				redis.del(dr.getOutMsgID());
-			}
+			log.debug(dr, "TMP-DRLOOKUP inbound DR delete redis key. out={}", dr.getOutMsgID());
+			com.king.gmms.messagequeue.DrLookup.delete(dr.getOutMsgID(), hit, original);
 		} catch (Exception e) {
 			// the entry expires by its TTL; the DR itself is already handled
 			log.warn(dr, "TMP-DRLOOKUP inbound DR delete redis key failed. out={}", dr.getOutMsgID(), e);
