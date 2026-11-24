@@ -2,7 +2,7 @@
 
 > 2026-11-24。问题：submit 应答回到系统后，数据放在状态 Redis，放到 DR（report）Redis 是否更合理。
 
-**实施状态**：第一步（DR 匹配数据、早到 DR 队列）已实现（`DrLookup`、`EarlyDrQueue`，默认 `DrLookupStore=state`，行为不变）；和设计的不同见 3.2、3.4 的"实现"。第二步（延时 DR、假 DR 超时）未做。
+**实施状态**：已实现，**固定放在 report Redis**：第一步（DR 匹配数据、早到 DR 队列，`DrLookup`、`EarlyDrQueue`）、第二步（延时 DR、假 DR 超时，3.8）。商用都是全新部署，没有旧版本的数据要迁，所以不要切换开关和回查旧位置（3.6 原来设计的 `DrLookupStore`、`DrLookupLegacyRead` 已去掉），MQM 也不再扫状态 Redis 的 `DR{秒}`。和设计的不同见 3.2、3.4 的"实现"。
 
 ## 1. 结论
 
@@ -81,7 +81,7 @@
 
 为此，早到 DR 的 key 也按 outMsgId 落在同一个主上，加上每个主一个 ZSET 做超时兜底。
 
-**实现**：早到 DR 队列（`dr:early:*`、`zset:dr:early`）的 key 不变，放在 outMsgId 的那个 report 主（`DrLookupStore=state` 时在状态 Redis）。做了第一点：放进队列的 Lua 先看匹配数据在不在，在就返回 `FOUND`，Core 当场再匹配一次（只重试一次）。第二点（写匹配数据时顺便取出停着的早到 DR）**不做**（2026-11-24 决定）：每条消息的 submit 结果都要多做这个检查，而商用中 DR 早到的概率很低，不值得；写匹配数据仍是一次 Lua（SETEX + ZADD），早到 DR 仍由 MQM 在 t0+T/2、t0+T 匹配。第一点只在早到 DR 这条少见的路径上，是放进队列那次 Lua 里多一个 EXISTS，不增加往返。MQM 处理 `DrLookupStore` 指的位置的队列，`DrLookupLegacyRead` 时两处都处理。
+**实现**：早到 DR 队列（`dr:early:*`、`zset:dr:early`）的 key 不变，放在 outMsgId 的那个 report 主。做了第一点：放进队列的 Lua 先看匹配数据在不在，在就返回 `FOUND`，Core 当场再匹配一次（只重试一次）。第二点（写匹配数据时顺便取出停着的早到 DR）**不做**（2026-11-24 决定）：每条消息的 submit 结果都要多做这个检查，而商用中 DR 早到的概率很低，不值得；写匹配数据仍是一次 Lua（SETEX + ZADD），早到 DR 仍由 MQM 在 t0+T/2、t0+T 匹配。第一点只在早到 DR 这条少见的路径上，是放进队列那次 Lua 里多一个 EXISTS，不增加往返。MQM 处理每个 report 主上的队列。
 
 ### 3.5 操作次数
 
@@ -102,17 +102,9 @@ report 的往返多了 3 次，但它可以按主扩展；8386 每条 MT 少了 
 
 测完后删 Lua 去掉了多余的 `ZREM drl:due:processing`（MQM 认领期间 DR 到达，MQM 仍按已读到的值搬，RESOLVE 会删成员），report 再少 1 条，约 +7。
 
-### 3.6 迁移（滚动升级，不丢 DR）
+### 3.6 迁移（不需要）
 
-新增配置（GmmsConfig，热加载，加入 `GmmsUtility` 热加载白名单，写进《配置项说明》）：
-- `DrLookupStore`：`state`（默认，行为不变）或 `report`，决定写到哪里；
-- `DrLookupLegacyRead`：默认 `true`，读时先查新位置，查不到再查旧位置（`{outMsgId}`）。
-
-步骤：
-1. 全部模块升级到新代码，`DrLookupStore=state`，行为和现在一样。MQM 同时处理旧的 `DR{秒}` 和新的 `drl:due`。
-2. 热改 `DrLookupStore=report`：新写入的去 report；旧的继续可读（`DrLookupLegacyRead`），MQM 照旧把它们搬进 WDQ。
-3. 等旧索引清空（最长 `Redis_RetrieveRedisInterval`，默认 30 分钟，超时的都已搬进 WDQ）后，热改 `DrLookupLegacyRead=false`。
-4. 回退：改回 `DrLookupStore=state`。`DrLookupLegacyRead` 期间，两边写入的数据都能读到。
+原设计有 `DrLookupStore`（state / report）和 `DrLookupLegacyRead`（切换期间回查旧位置）两个开关，用于从旧版本滚动升级。商用都是全新部署，没有状态 Redis 上的旧数据，所以去掉了：DR 匹配数据和 DR 调度数据固定在 report Redis。
 
 ### 3.7 容量和风险
 
@@ -121,6 +113,17 @@ report 的往返多了 3 次，但它可以按主扩展；8386 每条 MT 少了 
   - 通道长时间不回 DR 时最多是 4000 × 1800 = 720 万条，约 7 GB。这正是不应该放在单实例状态 Redis 上的原因；report 主的 `maxmemory` 要按这个算，策略保持 `noeviction`。
 - report Redis 故障切换时，DR 匹配数据和 DR 流一起切换，一致。现在两者分属两个实例，可能出现流还在、匹配数据丢了（或者反过来）。
 - report Redis 的持久化（AOF）要和这份数据的重要性一致，实施前核对 report 和 state 两边的配置。
+
+### 3.8 第二步：延时 DR、假 DR 超时（已实现）
+
+- 位置（`DrLookup.placeOf(shard)`）：该 Core 分片对应的 report 主（`shard % report 主数`，和分片流一样）。key 不变：
+  - 延时 DR：`zset:delay:outdr:{shard}`、`zset:delay:outdr:processing:{shard}`、`delay:outdr:payload:{shard}:*`；
+  - 假 DR 超时（way 4）：`zset:fakedr:timeout:{shard}`、`zset:fakedr:timeout:processing:{shard}`、`indr:once:{outMsgId}`。
+- 延时 DR（`DelayedInDRDispatcher`）：写入由两次往返（SETEX payload、ZADD）合成一个 Lua；认领、分发、重试、失败都在认领它的那个实例上做（原来的重试、失败固定写状态 Redis）。
+- 假 DR 超时（`FakeDrTimeoutScheduler`）：
+  - 开始计时、取消、到期认领都在 `placeOf(shard)`。
+  - 到期时要用匹配数据的 TTL 和原消息：原来用 Lua 读状态 Redis 上 `{outMsgId}` 的 TTL、再 `GET {outMsgId}`；匹配数据在 outMsgId 的 report 主上，不一定和分片的主相同，所以先用 `DrLookup.ttl` 取 TTL，作为参数传给 Lua，原消息用 `DrLookup.get` 取。
+- 回归：`FakeDrIT`、`CoreDrBizIT`、`EarlyDrIT`、`DrLookupIT` 等按 report Redis 的 key（`drl:{outMsgId}`）检查；`suites.txt` 第 4 列可以给测试集加 JVM 参数（`-Dit.props=键=值,…` 在启动后写进配置，以后同一个测试换配置再跑时用）。
 
 ## 4. 验证
 

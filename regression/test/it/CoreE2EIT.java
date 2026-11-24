@@ -109,7 +109,7 @@ public class CoreE2EIT extends ItSupport {
 		q.produceResult(resp);
 		check(waitFor(() -> !jedis.exists("core:outbox:submit:8888_E2E01:0:0") && cdrCount("8888_E2E01", "OUT_SUBMIT") == 1, 8000),
 				"E2E-05a submit_resp claims the outbox, OUT_SUBMIT CDR written once");
-		check(waitFor(() -> jedis.exists("OUT-E2E01"), 5000), "E2E-05b DR lookup cached under outMsgID");
+		check(waitFor(() -> jedis.exists("drl:OUT-E2E01"), 5000), "E2E-05b DR lookup cached under outMsgID");
 
 		// ---- E2E-04: no client: unread MTs pulled back, timeout result processed by Core ----
 		check(waitFor(() -> inStreams(ROUTED_8, "8888_E2E02").isEmpty()

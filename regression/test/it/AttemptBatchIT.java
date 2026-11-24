@@ -56,7 +56,7 @@ public class AttemptBatchIT extends ItSupport {
 	static List<GmmsMessage> readDrs(String... ids) {
 		for (String id : ids) {
 			GmmsMessage o = original(id);
-			jedis.set(o.getOutMsgID(), SerializableHandler.convertGmmsMessage2RedisMessage(o));
+			jedis.set(com.king.gmms.messagequeue.DrLookup.key(o.getOutMsgID()), SerializableHandler.convertGmmsMessage2RedisMessage(o));
 			q.produceInboundDeliveryReport(vendorDr(o.getOutMsgID(), "8_" + id));
 		}
 		q.createGroup(IDR, IDR_GROUP, false);
@@ -123,14 +123,14 @@ public class AttemptBatchIT extends ItSupport {
 		String markerC = StreamAttempt.entryMarkerKey(IDR, c.getRedisStreamID());
 		check(!jedis.hexists(markerC, "_done") && StreamAttempt.current() == null && cmd("hset") == hsetBefore,
 				"AB-01g finished: its flags and _done stay in memory, no HSET");
-		check(jedis.exists("OUT-AB1C"), "AB-01h the after-done action (DR lookup entry deleted) waits for the ack");
+		check(jedis.exists("drl:OUT-AB1C"), "AB-01h the after-done action (DR lookup entry deleted) waits for the ack");
 		final List<String> acked = new ArrayList<String>();
 		batch.ackAll(new StreamAttempt.AckListener() {
 			public void acked(GmmsMessage m, String id, boolean ok) {
 				if (ok) acked.add(id);
 			}
 		});
-		check(acked.size() == 2 && !jedis.exists("OUT-AB1C"),
+		check(acked.size() == 2 && !jedis.exists("drl:OUT-AB1C"),
 				"AB-01i DONE and finished acked together: " + acked.size() + " acked, then the DR lookup entry deleted");
 		check(!jedis.exists(markerC) && !jedis.exists(StreamAttempt.entryMarkerKey(IDR, a.getRedisStreamID())),
 				"AB-01j their markers deleted with the ack");
@@ -250,7 +250,7 @@ public class AttemptBatchIT extends ItSupport {
 			String p = round == 0 ? "AB5B" : "AB5S";
 			for (int i = 0; i < 30; i++) {
 				GmmsMessage o = original(p + i);
-				jedis.set(o.getOutMsgID(), SerializableHandler.convertGmmsMessage2RedisMessage(o));
+				jedis.set(com.king.gmms.messagequeue.DrLookup.key(o.getOutMsgID()), SerializableHandler.convertGmmsMessage2RedisMessage(o));
 			}
 			jedis.configResetStat();
 			for (int i = 0; i < 30; i++) q.produceInboundDeliveryReport(vendorDr("OUT-" + p + i, "8_" + p + i));

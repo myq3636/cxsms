@@ -2430,12 +2430,12 @@ public class MessageStoreManager extends DataManager {
 				log.info("handle a DR:{} ", temp.getOutMsgID());
 			}
 			if (isRedisEnable) {
-				com.king.gmms.messagequeue.DrLookup.Hit hit = com.king.gmms.messagequeue.DrLookup.find(temp.getOutMsgID());
-				if (hit != null) {
+				String object = com.king.gmms.messagequeue.DrLookup.get(temp.getOutMsgID());
+				if (object != null) {
 					message = SerializableHandler
-							.convertRedisMssage2GmmsMessage(hit.value);
+							.convertRedisMssage2GmmsMessage(object);
 					if (message != null) {
-						com.king.gmms.messagequeue.DrLookup.delete(temp.getOutMsgID(), hit, message);
+						com.king.gmms.messagequeue.DrLookup.delete(temp.getOutMsgID());
 					}
 				} else {
 					try {

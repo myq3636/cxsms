@@ -32,9 +32,9 @@ import com.king.redis.SerializableHandler;
  * the due ones to zset:dr:early:processing (score: the end of its claim) and deletes them once settled; a claim that
  * ran out (MQM stopped) is moved back.
  *
- * <p>Where: with the DR lookup ({@link DrLookup}): the state Redis, or (DrLookupStore=report) the report master of the
- * outMsgId, so that the offer checks the lookup in the same Lua: one written meanwhile is {@link Offer#FOUND}, the DR
- * is matched at once (docs/DR匹配数据迁移设计.md 3.4). The MQM job takes the due ones of every place that may hold some.
+ * <p>Where: with the DR lookup ({@link DrLookup}), on the report master of the outMsgId, so that the offer checks the
+ * lookup in the same Lua: one written meanwhile is {@link Offer#FOUND}, the DR is matched at once
+ * (docs/DR匹配数据迁移设计.md 3.4). The MQM job takes the due ones of every report master.
  */
 public final class EarlyDrQueue {
 	private static final SystemLogger log = SystemLogger.getSystemLogger(EarlyDrQueue.class);
@@ -108,40 +108,9 @@ public final class EarlyDrQueue {
 		return !"false".equalsIgnoreCase(property("EarlyDr.Enable", "true"));
 	}
 
-	private static RedisConnection stateRedis() {
-		RedisClient rc = RedisClient.getInstance();
-		return rc == null ? null : rc.getStateRedis();
-	}
-
 	/** where the early DRs of this outMsgId are queued: with its DR lookup */
 	private static RedisConnection redis(String outMsgId) {
-		return DrLookup.onReport() ? DrLookup.master(outMsgId) : stateRedis();
-	}
-
-	/** the DR lookup key of this outMsgId where the queue is */
-	private static String lookupKey(String outMsgId) {
-		return DrLookup.onReport() ? DrLookup.key(outMsgId) : outMsgId;
-	}
-
-	/** the places whose queues the MQM job takes: where DrLookupStore says, and (DrLookupLegacyRead) the other one */
-	private static List<RedisConnection> queues() {
-		List<RedisConnection> out = new ArrayList<RedisConnection>();
-		boolean report = DrLookup.onReport();
-		boolean both = DrLookup.legacyRead();
-		RedisClient rc = RedisClient.getInstance();
-		if (rc == null) {
-			return out;
-		}
-		if (report || both) {
-			out.addAll(Arrays.asList(rc.mqs(false)));
-		}
-		if (!report || both) {
-			RedisConnection s = rc.getStateRedis();
-			if (s != null && !out.contains(s)) {
-				out.add(s);
-			}
-		}
-		return out;
+		return RedisClient.getInstance() == null ? null : DrLookup.master(outMsgId);
 	}
 
 	static String entryKey(GmmsMessage dr) {
@@ -205,7 +174,7 @@ public final class EarlyDrQueue {
 		// only a safety net (an entry is deleted once settled): an hour at least, so that a lagging MQM job finds it
 		long ttlMs = Math.max(TimeUnit.HOURS.toMillis(1), t + longProperty("EarlyDr.ClaimTimeoutMs", 60000L) + 60000L);
 		try {
-			Object n = r.evalScript(OFFER_LUA, Arrays.asList(entryKey(dr), READY_ZSET, lookupKey(dr.getOutMsgID())),
+			Object n = r.evalScript(OFFER_LUA, Arrays.asList(entryKey(dr), READY_ZSET, DrLookup.key(dr.getOutMsgID())),
 					Arrays.asList(body, String.valueOf(end), String.valueOf(due), String.valueOf(ttlMs)));
 			if (Long.valueOf(2L).equals(n)) {
 				if (log.isInfoEnabled()) {
@@ -255,7 +224,7 @@ public final class EarlyDrQueue {
 	public static int dispatchDue() {
 		startStats();
 		int n = 0;
-		for (RedisConnection r : queues()) {
+		for (RedisConnection r : DrLookup.masters()) {
 			try {
 				n += dispatchDue(r);
 			} catch (Exception e) {

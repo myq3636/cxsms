@@ -17,7 +17,6 @@ import com.king.redis.SerializableHandler;
 public class RetrieveRedisDRThread extends Thread {
 	private static SystemLogger log = SystemLogger.getSystemLogger(RetrieveRedisDRThread.class);
 	private int sendRedisDRTime = 30 * 60;
-	private static String DRTime = "DRRETRIEVETIMEKEY";
 	private String table = MessageStoreManager.WDQ;
 	protected MessageStoreManager msm = null;
 	private RedisClient redis = null;
@@ -67,95 +66,22 @@ public class RetrieveRedisDRThread extends Thread {
 		thread.start();
 	}
 	
+	/**
+	 * The DR lookups still without a final DR Redis_RetrieveRedisInterval after their dateIn go to WDQ: on every report
+	 * master, through drl:due (DrLookup.moveDue, docs/DR匹配数据迁移设计.md 3.3)
+	 */
 	public void execute() {
 		try {
-			ArrayList<GmmsMessage> list = null;
-			
-			long currentTime = System.currentTimeMillis()/1000;
-			//long currentTime = getGMTTime(System.currentTimeMillis())/1000;
-			
-			long coventTime = currentTime;
-			
-			try {
-				String time = redis.getString(DRTime);
-				if(time == null){
-					coventTime = currentTime - sendRedisDRTime;
-				}else{
-					coventTime = Long.parseLong(time.substring(2));
-					if(currentTime - sendRedisDRTime < coventTime){
-						Thread.sleep((coventTime + sendRedisDRTime - currentTime)*1000L);
-					}
-				}
-			} catch (Exception e) {
-				coventTime = currentTime - sendRedisDRTime;
-			}
-			
-			long i = coventTime;
-			int moved = 0;
-			for( ; i <= currentTime - sendRedisDRTime ; i++){
-				
-				Set<String> set = redis.getHash(new StringBuffer(50).append("DR").append(i).toString());
-				
-				if(set == null || set.size() <= 0){
-					continue;
-				}
-				
-			    list = new ArrayList<GmmsMessage>();
-				
-				for(String outmsgid : set){
-					if(outmsgid != null){
-						String temp = redis.getString(outmsgid);
-						if (log.isDebugEnabled()) {
-							log.debug("TMP-DRLOOKUP redis retrieve candidate. hashKey=DR{}, out={}, exists={}",
-									i, outmsgid, temp != null);
-						}
-		        		if(log.isDebugEnabled()){
-		        			log.debug("temp: {}",temp);
-		        		}
-					    if(temp != null){
-					    	GmmsMessage message = SerializableHandler.convertRedisMssage2GmmsMessage(temp);
-					    	if(message != null){
-					    		if (log.isDebugEnabled()) {
-					    			log.debug(message,
-					    					"TMP-DRLOOKUP redis retrieve decoded. hashKey=DR{}, out={}, msgId={}, in={}, rsid={}, dateIn={}, expire={}",
-					    					i, outmsgid, message.getMsgID(), message.getInMsgID(),
-					    					message.getRSsID(), message.getDateIn(), message.getExpiryDate());
-					    		}
-					    		list.add(message);
-					    	}
-					    }
-					    if (log.isDebugEnabled()) {
-					    	log.debug("TMP-DRLOOKUP redis retrieve delete key. hashKey=DR{}, out={}", i, outmsgid);
-					    }
-					    redis.del(outmsgid);
-					}
-				}
-				
-				for(GmmsMessage msg : list){
-					if (log.isDebugEnabled()) {
-						log.debug(msg, "TMP-DRLOOKUP redis retrieve insert WDQ. msgId={}, in={}, out={}, rsid={}",
-								msg.getMsgID(), msg.getInMsgID(), msg.getOutMsgID(), msg.getRSsID());
-					}
-					msm.insertMessageToDB(msg, table);
-					moved++;
-				}
-				list.clear();
-			}
-			
-			redis.setString(DRTime, new StringBuffer(50).append("DR").append(i).toString());
-			// the lookups on the report masters (DrLookupStore=report, docs/DR匹配数据迁移设计.md 3.3), also the ones
-			// left there after a switch back to state
-			moved += com.king.gmms.messagequeue.DrLookup.moveDue(sendRedisDRTime * 1000L, m -> msm.insertMessageToDB(m, table));
+			int moved = com.king.gmms.messagequeue.DrLookup.moveDue(sendRedisDRTime * 1000L, m -> msm.insertMessageToDB(m, table));
 			if (moved > 0) {
 				log.info("Redis DR lookup: {} message(s) still without a final DR after {} minutes moved to {}", moved,
 						sendRedisDRTime / 60, table);
 			}
-
 		} catch (Exception e) {
 			log.error(e, e);
 		}
 	}
-	
+
 	public static void main(String[] args) {
 		long t = Long.parseLong(new StringBuffer(50).append(123).toString());
 		

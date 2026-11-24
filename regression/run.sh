@@ -45,7 +45,7 @@ run() {  # name class mode
         it-multiclient) modules '1|CoreEngine1|CoreEngine|x\n1|MultiSmppServer1|MultiSmppServer|x\n1|MultiSmppClient1|MultiSmppClient|x\n1|MultiSmppClient2|MultiSmppClient|x\n' ;;
         it-multi) modules '1|CoreEngine1|CoreEngine|x\n1|MultiSmppServer1|MultiSmppServer|x\n1|MultiSmppServer2|MultiSmppServer|x\n1|MultiSmppClient1|MultiSmppClient|x\n' ;;
       esac
-      (cd "$W" && timeout ${SUITE_TIMEOUT:-400} "$J/java" $EXTRA $SUITE_JAVA_OPTS -Dknown.defects="$REG/known-defects.txt" -Da2p_home="$HD" -Dmodule=$MOD -DNodeID=1 -Dlog4j.configurationFile="$HD/conf/log4j2.xml" -cp "$CP" "$2" > "$OUT/$1.txt" 2>&1)
+      (cd "$W" && timeout ${SUITE_TIMEOUT:-400} "$J/java" $EXTRA $SUITE_JAVA_OPTS ${4:-} -Dknown.defects="$REG/known-defects.txt" -Da2p_home="$HD" -Dmodule=$MOD -DNodeID=1 -Dlog4j.configurationFile="$HD/conf/log4j2.xml" -cp "$CP" "$2" > "$OUT/$1.txt" 2>&1)
       mkdir -p "$OUT/logs"; cp "$HD/log/it.log" "$OUT/logs/$1.log" 2>/dev/null ;;
   esac
   local p f k x
@@ -57,10 +57,11 @@ run() {  # name class mode
 }
 
 BAD=0; P=0; F=0; K=0; X=0
-while read -r name class mode; do
+# a 4th column: JVM options of that suite (e.g. -Dit.props=Key=value,...: GmmsConfig keys set after the boot, ItSupport)
+while read -r name class mode opts; do
   [ -z "$name" ] && continue
   if [ $# -gt 0 ]; then case " $* " in *" $name "*) ;; *) continue ;; esac; fi
-  run "$name" "$class" "$mode"
+  run "$name" "$class" "$mode" "$opts"
 done < <(cat "$REG/suites.txt"; [ $# -gt 0 ] && cat "$REG/manual-suites.txt" 2>/dev/null)
 echo "TOTAL pass=$P fail=$F known=$K fixed=$X suites_failed=$BAD" | tee -a "$OUT/summary.txt"
 grep -h '^FAIL\|^FIXED' "$OUT"/*.txt 2>/dev/null | cut -c1-160

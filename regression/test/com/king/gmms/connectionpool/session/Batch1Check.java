@@ -45,7 +45,7 @@ public class Batch1Check {
 		f.set(target, value);
 	}
 
-	/** In-memory stand-in for the state Redis connection. */
+	/** In-memory stand-in for the report Redis master (DrLookup's drl:{outMsgId}). */
 	public static class StubRedis extends RedisConnection {
 		Map<String, String> store;
 		List<String> deletes;
@@ -66,6 +66,15 @@ public class Batch1Check {
 		public boolean delObject(String key) {
 			deletes.add(key);
 			return store.remove(key) != null;
+		}
+
+		/** DrLookup's delete Lua (DEL + ZREM drl:due) */
+		public Object evalScript(String script, List<String> keys, List<String> args) {
+			if (script.contains("'DEL'")) {
+				deletes.add(keys.get(0));
+				store.remove(keys.get(0));
+			}
+			return 1L;
 		}
 	}
 
@@ -153,32 +162,37 @@ public class Batch1Check {
 		original.setDateIn(dateIn);
 		String body = SerializableHandler.convertGmmsMessage2RedisMessage(original);
 		check(body != null, "original message serialises");
-		String hashKey = "DR" + dateIn.getTime() / 1000;
+		// the stub is the only report master (DrLookup.master)
+		Field mqs = com.king.redis.RedisClient.class.getDeclaredField("reportMqs");
+		mqs.setAccessible(true);
+		Object oldMqs = mqs.get(null);
+		mqs.set(null, new com.king.redis.RedisConnection[] { stub });
 
 		// 1. processing fails: lookup entry must stay for the retry
-		stub.store.put("OUT1", body);
+		stub.store.put("drl:OUT1", body);
 		session.innerAckResult = Boolean.FALSE;
 		boolean r1 = session.handleInboundDRInternal(dr(GmmsStatus.DELIVERED), null);
 		check(!r1 && session.innerAckCalls == 1, "failed processing returns false (not acked)");
-		check(stub.deletes.isEmpty() && stub.store.containsKey("OUT1"), "lookup entry kept after failed processing");
+		check(stub.deletes.isEmpty() && stub.store.containsKey("drl:OUT1"), "lookup entry kept after failed processing");
 
 		// 2. processing throws: same
 		session.innerAckResult = null;
 		boolean r2 = session.handleInboundDRInternal(dr(GmmsStatus.DELIVERED), null);
-		check(!r2 && stub.deletes.isEmpty() && stub.store.containsKey("OUT1"), "lookup entry kept when processing throws");
+		check(!r2 && stub.deletes.isEmpty() && stub.store.containsKey("drl:OUT1"), "lookup entry kept when processing throws");
 
 		// 3. retry succeeds: entry deleted with its date hash
 		session.innerAckResult = Boolean.TRUE;
 		boolean r3 = session.handleInboundDRInternal(dr(GmmsStatus.DELIVERED), null);
 		check(r3, "retry finds the original again and succeeds");
-		check(stub.deletes.size() == 1 && stub.deletes.get(0).equals("OUT1|" + hashKey) && !stub.store.containsKey("OUT1"),
+		check(stub.deletes.size() == 1 && stub.deletes.get(0).equals("drl:OUT1") && !stub.store.containsKey("drl:OUT1"),
 				"lookup entry deleted after success " + stub.deletes);
 
 		// 4. ACCEPT (intermediate) DR: never deletes
 		stub.deletes.clear();
-		stub.store.put("OUT1", body);
+		stub.store.put("drl:OUT1", body);
 		boolean r4 = session.handleInboundDRInternal(dr(GmmsStatus.ACCEPT), null);
-		check(r4 && stub.deletes.isEmpty() && stub.store.containsKey("OUT1"), "ACCEPT DR keeps the lookup entry");
+		check(r4 && stub.deletes.isEmpty() && stub.store.containsKey("drl:OUT1"), "ACCEPT DR keeps the lookup entry");
+		mqs.set(null, oldMqs);
 	}
 
 	static GmmsMessage dr(GmmsStatus status) {

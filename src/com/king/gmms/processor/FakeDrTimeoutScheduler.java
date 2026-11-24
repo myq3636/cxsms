@@ -18,6 +18,9 @@ import com.king.redis.SerializableHandler;
  * on its new Core. A real DR and the timeout can meet: the member is in the ready or the processing ZSET, or
  * gone, and whoever removes it decides; a timeout that sent its DR leaves indr:once:{outMsgId} for the real DR.
  * Tuning shares the AutoInDR.* properties of {@link DelayedInDRDispatcher}.
+ *
+ * <p>The ZSETs and the once key are on the report master of the shard (DrLookup.placeOf); the MT stored for its DR is
+ * read through DrLookup, on the report master of its outMsgId (docs/DR匹配数据迁移设计.md 3.8).
  */
 public class FakeDrTimeoutScheduler implements Runnable {
 	private static final SystemLogger log = SystemLogger.getSystemLogger(FakeDrTimeoutScheduler.class);
@@ -32,13 +35,13 @@ public class FakeDrTimeoutScheduler implements Runnable {
 			"local m = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, tonumber(ARGV[3])) "
 			+ "for _, v in ipairs(m) do redis.call('ZREM', KEYS[1], v) redis.call('ZADD', KEYS[2], ARGV[2], v) end "
 			+ "return m";
-	// KEYS: 1 processing, 2 once, 3 the MT stored for its DR (key = outMsgId); ARGV: 1 member.
+	// KEYS: 1 processing, 2 once; ARGV: 1 member, 2 the TTL of the MT stored for its DR (DrLookup.ttl, -2: none).
 	// 1: send the timeout DR; 0: the real DR came first; -1: the stored MT is gone.
 	private static final String FIRE_LUA =
 			"if redis.call('ZREM', KEYS[1], ARGV[1]) == 0 then return 0 end "
-			+ "local ttl = redis.call('TTL', KEYS[3]) "
+			+ "local ttl = tonumber(ARGV[2]) "
 			+ "if ttl < 0 then return -1 end "
-			+ "redis.call('SET', KEYS[2], 'TIMEOUT', 'EX', ttl) "
+			+ "redis.call('SET', KEYS[2], 'TIMEOUT', 'EX', math.max(ttl, 1)) "
 			+ "return 1";
 	// KEYS: 1 ready, 2 processing, 3 once; ARGV: 1 member. 1: the real DR goes to the customer; 0: the timeout DR was sent.
 	private static final String CANCEL_LUA =
@@ -54,9 +57,6 @@ public class FakeDrTimeoutScheduler implements Runnable {
 		return instance;
 	}
 
-	private static RedisConnection redis() {
-		return GmmsUtility.getInstance().getRedisClient().getStateRedis();
-	}
 
 	static int shardOf(String outMsgId) {
 		int total = GmmsUtility.getInstance().getTotalShards();
@@ -66,7 +66,9 @@ public class FakeDrTimeoutScheduler implements Runnable {
 	/** starts timing; false when it could not be stored (no timeout for this MT then) */
 	public boolean schedule(String outMsgId, int seconds) {
 		try {
-			return redis().zaddOrNull(READY_PREFIX + shardOf(outMsgId), System.currentTimeMillis() + seconds * 1000L, outMsgId) != null;
+			int shard = shardOf(outMsgId);
+			return com.king.gmms.messagequeue.DrLookup.placeOf(shard).zaddOrNull(READY_PREFIX + shard,
+					System.currentTimeMillis() + seconds * 1000L, outMsgId) != null;
 		} catch (Exception e) {
 			log.warn("fake DR timeout not started, outMsgId={}: {}", outMsgId, e.getMessage());
 			return false;
@@ -79,7 +81,7 @@ public class FakeDrTimeoutScheduler implements Runnable {
 			return true;
 		}
 		int shard = shardOf(outMsgId);
-		Object r = redis().evalScript(CANCEL_LUA,
+		Object r = com.king.gmms.messagequeue.DrLookup.placeOf(shard).evalScript(CANCEL_LUA,
 				Arrays.asList(READY_PREFIX + shard, PROCESSING_PREFIX + shard, ONCE_PREFIX + outMsgId),
 				Collections.singletonList(outMsgId));
 		return !(r instanceof Number) || ((Number) r).longValue() != 0L;
@@ -101,8 +103,8 @@ public class FakeDrTimeoutScheduler implements Runnable {
 
 	private long timing() {
 		long n = 0;
-		try (redis.clients.jedis.Jedis j = redis().getJedis()) {
-			for (Integer shard : GmmsUtility.getInstance().getMyShards()) {
+		for (Integer shard : GmmsUtility.getInstance().getMyShards()) {
+			try (redis.clients.jedis.Jedis j = com.king.gmms.messagequeue.DrLookup.placeOf(shard).getJedis()) {
 				n += j.zcard(READY_PREFIX + shard);
 			}
 		}
@@ -150,27 +152,31 @@ public class FakeDrTimeoutScheduler implements Runnable {
 				continue;
 			}
 			String ready = READY_PREFIX + shard, processing = PROCESSING_PREFIX + shard;
+			RedisConnection place = com.king.gmms.messagequeue.DrLookup.placeOf(shard);
 			// a Core that died while handling its claim: back to ready
-			redis().evalScript(CLAIM_LUA, Arrays.asList(processing, ready), Arrays.asList(String.valueOf(now), String.valueOf(now), batch));
-			Object claimed = redis().evalScript(CLAIM_LUA, Arrays.asList(ready, processing),
+			place.evalScript(CLAIM_LUA, Arrays.asList(processing, ready), Arrays.asList(String.valueOf(now), String.valueOf(now), batch));
+			Object claimed = place.evalScript(CLAIM_LUA, Arrays.asList(ready, processing),
 					Arrays.asList(String.valueOf(now), String.valueOf(now + longProperty("AutoInDR.DelayClaimTimeoutMs", 60000L)), batch));
 			for (String outMsgId : members(claimed)) {
-				fire(processing, outMsgId);
+				fire(place, processing, outMsgId);
 				n++;
 			}
 		}
 		return n;
 	}
 
-	private void fire(String processing, String outMsgId) {
+	private void fire(RedisConnection place, String processing, String outMsgId) {
 		try {
-			Object r = redis().evalScript(FIRE_LUA, Arrays.asList(processing, ONCE_PREFIX + outMsgId, outMsgId),
-					Collections.singletonList(outMsgId));
+			// the MT stored for its DR: on the master of its outMsgId (DrLookup), not necessarily this one of the shard
+			long ttl = com.king.gmms.messagequeue.DrLookup.ttl(outMsgId);
+			Object r = place.evalScript(FIRE_LUA, Arrays.asList(processing, ONCE_PREFIX + outMsgId),
+					Arrays.asList(outMsgId, String.valueOf(ttl)));
 			long code = r instanceof Number ? ((Number) r).longValue() : -1L;
 			if (code == 0L) {
 				return;
 			}
-			GmmsMessage mt = code == 1L ? SerializableHandler.convertRedisMssage2GmmsMessage(redis().getString(outMsgId)) : null;
+			String stored = code == 1L ? com.king.gmms.messagequeue.DrLookup.get(outMsgId) : null;
+			GmmsMessage mt = stored == null ? null : SerializableHandler.convertRedisMssage2GmmsMessage(stored);
 			if (mt == null) {
 				log.warn("fake DR timeout of outMsgId={}: the MT stored for its DR is gone, no timeout DR", outMsgId);
 				return;

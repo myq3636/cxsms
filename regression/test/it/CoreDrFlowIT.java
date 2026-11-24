@@ -164,14 +164,14 @@ public class CoreDrFlowIT {
 		resp.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT_RESP);
 		resp.setStatus(GmmsStatus.SUCCESS);
 		check(q.produceResult(resp), "(client) submit_resp written to stream:core:results");
-		check(waitFor(() -> jedis.exists("OUT-IT1"), 10000), "Core result consumer cached the original under outMsgID");
+		check(waitFor(() -> jedis.exists("drl:OUT-IT1"), 10000), "Core result consumer cached the original under outMsgID");
 
 		// ---- 3. vendor DR -> Core forwards it inline, acks only afterwards ----
 		check(q.produceInboundDeliveryReport(vendorDr("OUT-IT1", "8_DR1")), "(client) vendor DR written to stream:core:inbound-dr:8:{shard}");
 		check(jedis.keys("stream:core:inbound-dr:8:*").size() == 1 && !jedis.exists("stream:core:inbound-dr:8"),
 				"vendor DR stream has a shard (CoreInboundDRShardEnable): " + jedis.keys("stream:core:inbound-dr:8*"));
 		check(waitFor(() -> drPendingCount() == 1, 10000), "Core produced the DR to stream:dr:pending:8888:MultiSmppServer1:*");
-		check(waitFor(() -> !jedis.exists("OUT-IT1"), 5000), "DR lookup entry deleted after the DR was processed");
+		check(waitFor(() -> !jedis.exists("drl:OUT-IT1"), 5000), "DR lookup entry deleted after the DR was processed");
 		check(waitFor(() -> inboundDrLen("stream:core:inbound-dr:8:*") == 0, 5000), "inbound DR acked (XACK+XDEL)");
 		String sent = logLine("8888_IT1", "[DR-TO-SERVER]");
 		System.out.println("     log: " + sent);
@@ -183,7 +183,7 @@ public class CoreDrFlowIT {
 		bad.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT_RESP);
 		bad.setStatus(GmmsStatus.SUCCESS);
 		q.produceResult(bad);
-		check(waitFor(() -> jedis.exists("OUT-IT5"), 10000), "3b: lookup for OUT-IT5 cached");
+		check(waitFor(() -> jedis.exists("drl:OUT-IT5"), 10000), "3b: lookup for OUT-IT5 cached");
 		Field msmField = com.king.gmms.connectionpool.session.InternalCoreEngineSession.class.getDeclaredField("msgStoreManager");
 		msmField.setAccessible(true);
 		Object realMsm = msmField.get(com.king.gmms.connectionpool.session.InternalCoreEngineSession.getReactiveInstance());
@@ -191,7 +191,7 @@ public class CoreDrFlowIT {
 		long pendingBefore = drPendingCount();
 		q.produceInboundDeliveryReport(vendorDr("OUT-IT5", "8_DR5"));
 		check(waitFor(() -> logLine("8_DR5", "STREAM-NACK") != null, 10000), "3b: failing DR is nacked (left pending for retry)");
-		check(jedis.exists("OUT-IT5") && drPendingCount() == pendingBefore,
+		check(jedis.exists("drl:OUT-IT5") && drPendingCount() == pendingBefore,
 				"3b: lookup entry kept after the failure, no DR produced");
 		msmField.set(com.king.gmms.connectionpool.session.InternalCoreEngineSession.getReactiveInstance(), realMsm);
 		final GmmsMessage replay = vendorDr("OUT-IT5", "8_DR5");
@@ -199,7 +199,7 @@ public class CoreDrFlowIT {
 				com.king.gmms.connectionpool.session.InternalCoreEngineSession.getReactiveInstance()
 						.handleInboundDRInternal(replay, null));
 		check(retried && drPendingCount() == pendingBefore + 1, "3b: retry finds the original again and forwards the DR");
-		check(!jedis.exists("OUT-IT5"), "3b: lookup entry deleted after the successful retry");
+		check(!jedis.exists("drl:OUT-IT5"), "3b: lookup entry deleted after the successful retry");
 
 		// ---- 3c. NPE fix: original without timeStamp (used to throw) is forwarded ----
 		GmmsMessage noTs = original("8888_IT6", "OUT-IT6");
@@ -207,10 +207,10 @@ public class CoreDrFlowIT {
 		noTs.setMessageType(GmmsMessage.MSG_TYPE_SUBMIT_RESP);
 		noTs.setStatus(GmmsStatus.SUCCESS);
 		q.produceResult(noTs);
-		check(waitFor(() -> jedis.exists("OUT-IT6"), 10000), "NPE-01a lookup for OUT-IT6 cached");
+		check(waitFor(() -> jedis.exists("drl:OUT-IT6"), 10000), "NPE-01a lookup for OUT-IT6 cached");
 		long before6 = drPendingCount();
 		q.produceInboundDeliveryReport(vendorDr("OUT-IT6", "8_DR6"));
-		check(waitFor(() -> drPendingCount() == before6 + 1 && !jedis.exists("OUT-IT6"), 10000),
+		check(waitFor(() -> drPendingCount() == before6 + 1 && !jedis.exists("drl:OUT-IT6"), 10000),
 				"NPE-01b DR of an original without timeStamp forwarded, lookup deleted (no NPE)");
 
 		// ---- 4. CoreDrInlineDispatch=false: only scoped paths inline ----

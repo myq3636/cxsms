@@ -30,7 +30,8 @@ public class CoreDrBizIT extends CoreRetryIT {
 	/** the vendor's DR for an accepted MT */
 	static void vendorDr(GmmsMessage m, GmmsStatus st) throws Exception {
 		final String out = m.getOutMsgID();
-		waitFor(() -> jedis.exists(out), 5000);
+		// its DR lookup written (drl:{outMsgId})
+		waitFor(() -> jedis.exists(com.king.gmms.messagequeue.DrLookup.key(out)), 5000);
 		GmmsMessage d = new GmmsMessage();
 		d.setMsgID(m.getMsgID() + "#VDR");
 		d.setOutMsgID(out);
@@ -125,7 +126,7 @@ public class CoreDrBizIT extends CoreRetryIT {
 		check(logLine(dead.getMsgID(), "Result already acked by another consumer") != null, "FT-08h logged");
 
 		// vendor DR
-		waitFor(() -> jedis.exists("OUT-RACE"), 3000);
+		waitFor(() -> jedis.exists("drl:OUT-RACE"), 3000);
 		GmmsMessage v = new GmmsMessage();
 		v.setMsgID(dead.getMsgID());
 		v.setOutMsgID("OUT-RACE");

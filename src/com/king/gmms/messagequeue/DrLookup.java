@@ -17,13 +17,11 @@ import com.king.redis.SerializableHandler;
 
 /**
  * The DR lookup: the original of an MT by its outMsgId (written when its submit result is processed, read when the
- * channel's DR comes, deleted after the final DR), docs/DR匹配数据迁移设计.md.
- *
- * <p>DrLookupStore (hot): state (default, as before: {outMsgId} and the hash DR{seconds of dateIn} on the state Redis)
- * or report: drl:{outMsgId} on the report MQ master of the outMsgId (ShardHash), with its member in the ZSET drl:due of
- * that master (score: dateIn ms); the MQM job moves the ones older than Redis_RetrieveRedisInterval to WDQ through
- * drl:due:processing ({@link #moveDue}). DrLookupLegacyRead (hot, default true): a lookup not found where DrLookupStore
- * says is looked for in the other place too (the entries written before a switch, either way).
+ * channel's DR comes, deleted after the final DR), on the report Redis (docs/DR匹配数据迁移设计.md): drl:{outMsgId} on the
+ * report MQ master of the outMsgId (ShardHash), with its member in the ZSET drl:due of that master (score: dateIn ms);
+ * the MQM job moves the ones older than Redis_RetrieveRedisInterval to WDQ through drl:due:processing ({@link #moveDue}).
+ * The DR scheduling data of a Core shard (early DR queue with the lookup, delayed DRs, fake DR timeouts) is on the report
+ * master of the shard ({@link #placeOf}).
  */
 public final class DrLookup {
 	private static final SystemLogger log = SystemLogger.getSystemLogger(DrLookup.class);
@@ -67,16 +65,6 @@ public final class DrLookup {
 	private DrLookup() {
 	}
 
-	/** DrLookupStore=report: the lookup is written on the report MQ masters */
-	public static boolean onReport() {
-		return "report".equalsIgnoreCase(property("DrLookupStore", "state"));
-	}
-
-	/** DrLookupLegacyRead (default true): a lookup not found is looked for in the other place too */
-	public static boolean legacyRead() {
-		return !"false".equalsIgnoreCase(property("DrLookupLegacyRead", "true"));
-	}
-
 	/** the report MQ master of an outMsgId */
 	public static RedisConnection master(String outMsgId) {
 		RedisConnection[] m = RedisClient.getInstance().mqs(false);
@@ -87,25 +75,22 @@ public final class DrLookup {
 		return PREFIX + outMsgId;
 	}
 
-	/** where a lookup was found */
-	public static final class Hit {
-		public final String value;
-		final boolean report;
+	/** the report MQ master of a Core shard (shard % masters, as the sharded streams): its DR scheduling data */
+	public static RedisConnection placeOf(int shard) {
+		RedisConnection[] m = RedisClient.getInstance().mqs(false);
+		return m[Math.floorMod(shard, m.length)];
+	}
 
-		Hit(String value, boolean report) {
-			this.value = value;
-			this.report = report;
-		}
+	/** the report masters (each holds lookups and the scheduling data of its shards) */
+	public static List<RedisConnection> masters() {
+		return Arrays.asList(RedisClient.getInstance().mqs(false));
 	}
 
 	/**
-	 * The original of the MT sent with this outMsgId (serialized), written where DrLookupStore says, with ttlSeconds;
-	 * false: not written (the caller stores it in WDQ)
+	 * The original of the MT sent with this outMsgId (serialized), with ttlSeconds; false: not written (the caller
+	 * stores it in WDQ)
 	 */
 	public static boolean put(GmmsMessage msg, String outMsgId, String value, int ttlSeconds) {
-		if (!onReport()) {
-			return RedisClient.getInstance().setPipeline(outMsgId, value, ttlSeconds, GmmsUtility.getInstance().getRedisDateIn(msg));
-		}
 		try {
 			long score = msg.getDateIn() != null ? msg.getDateIn().getTime() : System.currentTimeMillis();
 			master(outMsgId).evalScript(PUT_LUA, Arrays.asList(key(outMsgId), DUE_ZSET),
@@ -117,83 +102,51 @@ public final class DrLookup {
 		}
 	}
 
-	/** the lookup of this outMsgId: where DrLookupStore says, then (DrLookupLegacyRead) the other place; null: none */
-	public static Hit find(String outMsgId) {
+	/** the original (serialized) of this outMsgId; null: none */
+	public static String get(String outMsgId) {
+		return outMsgId == null ? null : master(outMsgId).getString(key(outMsgId));
+	}
+
+	/** seconds the lookup of this outMsgId still lives; -2: none */
+	public static long ttl(String outMsgId) {
 		if (outMsgId == null) {
-			return null;
+			return -2L;
 		}
-		boolean report = onReport();
-		String v = get(outMsgId, report);
-		if (v != null) {
-			return new Hit(v, report);
+		try (redis.clients.jedis.Jedis j = master(outMsgId).getJedis()) {
+			return j.ttl(key(outMsgId));
 		}
-		if (legacyRead()) {
-			v = get(outMsgId, !report);
-			if (v != null) {
-				return new Hit(v, !report);
-			}
-		}
-		return null;
 	}
 
-	private static String get(String outMsgId, boolean report) {
-		return report ? master(outMsgId).getString(key(outMsgId)) : RedisClient.getInstance().getString(outMsgId);
-	}
-
-	/** delete the lookup where it was found (after the final DR); the original gives the DR{seconds} hash of the state Redis */
-	public static void delete(String outMsgId, Hit hit, GmmsMessage original) {
-		if (hit == null || outMsgId == null) {
-			return;
-		}
-		if (hit.report) {
+	/** after the final DR */
+	public static void delete(String outMsgId) {
+		if (outMsgId != null) {
 			master(outMsgId).evalScript(DELETE_LUA, Arrays.asList(key(outMsgId), DUE_ZSET), new ArrayList<String>());
-		} else {
-			String hashKey = original == null ? null : GmmsUtility.getInstance().getRedisDateIn(original);
-			if (hashKey != null) {
-				RedisClient.getInstance().delPipeline(outMsgId, hashKey);
-			} else {
-				RedisClient.getInstance().del(outMsgId);
-			}
 		}
 	}
 
-	/** the outMsgIds that have a lookup (both places as find): one MGET per Redis */
+	/** the outMsgIds that have a lookup: one MGET per master */
 	public static Set<String> existing(List<String> outMsgIds) {
 		Set<String> found = new HashSet<String>();
 		if (outMsgIds == null || outMsgIds.isEmpty()) {
 			return found;
 		}
-		boolean report = onReport();
-		List<String> missing = existingIn(outMsgIds, report, found);
-		if (!missing.isEmpty() && legacyRead()) {
-			existingIn(missing, !report, found);
-		}
-		return found;
-	}
-
-	/** adds the ones found to found, returns the others */
-	private static List<String> existingIn(List<String> outMsgIds, boolean report, Set<String> found) {
-		List<String> missing = new ArrayList<String>();
-		Map<RedisConnection, List<String>> byRedis = new LinkedHashMap<RedisConnection, List<String>>();
+		Map<RedisConnection, List<String>> byMaster = new LinkedHashMap<RedisConnection, List<String>>();
 		for (String id : outMsgIds) {
-			RedisConnection r = report ? master(id) : RedisClient.getInstance().getStateRedis();
-			byRedis.computeIfAbsent(r, k -> new ArrayList<String>()).add(id);
+			byMaster.computeIfAbsent(master(id), k -> new ArrayList<String>()).add(id);
 		}
-		for (Map.Entry<RedisConnection, List<String>> e : byRedis.entrySet()) {
+		for (Map.Entry<RedisConnection, List<String>> e : byMaster.entrySet()) {
 			List<String> keys = new ArrayList<String>();
 			for (String id : e.getValue()) {
-				keys.add(report ? key(id) : id);
+				keys.add(key(id));
 			}
 			List<String> values = e.getKey().mgetStrict(keys);
 			for (int i = 0; i < e.getValue().size(); i++) {
 				if (values != null && i < values.size() && values.get(i) != null) {
 					found.add(e.getValue().get(i));
-				} else {
-					missing.add(e.getValue().get(i));
 				}
 			}
 		}
-		return missing;
+		return found;
 	}
 
 	/** what the MQM job does with an original still without a final DR: stores it in WDQ */
@@ -202,7 +155,7 @@ public final class DrLookup {
 	}
 
 	/**
-	 * MQM job (DrLookupStore=report, or entries left there): on every report master the lookups whose dateIn is older
+	 * MQM job: on every report master the lookups whose dateIn is older
 	 * than olderThanMs, at most DrLookup.MoveBatchSize a master and round, go to WDQ and are deleted from Redis; one not
 	 * stored stays claimed and is due again after DrLookup.ClaimTimeoutMs. Returns how many were moved.
 	 */

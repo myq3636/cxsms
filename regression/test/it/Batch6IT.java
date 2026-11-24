@@ -54,7 +54,7 @@ public class Batch6IT extends ItSupport {
 	/** put a vendor DR into its stream and read it like the consumer (delivery 1) */
 	static GmmsMessage inboundDr(String id) {
 		GmmsMessage o = original(id);
-		jedis.set(o.getOutMsgID(), SerializableHandler.convertGmmsMessage2RedisMessage(o));
+		jedis.set(com.king.gmms.messagequeue.DrLookup.key(o.getOutMsgID()), SerializableHandler.convertGmmsMessage2RedisMessage(o));
 		q.produceInboundDeliveryReport(vendorDr(o.getOutMsgID(), "8_" + id));
 		q.createGroup(IDR, IDR_GROUP, false);
 		Map<String, StreamEntryID> query = new HashMap<String, StreamEntryID>();
@@ -139,7 +139,7 @@ public class Batch6IT extends ItSupport {
 		GmmsMessage a = inboundDr("B601");
 		String aid = a.getRedisStreamID();
 		firstAttempt(IDR, a, true, false);
-		check(drsOut("B601") == 1 && !jedis.exists("OUT-B601"), "B6-01a first attempt: DR to the customer, lookup deleted after _done");
+		check(drsOut("B601") == 1 && !jedis.exists("drl:OUT-B601"), "B6-01a first attempt: DR to the customer, lookup deleted after _done");
 		check(waitFor(() -> cdrCount("B601", "OUT_DELI_REP") == 1, 5000), "B6-01b first attempt: 1 OUT_DELI_REP CDR");
 		Thread.sleep(900);
 		consumeDr(reclaim(IDR, IDR_GROUP, aid));
@@ -153,10 +153,10 @@ public class Batch6IT extends ItSupport {
 		GmmsMessage b = inboundDr("B602");
 		String bid = b.getRedisStreamID();
 		firstAttempt(IDR, b, false, false);
-		check(drsOut("B602") == 1 && jedis.exists("OUT-B602"), "B6-02a crash after the DR was produced: lookup still there (deleted only after _done)");
+		check(drsOut("B602") == 1 && jedis.exists("drl:OUT-B602"), "B6-02a crash after the DR was produced: lookup still there (deleted only after _done)");
 		Thread.sleep(900);
 		consumeDr(reclaim(IDR, IDR_GROUP, bid));
-		check(waitFor(() -> !jedis.exists("OUT-B602"), 3000) && drsOut("B602") == 1,
+		check(waitFor(() -> !jedis.exists("drl:OUT-B602"), 3000) && drsOut("B602") == 1,
 				"B6-02b redelivery finds the original again, produces no second DR, then deletes the lookup");
 		Thread.sleep(800);
 		check(cdrCount("B602", "OUT_DELI_REP") == 1, "B6-02c no second OUT_DELI_REP CDR");
@@ -269,7 +269,7 @@ public class Batch6IT extends ItSupport {
 			String tag = (round % 2 == 0 ? "PFOFF" : "PFON") + round + "_";
 			for (int i = 0; i < 800; i++) {
 				GmmsMessage o = original(tag + i);
-				jedis.set(o.getOutMsgID(), SerializableHandler.convertGmmsMessage2RedisMessage(o));
+				jedis.set(com.king.gmms.messagequeue.DrLookup.key(o.getOutMsgID()), SerializableHandler.convertGmmsMessage2RedisMessage(o));
 			}
 			long t0 = System.currentTimeMillis();
 			for (int i = 0; i < 800; i++) {

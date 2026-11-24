@@ -1591,11 +1591,9 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 			}
 			else{
 				boolean deleteLookup = false;
-				com.king.gmms.messagequeue.DrLookup.Hit lookup = null;
 				boolean fromDb = false;
 				if(isRedisEnable){
-					lookup = com.king.gmms.messagequeue.DrLookup.find(finalMsg.getOutMsgID());
-					String object = lookup == null ? null : lookup.value;
+					String object = com.king.gmms.messagequeue.DrLookup.get(finalMsg.getOutMsgID());
 					if(object != null){
 						log.debug(finalMsg,
 								"TMP-DRLOOKUP inbound DR redis hit. msgId={}, in={}, out={}, rsid={}, status={}/{}, sender={}, recipient={}",
@@ -1668,13 +1666,11 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 					boolean processed = processDeliveryReport(message, finalPdu);
 					if (processed && deleteLookup) {
 						final GmmsMessage dr = finalMsg;
-						final com.king.gmms.messagequeue.DrLookup.Hit hit = lookup;
-						final GmmsMessage original = message;
 						// inside a DR attempt only once _done is written: a redelivery after a crash
 						// must still find the original and take the same path
 						com.king.gmms.messagequeue.StreamAttempt.afterDone(new Runnable() {
 							public void run() {
-								deleteDrLookup(dr, hit, original);
+								deleteDrLookup(dr);
 							}
 						});
 					}
@@ -1705,10 +1701,10 @@ public class InternalCoreEngineSession extends AbstractInternalSession{
 		}
 	}
 
-	private void deleteDrLookup(GmmsMessage dr, com.king.gmms.messagequeue.DrLookup.Hit hit, GmmsMessage original) {
+	private void deleteDrLookup(GmmsMessage dr) {
 		try {
 			log.debug(dr, "TMP-DRLOOKUP inbound DR delete redis key. out={}", dr.getOutMsgID());
-			com.king.gmms.messagequeue.DrLookup.delete(dr.getOutMsgID(), hit, original);
+			com.king.gmms.messagequeue.DrLookup.delete(dr.getOutMsgID());
 		} catch (Exception e) {
 			// the entry expires by its TTL; the DR itself is already handled
 			log.warn(dr, "TMP-DRLOOKUP inbound DR delete redis key failed. out={}", dr.getOutMsgID(), e);

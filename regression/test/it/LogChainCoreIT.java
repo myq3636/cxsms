@@ -84,7 +84,7 @@ public class LogChainCoreIT extends ItSupport {
 		resp.setStatus(GmmsStatus.SUCCESS);
 		resp.setOutMsgID("OUT-LC1");
 		q.produceResult(resp);
-		check(waitFor(() -> logLine("8888_LC1", "[STREAM-ACK] flow=result->core") != null && jedis.exists("OUT-LC1"), 8000),
+		check(waitFor(() -> logLine("8888_LC1", "[STREAM-ACK] flow=result->core") != null && jedis.exists("drl:OUT-LC1"), 8000),
 				"L-C2a submit_resp processed and acked");
 		List<String> l2 = lines("8888_LC1");
 		check(inOrder(l2, "[STREAM-GET] flow=result->core", "[RESULT] type=Submit Resp status=0", "outMsgId=OUT-LC1 outbox=FIRST",

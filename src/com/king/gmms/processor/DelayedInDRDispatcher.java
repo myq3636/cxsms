@@ -16,7 +16,8 @@ import com.king.redis.RedisConnection;
 import com.king.redis.SerializableHandler;
 
 /**
- * Core-owned delayed IN_DR dispatcher.
+ * Core-owned delayed IN_DR dispatcher. Its keys (zset:delay:outdr:{shard}, …:processing:{shard},
+ * delay:outdr:payload:{shard}:*) are on the report master of the shard (DrLookup.placeOf, docs/DR匹配数据迁移设计.md 3.8).
  */
 public class DelayedInDRDispatcher implements Runnable {
 	private static final SystemLogger log = SystemLogger.getSystemLogger(DelayedInDRDispatcher.class);
@@ -34,6 +35,19 @@ public class DelayedInDRDispatcher implements Runnable {
 			+ "local m = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, tonumber(ARGV[3])) "
 			+ "for i = 1, #m do redis.call('ZREM', KEYS[1], m[i]) redis.call('ZADD', KEYS[2], ARGV[2], m[i]) end "
 			+ "return {#back, m}";
+
+	// KEYS[1]=payload KEYS[2]=ready ARGV: 1 body, 2 ttl seconds, 3 due
+	private static final String SCHEDULE_LUA =
+			"redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[2])) "
+			+ "redis.call('ZADD', KEYS[2], ARGV[3], KEYS[1]) "
+			+ "return 1";
+
+	// KEYS[1]=processing KEYS[2]=ready KEYS[3]=payload ARGV: 1 body ('' keeps it), 2 ttl seconds, 3 due again
+	private static final String RETRY_LUA =
+			"if ARGV[1] ~= '' then redis.call('SET', KEYS[3], ARGV[1], 'EX', tonumber(ARGV[2])) end "
+			+ "redis.call('ZREM', KEYS[1], KEYS[3]) "
+			+ "redis.call('ZADD', KEYS[2], ARGV[3], KEYS[3]) "
+			+ "return 1";
 
 	// KEYS[1]=processing ARGV = payload keys: dispatched (or without a readable payload), deleted
 	private static final String DONE_LUA =
@@ -99,19 +113,13 @@ public class DelayedInDRDispatcher implements Runnable {
 			}
 			int ttlSeconds = payloadTtlSeconds(message, delaySeconds);
 			long dueAt = System.currentTimeMillis() + delaySeconds * 1000L;
-			if (!redis.setString(payloadKey, body, ttlSeconds)) {
-				return false;
-			}
-			Long added = redis.zadd(readyKey(shardId), dueAt, payloadKey);
-			boolean success = added != null && added.longValue() >= 0L;
-			if (!success) {
-				redis.del(payloadKey);
-			}
-			if (success) {
-				log.debug(message, "Scheduled Auto IN_DR direct dispatch. shardId={}, delaySeconds={}, payloadKey={}",
-						shardId, delaySeconds, payloadKey);
-			}
-			return success;
+			// the payload and its member in one Lua
+			com.king.gmms.messagequeue.DrLookup.placeOf(shardId).evalScript(SCHEDULE_LUA,
+					Arrays.asList(payloadKey, readyKey(shardId)),
+					Arrays.asList(body, String.valueOf(ttlSeconds), String.valueOf(dueAt)));
+			log.debug(message, "Scheduled Auto IN_DR direct dispatch. shardId={}, delaySeconds={}, payloadKey={}",
+					shardId, delaySeconds, payloadKey);
+			return true;
 		} catch (Exception e) {
 			log.warn(message, "Failed to schedule Auto IN_DR direct dispatch", e);
 			return false;
@@ -154,13 +162,12 @@ public class DelayedInDRDispatcher implements Runnable {
 		if (shards == null || shards.isEmpty()) {
 			return 0;
 		}
-		RedisConnection state = redis.getStateRedis();
 		int processed = 0;
 		for (Integer shardId : shards) {
 			if (shardId == null) {
 				continue;
 			}
-			processed += dispatchShard(state, shardId.intValue());
+			processed += dispatchShard(com.king.gmms.messagequeue.DrLookup.placeOf(shardId.intValue()), shardId.intValue());
 		}
 		return processed;
 	}
@@ -200,7 +207,7 @@ public class DelayedInDRDispatcher implements Runnable {
 			if (dispatched) {
 				done.add(payloadKey);
 			} else {
-				retryOrFail(shardId, payloadKey, message);
+				retryOrFail(state, shardId, payloadKey, message);
 			}
 		}
 		if (!done.isEmpty()) {
@@ -209,23 +216,21 @@ public class DelayedInDRDispatcher implements Runnable {
 		return keys.size();
 	}
 
-	private void retryOrFail(int shardId, String payloadKey, GmmsMessage message) {
+	/** on the Redis it was claimed from */
+	private void retryOrFail(RedisConnection r, int shardId, String payloadKey, GmmsMessage message) {
 		int retry = message.getRetriedNumber() + 1;
 		message.setRetriedNumber(retry);
 		if (retry > maxRetry()) {
 			message.setStatusCode(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT.getCode());
 			dbHandler.putMsg(message);
-			redis.del(payloadKey);
-			redis.zrem(processingKey(shardId), new String[] { payloadKey });
+			r.evalScript(DONE_LUA, Arrays.asList(processingKey(shardId)), Arrays.asList(payloadKey));
 			log.warn(message, "Auto IN_DR direct dispatch exceeded max retry. payloadKey={}, retry={}", payloadKey, retry);
 			return;
 		}
 		String body = SerializableHandler.convertGmmsMessage2RedisMessage(message);
-		if (body != null) {
-			redis.setString(payloadKey, body, payloadTtlSeconds(message, 0));
-		}
-		redis.zrem(processingKey(shardId), new String[] { payloadKey });
-		redis.zadd(readyKey(shardId), System.currentTimeMillis() + retryDelayMs(), payloadKey);
+		r.evalScript(RETRY_LUA, Arrays.asList(processingKey(shardId), readyKey(shardId), payloadKey),
+				Arrays.asList(body == null ? "" : body, String.valueOf(payloadTtlSeconds(message, 0)),
+						String.valueOf(System.currentTimeMillis() + retryDelayMs())));
 	}
 
 	private int calculateShardId(GmmsMessage msg) {

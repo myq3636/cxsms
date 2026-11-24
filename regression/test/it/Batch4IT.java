@@ -94,7 +94,7 @@ public class Batch4IT extends ItSupport {
 	static void deadLetterRealConsumer() throws Exception {
 		GmmsMessage orig = mt("8888_DLQ3", 8888, 8, 0);
 		orig.setOutMsgID("OUT-DLQ3");
-		jedis.set("OUT-DLQ3", com.king.redis.SerializableHandler.convertGmmsMessage2RedisMessage(orig));
+		jedis.set("drl:OUT-DLQ3", com.king.redis.SerializableHandler.convertGmmsMessage2RedisMessage(orig));
 		Field msmField = InternalCoreEngineSession.class.getDeclaredField("msgStoreManager");
 		msmField.setAccessible(true);
 		Object real = msmField.get(InternalCoreEngineSession.getReactiveInstance());

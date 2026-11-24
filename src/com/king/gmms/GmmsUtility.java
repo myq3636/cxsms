@@ -1120,7 +1120,7 @@ public class GmmsUtility {
 			"ClientSendIdempotency", "ClientSendMarkerBatch", "ClientDispatchBatch", "ClientSendLeaseMs",
 			"EarlyDr.Enable", "EarlyDr.BatchSize",
 			"EarlyDr.ClaimTimeoutMs", "EarlyDr.IntervalMs", "ClientStreamTaskMaxBatches", "ClientStreamTaskMaxMs",
-			"DrLookupStore", "DrLookupLegacyRead", "DrLookup.MoveBatchSize", "DrLookup.ClaimTimeoutMs",
+			"DrLookup.MoveBatchSize", "DrLookup.ClaimTimeoutMs",
 			"SmppServerBindTimeoutMs", "SmppServerMaxConnections", "SmppServerMaxConnectionsPerIp", "ClientSessionStartIntervalMs",
 			"ServerStreamTaskMaxBatches", "ServerStreamTaskMaxMs",
 			"SmppPduLogEnable", "SmppServerSessionKeeperShared", "SmppServerSendQueueMax",
@@ -1297,7 +1297,6 @@ public class GmmsUtility {
 				|| "ClientSendIdempotency".equals(key)
 				|| "ClientSendMarkerBatch".equals(key)
 				|| "EarlyDr.Enable".equals(key)
-				|| "DrLookupLegacyRead".equals(key)
 				|| "SmppPduLogEnable".equals(key)
 				|| "SmppServerSessionKeeperShared".equals(key)
 				|| "ServerDrAckOnResp".equals(key)

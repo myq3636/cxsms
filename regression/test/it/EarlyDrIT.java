@@ -64,7 +64,7 @@ public class EarlyDrIT extends ItSupport {
 
 	static void original(String id) {
 		GmmsMessage o = AttemptBatchIT.original(id);
-		jedis.set(o.getOutMsgID(), SerializableHandler.convertGmmsMessage2RedisMessage(o));
+		jedis.set(com.king.gmms.messagequeue.DrLookup.key(o.getOutMsgID()), SerializableHandler.convertGmmsMessage2RedisMessage(o));
 	}
 
 	public static void main(String[] args) throws Exception {

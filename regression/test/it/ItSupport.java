@@ -96,6 +96,11 @@ public class ItSupport {
 		Field pf = GmmsUtility.class.getDeclaredField("properties");
 		pf.setAccessible(true);
 		props = (Properties) pf.get(gu);
+		// -Dit.props=Key=value,...: the same suite with other settings (suites.txt 4th column)
+		for (String kv : System.getProperty("it.props", "").split(",")) {
+			int i = kv.indexOf('=');
+			if (i > 0) props.setProperty(kv.substring(0, i).trim(), kv.substring(i + 1).trim());
+		}
 	}
 
 	static GmmsMessage mt(String msgId, int ossid, int rssid, int split) {
