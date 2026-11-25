@@ -856,41 +856,27 @@ public class MessageProcessorThread extends RunnableMsgTask{
 			String streamKey = null;
 			com.king.gmms.messagequeue.StreamQueueManager streamQueueManager =
 					com.king.gmms.messagequeue.StreamQueueManager.getInstance();
-			if (server != null && server.isHttpProtocol()) {
+			boolean http = server != null && server.isHttpProtocol();
+			if (http) {
 				message.setDeliveryChannel(moduleName);
-				success = streamQueueManager.produceHttpDeliveryReport(message);
 			} else {
 				// Old logic for Carrier DR ingestion or Sticky routing
 				streamKey = streamQueueManager.getDrPendingQueue(message);
 				preserveDrTargetModule(message, streamKey);
-				success = streamQueueManager.produceDeliveryReportToQueue(message, streamKey);
 			}
-
-			if (!success) {
-				MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
-						MetricsNames.STAGE_OUT_DR, message, false, MetricsNames.ACTION_ROUTING_FAILED));
-				if(log.isInfoEnabled()){
-					log.info(message,
-								"Can not produce the DR message to Redis Stream");
-				}
-				message.setStatusCode(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT.getCode());
-				dbHandler.putMsg(message);
-			} else {
-				MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
-						MetricsNames.STAGE_OUT_DR, message, false, MetricsNames.ACTION_ROUTED_TO_REDIS));
-				if(log.isDebugEnabled()){
-					log.debug(message, "Success to produce DR message to Redis Stream. stream={}", streamKey);
-				}
-				if(log.isInfoEnabled()){
-			    	if (streamKey != null) {
-						log.info(message, "[DR-TO-SERVER] ossid={} status={} stream={} redisId={} path={}", message.getOSsID(),
-								message.getStatusCode(), streamKey, message.getRedisStreamID(), com.king.gmms.util.ModulePath.withSelf(message.getModulePath()));
-			    	} else {
-						log.info(message, "[DR-TO-HTTP] ossid={} status={} redisId={} path={}", message.getOSsID(),
-								message.getStatusCode(), message.getRedisStreamID(), com.king.gmms.util.ModulePath.withSelf(message.getModulePath()));
-			    	}
-				}
+			// in a batch of vendor DRs: written with the batch, before its ack (docs/DR消费减少Redis往返设计.md 3.4)
+			final String drStream = streamKey;
+			if (streamQueueManager.deferDeliveryReport(http ? streamQueueManager.httpDeliveryReportKey(message) : streamKey,
+					message, new com.king.gmms.messagequeue.StreamQueueManager.DrProduceTail() {
+						public void produced(boolean ok) {
+							afterDrProduced(message, drStream, ok);
+						}
+					})) {
+				return;
 			}
+			success = http ? streamQueueManager.produceHttpDeliveryReport(message)
+					: streamQueueManager.produceDeliveryReportToQueue(message, streamKey);
+			afterDrProduced(message, streamKey, success);
 		} else if (ctm.isA2P(oA2P) || ctm.isPartition(oA2P)) {
 			// DR for another A2P (peering): no internal connection in stream mode, as the MT above
 			log.warn(message, "This DR can't send out because can't get available session.");
@@ -946,6 +932,35 @@ public class MessageProcessorThread extends RunnableMsgTask{
 			return deliveryChannel.substring(idx + 1);
 		}
 		return deliveryChannel;
+	}
+
+	/** After the DR to a customer is produced (at once, or with its batch of vendor DRs) */
+	private void afterDrProduced(GmmsMessage message, String streamKey, boolean success) {
+		if (!success) {
+			MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+					MetricsNames.STAGE_OUT_DR, message, false, MetricsNames.ACTION_ROUTING_FAILED));
+			if(log.isInfoEnabled()){
+				log.info(message,
+							"Can not produce the DR message to Redis Stream");
+			}
+			message.setStatusCode(GmmsStatus.FAIL_SENDOUT_DELIVERYREPORT.getCode());
+			dbHandler.putMsg(message);
+		} else {
+			MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
+					MetricsNames.STAGE_OUT_DR, message, false, MetricsNames.ACTION_ROUTED_TO_REDIS));
+			if(log.isDebugEnabled()){
+				log.debug(message, "Success to produce DR message to Redis Stream. stream={}", streamKey);
+			}
+			if(log.isInfoEnabled()){
+				if (streamKey != null) {
+					log.info(message, "[DR-TO-SERVER] ossid={} status={} stream={} redisId={} path={}", message.getOSsID(),
+							message.getStatusCode(), streamKey, message.getRedisStreamID(), com.king.gmms.util.ModulePath.withSelf(message.getModulePath()));
+				} else {
+					log.info(message, "[DR-TO-HTTP] ossid={} status={} redisId={} path={}", message.getOSsID(),
+							message.getStatusCode(), message.getRedisStreamID(), com.king.gmms.util.ModulePath.withSelf(message.getModulePath()));
+				}
+			}
+		}
 	}
 
 	private void transactDRQuery(GmmsMessage message) {

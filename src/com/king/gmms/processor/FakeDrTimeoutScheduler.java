@@ -17,7 +17,9 @@ import com.king.redis.SerializableHandler;
  * its timeout is up. Sharded like the Core streams; each Core runs the shards it owns, so a moved shard goes on
  * on its new Core. A real DR and the timeout can meet: the member is in the ready or the processing ZSET, or
  * gone, and whoever removes it decides; a timeout that sent its DR leaves indr:once:{outMsgId} for the real DR.
- * Tuning shares the AutoInDR.* properties of {@link DelayedInDRDispatcher}.
+ * Tuning shares AutoInDR.DelayBatchSize and AutoInDR.DelayClaimTimeoutMs of {@link DelayedInDRDispatcher}; idle it
+ * sleeps FakeDrTimeout.IdleSleepMs. With no customer of SMSOptionFakeDRTimeoutSec it runs a round a minute only, for
+ * the MTs timed before a reload took the setting away.
  *
  * <p>The ZSETs and the once key are on the report master of the shard (DrLookup.placeOf); the MT stored for its DR is
  * read through DrLookup, on the report master of its outMsgId (docs/DR匹配数据迁移设计.md 3.8).
@@ -52,6 +54,10 @@ public class FakeDrTimeoutScheduler implements Runnable {
 
 	private volatile boolean running = false;
 	private volatile Thread worker;
+	// whether a customer has SMSOptionFakeDRTimeoutSec: looked at every 10 s; an MT timed sets it at once
+	private static final long CONFIG_CHECK_MS = 10000L, UNCONFIGURED_ROUND_MS = 60000L;
+	private volatile boolean configured = true;
+	private long configCheckedAt = 0L, lastRoundAt = 0L;
 
 	public static FakeDrTimeoutScheduler getInstance() {
 		return instance;
@@ -67,6 +73,7 @@ public class FakeDrTimeoutScheduler implements Runnable {
 	public boolean schedule(String outMsgId, int seconds) {
 		try {
 			int shard = shardOf(outMsgId);
+			configured = true;
 			return com.king.gmms.messagequeue.DrLookup.placeOf(shard).zaddOrNull(READY_PREFIX + shard,
 					System.currentTimeMillis() + seconds * 1000L, outMsgId) != null;
 		} catch (Exception e) {
@@ -122,8 +129,18 @@ public class FakeDrTimeoutScheduler implements Runnable {
 	public void run() {
 		while (running) {
 			try {
+				long now = System.currentTimeMillis();
+				if (now - configCheckedAt >= CONFIG_CHECK_MS) {
+					configCheckedAt = now;
+					configured = customersTimed();
+				}
+				if (!configured && now - lastRoundAt < UNCONFIGURED_ROUND_MS) {
+					Thread.sleep(longProperty("FakeDrTimeout.IdleSleepMs", 500L));
+					continue;
+				}
+				lastRoundAt = now;
 				if (dueOnce() <= 0) {
-					Thread.sleep(longProperty("AutoInDR.DispatcherIdleSleepMs", 200L));
+					Thread.sleep(longProperty("FakeDrTimeout.IdleSleepMs", 500L));
 				}
 			} catch (InterruptedException e) {
 				break;
@@ -136,6 +153,27 @@ public class FakeDrTimeoutScheduler implements Runnable {
 				}
 			}
 		}
+	}
+
+	private static boolean customersTimed() {
+		try {
+			return anyTimed(GmmsUtility.getInstance().getCustomerManager().getAllCustomerInfos());
+		} catch (Exception e) {
+			return true;
+		}
+	}
+
+	/** whether one of the customers has SMSOptionFakeDRTimeoutSec; true when they cannot be read */
+	public static boolean anyTimed(List<com.king.gmms.domain.A2PCustomerInfo> customers) {
+		if (customers == null) {
+			return true;
+		}
+		for (com.king.gmms.domain.A2PCustomerInfo c : customers) {
+			if (c != null && c.getFakeDrTimeoutSec() > 0) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** one round over this Core's shards; returns the members handled */

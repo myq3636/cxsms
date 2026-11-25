@@ -21,15 +21,34 @@ public final class MemReport {
 		Properties p = new Properties();
 		try (Reader r = Files.newBufferedReader(Paths.get(a[1]).resolve("case.properties"), StandardCharsets.UTF_8)) { p.load(r); }
 		Properties ph = new Properties();
-		try (Reader r = Files.newBufferedReader(mem.resolve("phases.txt"))) { ph.load(r); }
-		long warmupEnd = Long.parseLong(ph.getProperty("warmupEnd")), loadEnd = Long.parseLong(ph.getProperty("loadEnd"));
-		long idleEnd = Long.parseLong(ph.getProperty("idleEnd", String.valueOf(Long.MAX_VALUE)));
+		if (Files.exists(mem.resolve("phases.txt")))
+			try (Reader r = Files.newBufferedReader(mem.resolve("phases.txt"))) { ph.load(r); }
+		List<String> lines = Files.readAllLines(mem.resolve("jvm.csv"));
+		long lastSample = 0;
+		for (String l : lines.subList(1, lines.size())) {
+			String[] f = l.split(",", 2);
+			if (f.length == 2 && !f[0].isEmpty()) lastSample = Math.max(lastSample, Long.parseLong(f[0]));
+		}
+		// the test tool stopped early (the guard of bin/perf_watch.sh kills it): no loadEnd, or no phases at all; the
+		// samples up to the stop (bin/memwatch.sh stops right after it) give a table but no verdict
+		if (ph.getProperty("warmupEnd") == null) {
+			incomplete(res, "memory leak test: " + res + "\nthe test tool stopped before the load started (no phases.txt), no samples to judge\n");
+			return;
+		}
+		long warmupEnd = Long.parseLong(ph.getProperty("warmupEnd").trim());
+		boolean early = ph.getProperty("loadEnd") == null;
+		long loadEnd = early ? lastSample : Long.parseLong(ph.getProperty("loadEnd").trim());
+		if (loadEnd <= warmupEnd) {
+			incomplete(res, "memory leak test: " + res + "\nthe test tool stopped during the warm-up (ends " + time(warmupEnd) + ", last sample "
+					+ (lastSample == 0 ? "-" : time(lastSample)) + "), no samples to judge\n");
+			return;
+		}
+		long idleEnd = Long.parseLong(ph.getProperty("idleEnd", String.valueOf(Long.MAX_VALUE)).trim());
 		double maxSlope = d(p, "mem.maxSlopeMBperHour", 30), growMB = d(p, "mem.growMB", 20), growPct = d(p, "mem.growPct", 10);
 		double retainMB = d(p, "mem.retainMB", 30), retainPct = d(p, "mem.retainPct", 15), thrMax = d(p, "mem.threadGrowth", 20);
 		double fdMax = d(p, "mem.fdGrowth", 50), metaMax = d(p, "mem.metaGrowthMB", 10);
 
 		Map<String, List<Row>> byModule = new TreeMap<>();
-		List<String> lines = Files.readAllLines(mem.resolve("jvm.csv"));
 		for (String l : lines.subList(1, lines.size())) {
 			String[] f = l.split(",", -1);
 			if (f.length < 10) continue;
@@ -39,7 +58,8 @@ public final class MemReport {
 			byModule.computeIfAbsent(r.module, k -> new ArrayList<>()).add(r);
 		}
 		StringBuilder out = new StringBuilder("memory leak test: ").append(res).append('\n');
-		out.append(String.format("phases: warm-up ends %s, traffic ends %s, idle ends %s%n", time(warmupEnd), time(loadEnd), idleEnd == Long.MAX_VALUE ? "-" : time(idleEnd)));
+		out.append(String.format("phases: warm-up ends %s, traffic ends %s, idle ends %s%n", time(warmupEnd),
+				time(loadEnd) + (early ? " (stopped early: no loadEnd, the last sample)" : ""), idleEnd == Long.MAX_VALUE ? "-" : time(idleEnd)));
 		out.append(String.format("thresholds: heap slope > %.0f MB/h and growth > max(%.0f MB, %.0f%%); retained after idle > max(%.0f MB, %.0f%%); threads +%.0f; fds +%.0f; Metaspace +%.0f MB%n%n",
 				maxSlope, growMB, growPct, retainMB, retainPct, thrMax, fdMax, metaMax));
 		out.append(String.format("%-18s %8s %8s %8s %9s %8s %7s %7s %7s %7s %8s  %s%n", "module", "base MB", "end MB", "idle MB", "MB/hour", "meta+", "thr", "thr end",
@@ -116,18 +136,32 @@ public final class MemReport {
 			out.append(String.format("%-6s %10s %10s %10s %10s %12.0f %12.0f  %s%n", e.getKey(), b[2], en[2], b[3], en[3], bn, enn, v));
 			if (!v.equals("OK")) suspects.add("redis " + e.getKey() + ": " + v.substring(9));
 		}
-		boolean pass = suspects.isEmpty();
-		out.append('\n').append("MEMORY: ").append(pass ? "PASS" : "FAIL").append('\n');
+		boolean pass = suspects.isEmpty() && !early;
+		String verdict = early ? "INCOMPLETE" : pass ? "PASS" : "FAIL";
+		out.append('\n').append("MEMORY: ").append(verdict);
+		if (early) out.append(" (the test tool stopped at ").append(time(loadEnd)).append(" before the end of the load: no idle phase, the trend is short)");
+		out.append('\n');
 		for (String s : suspects) out.append("  ").append(s).append('\n');
-		Files.write(res.resolve("mem_report.txt"), out.toString().getBytes(StandardCharsets.UTF_8));
-		System.out.print(out);
+		finish(res, out.toString(), pass, verdict);
+	}
 
-		String sum = new String(Files.readAllBytes(res.resolve("summary.txt")), StandardCharsets.UTF_8);
+	static void incomplete(Path res, String report) throws IOException {
+		finish(res, report + "\nMEMORY: INCOMPLETE\n", false, "INCOMPLETE");
+	}
+
+	/** mem_report.txt, and the verdict added to summary.txt (written here when the test tool stopped before its own) */
+	static void finish(Path res, String out, boolean pass, String verdict) throws IOException {
+		Files.write(res.resolve("mem_report.txt"), out.getBytes(StandardCharsets.UTF_8));
+		System.out.print(out);
+		Path sp = res.resolve("summary.txt");
+		String sum = Files.exists(sp) ? new String(Files.readAllBytes(sp), StandardCharsets.UTF_8)
+				: "the test tool stopped before writing its summary (see notes.txt / watch.guard of the run)\n";
 		int again = sum.indexOf("\nmemory leak test: ");                   // run again on the same result: replace the verdict
 		if (again >= 0) sum = sum.substring(0, again);
 		boolean traffic = sum.contains("TRAFFIC: PASS");
-		sum += "\n" + out + "RESULT: " + (pass && traffic ? "PASS" : "FAIL") + " (traffic " + (traffic ? "PASS" : "FAIL") + ", memory " + (pass ? "PASS" : "FAIL") + ")\n";
-		Files.write(res.resolve("summary.txt"), sum.getBytes(StandardCharsets.UTF_8));
+		String t = traffic ? "PASS" : sum.contains("TRAFFIC: FAIL") ? "FAIL" : "-";
+		sum += "\n" + out + "RESULT: " + (pass && traffic ? "PASS" : "FAIL") + " (traffic " + t + ", memory " + verdict + ")\n";
+		Files.write(sp, sum.getBytes(StandardCharsets.UTF_8));
 		System.exit(pass && traffic ? 0 : 1);
 	}
 

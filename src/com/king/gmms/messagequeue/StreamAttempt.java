@@ -268,6 +268,23 @@ public final class StreamAttempt {
 		return a == null || a.redis != redis ? null : a.markerKey;
 	}
 
+	/** CoreMtMarkerTtlSeconds: the fallback expiry of a marker */
+	public static long markerTtlSeconds() {
+		return longProperty("CoreMtMarkerTtlSeconds", 7L * 24 * 3600);
+	}
+
+	/** Marker key of the attempt on this thread, null without one. */
+	public static String currentMarker() {
+		StreamAttempt a = current.get();
+		return a == null ? null : a.markerKey;
+	}
+
+	/** The Redis of the attempt's marker on this thread, null without one. */
+	public static RedisConnection currentRedis() {
+		StreamAttempt a = current.get();
+		return a == null ? null : a.redis;
+	}
+
 	/** Stream id recorded for a produce by an earlier attempt, null if not produced yet. */
 	public static String produced(String field) {
 		StreamAttempt a = current.get();

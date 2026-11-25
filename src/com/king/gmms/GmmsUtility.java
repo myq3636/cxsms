@@ -1136,6 +1136,7 @@ public class GmmsUtility {
 			"AutoInDR.DelayClaimTimeoutMs", "AutoInDR.DelayRetryDelayMs", "AutoInDR.DelayMaxRetry",
 			"AutoInDR.DelayPayloadTTLSeconds",
 			"AutoInDR.DispatcherIdleSleepMs",
+			"FakeDrTimeout.IdleSleepMs",
 			"DB.StartupCheck", "DB.StartupCheckSql", "DB.PoolStats.Enable", "DB.PoolStats.IntervalSeconds", "DB.DrErrorCodeColumns", "DB.RoutingLevelColumn",
 			"ThrottlingControl.ConsecutiveNumToAlert",
 			"ThrottlingControl.ReportModuleIncomingMsgCountInterval",
@@ -1187,7 +1188,7 @@ public class GmmsUtility {
 			"ServerStreamTaskMaxBatches", "ServerStreamTaskMaxMs",
 			"SmppPduLogEnable", "SmppServerSessionKeeperShared", "SmppServerSendQueueMax",
 			"SmppServerSendQueueHighWater", "ServerDrAckOnResp", "SmppServerDrLivenessCheck",
-			"CoreInboundDrBatchLookup", "SmppServerSessionRegistryLuaCheck", "SmppServerSessionRegistryBatchMemo",
+			"CoreInboundDrBatchLookup", "CoreInboundDrBatchProduce", "SmppServerSessionRegistryLuaCheck", "SmppServerSessionRegistryBatchMemo",
 			"ConfigFileStableCheckMs", "ReloadCustomerMaxRemovePercent",
 			"ClientOutboundWindowFullRetryMs", "MessageIdAheadWarnSeconds", "ModuleStopMaxWaitSeconds", "ModuleIndexRetainHours", "ModuleDrainMaxSeconds", "ModuleDrainDrWaitSeconds", "ModuleDrainSessionIntervalMs",
 			"ModuleShardConfirmSeconds", "ModuleShardIntervalSeconds", "ModuleOpLockSeconds",
@@ -1365,6 +1366,7 @@ public class GmmsUtility {
 				|| "ServerDrAckOnResp".equals(key)
 				|| "SmppServerDrLivenessCheck".equals(key)
 				|| "CoreInboundDrBatchLookup".equals(key)
+				|| "CoreInboundDrBatchProduce".equals(key)
 				|| "SmppServerSessionRegistryLuaCheck".equals(key)
 				|| "SmppServerSessionRegistryBatchMemo".equals(key)
 				|| "SmppServerInboundSharedPoolEnable".equals(key)
@@ -1384,6 +1386,7 @@ public class GmmsUtility {
 				|| "AutoInDR.DelayClaimTimeoutMs".equals(key)
 				|| "AutoInDR.DelayRetryDelayMs".equals(key)
 				|| "AutoInDR.DispatcherIdleSleepMs".equals(key)
+				|| "FakeDrTimeout.IdleSleepMs".equals(key)
 				|| "CoreOutboundOutboxRecheckMs".equals(key)
 				|| "CoreOutboundOutboxHardTimeoutMs".equals(key)
 				|| "CoreOutboundOutboxPayloadTTLSeconds".equals(key)

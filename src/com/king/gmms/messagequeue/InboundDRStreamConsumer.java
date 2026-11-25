@@ -2,8 +2,10 @@ package com.king.gmms.messagequeue;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -178,14 +180,26 @@ public class InboundDRStreamConsumer {
                         DrLookup.beginBatch(outMsgIds);
                     }
                     SmppServerSessionRegistry.getInstance().beginBatchMemo();
+                    // the customer DRs of the batch written together before the ack (3.4)
+                    boolean batchProduce = batch != null && StreamQueueManager.drBatchProduceEnabled();
+                    Set<String> acked = batchProduce ? new HashSet<String>() : null;
+                    if (batchProduce) {
+                        StreamQueueManager.beginDrBatch();
+                    }
                     try {
                         for (GmmsMessage msg : messages) {
                             // older than the idle time: auto-claim may have taken this entry too
                             processMessage(streamKey, msg, System.currentTimeMillis() - readAt >= claimIdleMs,
                                     batch != null && batch.covers(msg) ? batch : null);
                         }
-                        ackBatch(streamKey, batch);
+                        if (batchProduce) {
+                            queueManager.flushDrBatch();
+                        }
+                        ackBatch(streamKey, batch, acked);
                     } finally {
+                        if (batchProduce) {
+                            StreamQueueManager.endDrBatch(acked);   // the marker copies of the acked entries
+                        }
                         SmppServerSessionRegistry.getInstance().endBatchMemo();
                         if (batchLookup) {
                             DrLookup.endBatch();   // after the ack, where the deletes of the batch ran before
@@ -242,7 +256,7 @@ public class InboundDRStreamConsumer {
     }
 
     /** XACK+XDEL+DEL marker of the batch's finished entries in one Lua; a failure leaves them pending (_done: only acked later) */
-    private void ackBatch(final String streamKey, StreamAttempt.Batch batch) {
+    private void ackBatch(final String streamKey, StreamAttempt.Batch batch, final Set<String> ackedIds) {
         if (batch == null) {
             return;
         }
@@ -250,6 +264,9 @@ public class InboundDRStreamConsumer {
             batch.ackAll(new StreamAttempt.AckListener() {
                 public void acked(GmmsMessage msg, String redisId, boolean acked) {
                     queueManager.traceAck(streamKey, groupName, redisId, msg, false, acked);
+                    if (acked && ackedIds != null) {
+                        ackedIds.add(redisId);
+                    }
                     if (!acked) {
                         logger.warn(msg, "Inbound DR stream ack failed after process success. streamKey={}, sourceRedisId={}",
                                 streamKey, redisId);
@@ -292,6 +309,9 @@ public class InboundDRStreamConsumer {
                 return;
             }
             boolean processed = false;
+            if (attempt && batch != null) {
+                StreamQueueManager.beginDrEntry(sourceRedisId);   // its DRs written with the batch when processed
+            }
             try {
                 // The DR to the customer is produced on this thread, before the ack below
                 processed = MessageStoreManager.withInlineDrDispatch(new Callable<Boolean>() {
@@ -302,6 +322,11 @@ public class InboundDRStreamConsumer {
             } finally {
                 if (attempt && !processed) {
                     StreamAttempt.abandon();
+                }
+                if (processed) {
+                    StreamQueueManager.commitDrEntry();
+                } else {
+                    StreamQueueManager.discardDrEntry();
                 }
             }
             if (processed) {

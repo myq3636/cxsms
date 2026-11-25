@@ -9,11 +9,13 @@ import com.king.gmms.messagequeue.StreamQueueManager;
 import com.king.message.gmms.GmmsMessage;
 import com.king.redis.RedisClient;
 import com.king.redis.RedisConnection;
+import com.king.redis.SerializableHandler;
 
 /**
  * Fewer Redis round trips a vendor DR (docs/DR消费减少Redis往返设计.md): the DR lookups of a batch read with one MGET and
  * deleted with one Lua (CoreInboundDrBatchLookup), a customer's sessions on a Server read in one Lua
- * (SmppServerSessionRegistryLuaCheck) and once a batch (SmppServerSessionRegistryBatchMemo). DRs and originals as
+ * (SmppServerSessionRegistryLuaCheck) and once a batch (SmppServerSessionRegistryBatchMemo), the customer DRs of a
+ * batch written with one Lua before the ack (CoreInboundDrBatchProduce). DRs and originals as
  * AttemptBatchIT (channel 8, customer 8888, stream:core:inbound-dr:8); one Redis plays every role.
  */
 public class DrBatchLookupIT extends ItSupport {
@@ -114,6 +116,75 @@ public class DrBatchLookupIT extends ItSupport {
 				&& !jedis.exists(DrLookup.key("OUT-DB3C")), "DB-03d acked, then the 3 lookups deleted");
 		check(AttemptBatchIT.drsOut("DB3A") == 1 && AttemptBatchIT.drsOut("DB3B") == 1 && AttemptBatchIT.drsOut("DB3C") == 1,
 				"DB-03e each customer gets its DR once");
+
+		// ---- 3.4 the customer DRs of a batch written with one Lua before the ack ----
+		check(StreamQueueManager.drBatchProduceEnabled(), "DB-07 CoreInboundDrBatchProduce on by default");
+		l = AttemptBatchIT.readDrs("DB7A", "DB7B", "DB7C");
+		b = StreamAttempt.Batch.claim(AttemptBatchIT.IDR, AttemptBatchIT.IDR_GROUP, l, report, true, "it:1");
+		StreamQueueManager.beginDrBatch();
+		ok = true;
+		for (GmmsMessage m : l) {
+			ok &= b.begin(m) == StreamAttempt.Start.RUN;
+			StreamQueueManager.beginDrEntry(m.getRedisStreamID());
+			ok &= AttemptBatchIT.process(m);
+			if (m == l.get(2)) {   // not processed: left pending, its DR not written
+				StreamAttempt.abandon();
+				StreamQueueManager.discardDrEntry();
+			} else {
+				StreamQueueManager.commitDrEntry();
+				b.finished(m);
+			}
+		}
+		check(ok && AttemptBatchIT.drsOut("DB7A") == 0 && AttemptBatchIT.drsOut("DB7B") == 0,
+				"DB-07a processed: the customer DRs wait for the end of the batch");
+		lua = AttemptBatchIT.lua();
+		AttemptBatchIT.q.flushDrBatch();
+		check(AttemptBatchIT.lua() - lua == 1 && AttemptBatchIT.drsOut("DB7A") == 1 && AttemptBatchIT.drsOut("DB7B") == 1,
+				"DB-07b both written with one Lua (" + (AttemptBatchIT.lua() - lua) + ")");
+		check(AttemptBatchIT.drsOut("DB7C") == 0, "DB-07c an entry not processed: its DR not written");
+		final Set<String> ackedIds = new HashSet<String>();
+		b.ackAll((m, id, a) -> { if (a) ackedIds.add(id); });
+		StreamQueueManager.endDrBatch(ackedIds);
+		check(ackedIds.size() == 2, "DB-07d the 2 processed acked");
+
+		// a crash after the write, before the ack: the redelivery writes no second DR
+		l = AttemptBatchIT.readDrs("DB8A");
+		b = StreamAttempt.Batch.claim(AttemptBatchIT.IDR, AttemptBatchIT.IDR_GROUP, l, report, true, "it:1");
+		StreamQueueManager.beginDrBatch();
+		b.begin(l.get(0));
+		StreamQueueManager.beginDrEntry(l.get(0).getRedisStreamID());
+		AttemptBatchIT.process(l.get(0));
+		StreamQueueManager.commitDrEntry();
+		b.finished(l.get(0));
+		AttemptBatchIT.q.flushDrBatch();
+		StreamQueueManager.endDrBatch(new HashSet<String>());   // no ack
+		check(AttemptBatchIT.drsOut("DB8A") == 1, "DB-08a written once");
+		jedis.set(DrLookup.key("OUT-DB8A"), SerializableHandler.convertGmmsMessage2RedisMessage(AttemptBatchIT.original("DB8A")));
+		b = StreamAttempt.Batch.claim(AttemptBatchIT.IDR, AttemptBatchIT.IDR_GROUP, l, report, true, "it:1");
+		StreamQueueManager.beginDrBatch();
+		boolean run = b.begin(l.get(0)) == StreamAttempt.Start.RUN;
+		StreamQueueManager.beginDrEntry(l.get(0).getRedisStreamID());
+		run &= AttemptBatchIT.process(l.get(0));
+		StreamQueueManager.commitDrEntry();
+		b.finished(l.get(0));
+		AttemptBatchIT.q.flushDrBatch();
+		final Set<String> acked8 = new HashSet<String>();
+		b.ackAll((m, id, a) -> { if (a) acked8.add(id); });
+		StreamQueueManager.endDrBatch(acked8);
+		check(run && AttemptBatchIT.drsOut("DB8A") == 1 && acked8.size() == 1,
+				"DB-08b redelivered and processed again: still one DR (the marker has it), then acked");
+
+		// the switch off: written at once, as before
+		props.setProperty("CoreInboundDrBatchProduce", "false");
+		check(!StreamQueueManager.drBatchProduceEnabled(), "DB-09a CoreInboundDrBatchProduce=false: off");
+		props.remove("CoreInboundDrBatchProduce");
+		l = AttemptBatchIT.readDrs("DB9A");
+		b = StreamAttempt.Batch.claim(AttemptBatchIT.IDR, AttemptBatchIT.IDR_GROUP, l, report, true, "it:1");
+		b.begin(l.get(0));
+		AttemptBatchIT.process(l.get(0));   // no batch begun on the thread
+		check(AttemptBatchIT.drsOut("DB9A") == 1, "DB-09b no batch on the thread: the DR written at once");
+		b.finished(l.get(0));
+		b.ackAll((m, id, a) -> { });
 
 		// ---- the switch off ----
 		props.setProperty("CoreInboundDrBatchLookup", "false");

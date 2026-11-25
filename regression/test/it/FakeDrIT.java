@@ -2,6 +2,7 @@ package it;
 
 import java.nio.file.*;
 
+import com.king.gmms.GmmsUtility;
 import com.king.gmms.messagequeue.CoreMQMStreamConsumer;
 import com.king.gmms.messagequeue.InboundDRStreamConsumer;
 import com.king.gmms.messagequeue.ResultStreamConsumer;
@@ -51,7 +52,7 @@ public class FakeDrIT extends CoreDrBizIT {
 		for (int c : new int[] { 1007, 1008 }) route("C" + (c - 50), c, "A2PMainRouting: (Priority=30,PhonePrefix=86,Relay=V952)");
 		route("C959", 1009, "A2PMainRouting: (Priority=30,PhonePrefix=86;852,Relay=V953)");
 		Path cfg = Paths.get(home + "Gmms/GmmsConfig.properties");
-		Files.write(cfg, (new String(Files.readAllBytes(cfg), "UTF-8") + "\nAsyncSqlWriterEnable=false\nAutoInDR.DispatcherIdleSleepMs=100\n").getBytes("UTF-8"));
+		Files.write(cfg, (new String(Files.readAllBytes(cfg), "UTF-8") + "\nAsyncSqlWriterEnable=false\nAutoInDR.DispatcherIdleSleepMs=100\nFakeDrTimeout.IdleSleepMs=100\n").getBytes("UTF-8"));
 		msmFactory = RecordingStore::new;
 		try {
 			start();
@@ -152,6 +153,12 @@ public class FakeDrIT extends CoreDrBizIT {
 			d = dr(1006, m.getMsgID(), 8000);
 			check(d != null && d.getStatusCode() != GmmsStatus.DELIVERED.getCode(), "FN-09c SMSOptionFakeDRTimeoutStatus fail: a failure DR after the timeout: " + st(d));
 			check(jedis.zcard("zset:fakedr:timeout:0") + jedis.zcard("zset:fakedr:timeout:1") == 0, "FN-09d nothing left waiting");
+			check(FakeDrTimeoutScheduler.anyTimed(GmmsUtility.getInstance().getCustomerManager().getAllCustomerInfos()),
+					"FN-09e C955 and C956 have SMSOptionFakeDRTimeoutSec: the timeout rounds run");
+			java.util.List<com.king.gmms.domain.A2PCustomerInfo> none = new java.util.ArrayList<com.king.gmms.domain.A2PCustomerInfo>();
+			none.add(GmmsUtility.getInstance().getCustomerManager().getCustomerBySSID(1001));
+			check(!FakeDrTimeoutScheduler.anyTimed(none) && FakeDrTimeoutScheduler.anyTimed(null),
+					"FN-09f no customer of SMSOptionFakeDRTimeoutSec: no rounds but one a minute; customers not read: the rounds run");
 
 			// ---- old options ----
 			m = accept(firstTo(1010, DST, 951));

@@ -135,10 +135,14 @@ public class StreamQueueManager {
 	}
 
 	public boolean produceHttpDeliveryReport(GmmsMessage msg) {
+		return produceDrOnce(httpDeliveryReportKey(msg), msg);
+	}
+
+	/** The stream:http:dr stream of a DR to an HTTP customer */
+	public String httpDeliveryReportKey(GmmsMessage msg) {
 		int targetSsid = msg.getOSsID() > 0 ? msg.getOSsID() : msg.getRSsID();
 		int shardId = calculateHttpShardId(msg, targetSsid);
-		String key = STR_HTTP_DR_PREFIX + targetSsid + ":" + shardId;
-		return produceDrOnce(key, msg);
+		return STR_HTTP_DR_PREFIX + targetSsid + ":" + shardId;
 	}
 
 	private int calculateHttpShardId(GmmsMessage msg, int targetSsid) {
@@ -476,6 +480,264 @@ public class StreamQueueManager {
 		return produceOnce(key, msg, false, "dr:" + key + ":" + msg.getSplitStatus() + ":" + msg.getStatusCode()
 				+ (segment > 0 ? ":" + segment : ""));
 	}
+
+	// ---------------------------------------------------------------- the customer DRs of a batch of vendor DRs
+	// (docs/DR消费减少Redis往返设计.md 3.4): written with one Lua per report master before the batch ack
+
+	/** Gets the result of a DR written with its batch: what the caller did after a produce, run then. */
+	public interface DrProduceTail {
+		void produced(boolean ok);
+	}
+
+	private static final class DeferredDr {
+		final String key, field, body, marker;
+		final boolean copy;
+		final List<String> flags;
+		final GmmsMessage msg;
+		final DrProduceTail tail;
+
+		DeferredDr(String key, String field, String body, String marker, boolean copy, List<String> flags, GmmsMessage msg,
+				DrProduceTail tail) {
+			this.key = key;
+			this.field = field;
+			this.body = body;
+			this.marker = marker;
+			this.copy = copy;
+			this.flags = flags;
+			this.msg = msg;
+			this.tail = tail;
+		}
+	}
+
+	private static final class DrBatch {
+		final List<DeferredDr> entry = new ArrayList<DeferredDr>();
+		final List<DeferredDr> committed = new ArrayList<DeferredDr>();
+		String entryId;
+		// source entry id -> the copies of its marker written with its DRs, deleted once it is acked
+		final Map<String, List<Object[]>> copies = new HashMap<String, List<Object[]>>();
+	}
+
+	private static final ThreadLocal<DrBatch> drBatch = new ThreadLocal<DrBatch>();
+	private static final String DR_MARKER_COPY_SUFFIX = ":dr";
+
+	// KEYS: per DR stream, doorbell, marker (the entry's own on this master, else its copy here)
+	// ARGV: 1 maxLen, 2 '~'|'', 3 nowMs, 4 copy TTL; per DR: field, body, '1' (copy) | '0', flag count n, n field,value pairs
+	// Per DR 'OK', id or 'DUP', id (written by an earlier attempt), as PRODUCE_ONCE_LUA without the outbox.
+	private static final String PRODUCE_DR_BATCH_LUA =
+			"local out = {} local a = 5 "
+			+ "for i = 1, #KEYS, 3 do "
+			+ "  local s, d, m = KEYS[i], KEYS[i + 1], KEYS[i + 2] "
+			+ "  local f, body, copy, n = ARGV[a], ARGV[a + 1], ARGV[a + 2], tonumber(ARGV[a + 3]) "
+			+ "  a = a + 4 "
+			+ "  local done = redis.call('HGET', m, f) "
+			+ "  if done then out[#out + 1] = 'DUP' out[#out + 1] = done "
+			+ "  else "
+			+ "    local id "
+			+ "    if ARGV[2] == '~' then id = redis.call('XADD', s, 'MAXLEN', '~', ARGV[1], '*', 'body', body) "
+			+ "    else id = redis.call('XADD', s, 'MAXLEN', ARGV[1], '*', 'body', body) end "
+			+ "    redis.call('SADD', '" + STREAM_INDEX_KEY + "', s) "
+			+ "    redis.call('ZADD', d, 'NX', ARGV[3], s) "
+			+ "    redis.call('HSET', m, f, id) "
+			+ "    if n > 0 then redis.call('HSET', m, unpack(ARGV, a, a + 2 * n - 1)) end "
+			+ "    if copy == '1' then redis.call('EXPIRE', m, tonumber(ARGV[4])) end "
+			+ "    out[#out + 1] = 'OK' out[#out + 1] = id "
+			+ "  end "
+			+ "  a = a + 2 * n "
+			+ "end "
+			+ "return out";
+
+	/** CoreInboundDrBatchProduce (default true): the customer DRs of a batch of vendor DRs written together */
+	public static boolean drBatchProduceEnabled() {
+		return !"false".equalsIgnoreCase(GmmsUtility.getInstance().getCommonProperty("CoreInboundDrBatchProduce", "true").trim());
+	}
+
+	/** The vendor DR consumer starts a batch on this thread; its entries are begun, committed or discarded one by one. */
+	public static void beginDrBatch() {
+		drBatch.set(new DrBatch());
+	}
+
+	public static void beginDrEntry(String sourceRedisId) {
+		DrBatch b = drBatch.get();
+		if (b != null) {
+			b.entry.clear();
+			b.entryId = sourceRedisId;
+		}
+	}
+
+	/** The entry is processed: its DRs are written with the batch. */
+	public static void commitDrEntry() {
+		DrBatch b = drBatch.get();
+		if (b != null) {
+			b.committed.addAll(b.entry);
+			for (DeferredDr d : b.entry) {
+				if (d.copy) {
+					List<Object[]> l = b.copies.get(b.entryId);
+					if (l == null) {
+						l = new ArrayList<Object[]>();
+						b.copies.put(b.entryId, l);
+					}
+					l.add(new Object[] { RedisClient.getInstance().reportMq(d.key), d.marker });
+				}
+			}
+			b.entry.clear();
+			b.entryId = null;
+		}
+	}
+
+	/** The entry is not processed (left pending for a redelivery): its DRs are not written. */
+	public static void discardDrEntry() {
+		DrBatch b = drBatch.get();
+		if (b != null) {
+			b.entry.clear();
+			b.entryId = null;
+		}
+	}
+
+	/**
+	 * Inside an entry of a batch (beginDrEntry): the DR is written with the batch, before its ack ({@link #flushDrBatch}),
+	 * and tail runs then with the result; true. False when it is not deferred: produce it as usual. Like produceDrOnce:
+	 * once per attempt and stream, part, status and segment; the field written in the same Lua as the XADD, on the
+	 * entry's marker when the stream is on its master, else on a copy of it there (deleted after the ack).
+	 */
+	public boolean deferDeliveryReport(String key, GmmsMessage msg, DrProduceTail tail) {
+		DrBatch b = drBatch.get();
+		String marker = StreamAttempt.currentMarker();
+		if (b == null || b.entryId == null || marker == null || isBlank(key) || tail == null) {
+			return false;
+		}
+		int segment = msg.getSarSegmentSeqNum();
+		String field = "dr:" + key + ":" + msg.getSplitStatus() + ":" + msg.getStatusCode() + (segment > 0 ? ":" + segment : "");
+		String done = StreamAttempt.produced(field);
+		if (done != null) {
+			msg.setRedisStreamID(done);
+			logger.info(msg, "Redelivered, {} already produced to {} as {}", field, key, done);
+			tail.produced(true);
+			return true;
+		}
+		if (CoreOutboundOutboxManager.getInstance().outboxWrite(msg, key) != null || isBackPressureBlocked(key, false)) {
+			return false;   // as produceDrOnce: an outbox entry or the back pressure answer
+		}
+		com.king.redis.RedisConnection target = redisClient.reportMq(key);
+		boolean copy = target != StreamAttempt.currentRedis();
+		List<String> flags = copy ? new ArrayList<String>() : StreamAttempt.pendingFlags();
+		String body = SerializableHandler.convertGmmsMessage2RedisMessage(msg);
+		b.entry.add(new DeferredDr(key, field, body, copy ? marker + DR_MARKER_COPY_SUFFIX : marker, copy, flags, msg, tail));
+		// written by the batch Lua; recorded now so the same DR is not deferred twice in this attempt
+		StreamAttempt.produced(field, "batch", flags);
+		return true;
+	}
+
+	/** Writes the batch's DRs, one Lua per report master (one retry, the Lua is idempotent), and runs their tails. */
+	public void flushDrBatch() {
+		DrBatch b = drBatch.get();
+		if (b == null || b.committed.isEmpty()) {
+			return;
+		}
+		Map<com.king.redis.RedisConnection, List<DeferredDr>> byMaster = new java.util.LinkedHashMap<com.king.redis.RedisConnection, List<DeferredDr>>();
+		for (DeferredDr d : b.committed) {
+			com.king.redis.RedisConnection r = redisClient.reportMq(d.key);
+			List<DeferredDr> l = byMaster.get(r);
+			if (l == null) {
+				l = new ArrayList<DeferredDr>();
+				byMaster.put(r, l);
+			}
+			l.add(d);
+		}
+		b.committed.clear();
+		for (Map.Entry<com.king.redis.RedisConnection, List<DeferredDr>> e : byMaster.entrySet()) {
+			List<DeferredDr> l = e.getValue();
+			List<?> r = null;
+			for (int tries = 0; r == null && tries < 2; tries++) {
+				try {
+					r = produceDrBatch(e.getKey(), l);
+				} catch (Exception ex) {
+					logger.error("Produce of " + l.size() + " DRs of a batch failed" + (tries == 0 ? ", tried again" : ""), ex);
+				}
+			}
+			for (int i = 0; i < l.size(); i++) {
+				DeferredDr d = l.get(i);
+				boolean ok = r != null && 2 * i + 1 < r.size();
+				if (ok) {
+					String id = String.valueOf(r.get(2 * i + 1));
+					d.msg.setRedisStreamID(id);
+					if ("DUP".equals(String.valueOf(r.get(2 * i)))) {
+						logger.info(d.msg, "{} already produced to {} as {}, not produced again", d.field, d.key, id);
+					} else {
+						incrementStreamCounter(MetricsNames.FLOW_OUT, d.key, d.msg, MetricsNames.ACTION_WRITE_OK);
+						logStreamTrace("STREAM-PUT", d.key, null, null, id, d.msg, false,
+								"zset=" + getDoorbellZSet(d.key) + " batch=" + l.size() + " result=ok");
+					}
+				} else {
+					logStreamTrace("STREAM-PUT", d.key, null, null, null, d.msg, false, "result=fail reason=batch_produce");
+					incrementStreamCounter(MetricsNames.FLOW_OUT, d.key, d.msg, MetricsNames.ACTION_WRITE_FAIL);
+				}
+				try {
+					d.tail.produced(ok);
+				} catch (Exception ex) {
+					logger.error(d.msg, "After the DR produce of a batch failed", ex);
+				}
+			}
+		}
+	}
+
+	private List<?> produceDrBatch(com.king.redis.RedisConnection redis, List<DeferredDr> l) {
+		List<String> keys = new ArrayList<String>(l.size() * 3);
+		List<String> args = new ArrayList<String>(4 + l.size() * 4);
+		args.add(String.valueOf(getStreamMaxLen()));
+		args.add(isApproximateTrimming() ? "~" : "");
+		args.add(String.valueOf(System.currentTimeMillis()));
+		args.add(String.valueOf(StreamAttempt.markerTtlSeconds()));
+		for (DeferredDr d : l) {
+			keys.add(d.key);
+			keys.add(getDoorbellZSet(d.key));
+			keys.add(d.marker);
+			args.add(d.field);
+			args.add(d.body);
+			args.add(d.copy ? "1" : "0");
+			args.add(String.valueOf(d.flags.size() / 2));
+			args.addAll(d.flags);
+		}
+		long opStart = System.nanoTime();
+		List<?> r = (List<?>) redis.evalScript(PRODUCE_DR_BATCH_LUA, keys, args);
+		recordRedisOp("lua", opStart);
+		return r;
+	}
+
+	/**
+	 * After the batch ack: the marker copies of the acked entries deleted, one Lua per master; those of the others
+	 * stay for their redelivery (CoreMtMarkerTtlSeconds). Ends the batch on this thread.
+	 */
+	public static void endDrBatch(Set<String> ackedIds) {
+		DrBatch b = drBatch.get();
+		drBatch.remove();
+		if (b == null || b.copies.isEmpty() || ackedIds == null || ackedIds.isEmpty()) {
+			return;
+		}
+		Map<com.king.redis.RedisConnection, List<String>> byMaster = new java.util.LinkedHashMap<com.king.redis.RedisConnection, List<String>>();
+		for (Map.Entry<String, List<Object[]>> e : b.copies.entrySet()) {
+			if (!ackedIds.contains(e.getKey())) {
+				continue;
+			}
+			for (Object[] c : e.getValue()) {
+				List<String> l = byMaster.get(c[0]);
+				if (l == null) {
+					l = new ArrayList<String>();
+					byMaster.put((com.king.redis.RedisConnection) c[0], l);
+				}
+				l.add((String) c[1]);
+			}
+		}
+		for (Map.Entry<com.king.redis.RedisConnection, List<String>> e : byMaster.entrySet()) {
+			try {
+				e.getKey().evalScript(DELETE_KEYS_LUA, e.getValue(), java.util.Collections.<String>emptyList());
+			} catch (Exception ex) {
+				// they expire by CoreMtMarkerTtlSeconds
+				logger.warn("Delete of {} DR marker copies failed: {}", e.getValue().size(), ex.getMessage());
+			}
+		}
+	}
+
+	private static final String DELETE_KEYS_LUA = "for i = 1, #KEYS do redis.call('DEL', KEYS[i]) end return #KEYS";
 
 	/**
 	 * Produce to a stream: XADD + doorbell, plus the outbox entry (routed SMPP) and, inside a
