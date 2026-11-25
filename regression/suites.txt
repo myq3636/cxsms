@@ -28,6 +28,7 @@ ClientBatch1IT it.ClientBatch1IT it
 ClientMarkerBatchIT it.ClientMarkerBatchIT it
 EarlyDrIT it.EarlyDrIT it
 DrLookupIT it.DrLookupIT it
+DrBatchLookupIT it.DrBatchLookupIT it
 RedisSwitchIT it.RedisSwitchIT it
 DoorbellBatchIT it.DoorbellBatchIT it
 ClientBatch2IT it.ClientBatch2IT it

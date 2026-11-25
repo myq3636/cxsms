@@ -40,8 +40,26 @@ public class ShardHashCheck {
 		}
 		java.util.List<Integer> sorted = new java.util.ArrayList<>(one);
 		java.util.Collections.sort(sorted);
-		boolean evenStep = sorted.size() == 4 && (sorted.get(1) - sorted.get(0)) % 16 == 0 && (sorted.get(3) - sorted.get(2)) % 16 == 0;
-		check(same && evenStep, "SH-04 StreamShards 4: 10000 keys of one ssid on 4 shards 16 apart, the same key on the same one: " + sorted);
+		int b0 = ShardHash.of(String.valueOf(20007), shards);
+		java.util.Set<Integer> expect = new java.util.HashSet<>();
+		for (int k = 0; k < 4; k++) expect.add((b0 + k * 17) % shards);
+		check(same && one.equals(expect), "SH-04 StreamShards 4: 10000 keys of one ssid on its 4 shards, 17 apart from its offset "
+				+ b0 + ", the same key on the same one: " + sorted);
+		// SH-07 the S shards of an ssid alternate between the MQ masters (a sharded stream on master shard % masters)
+		boolean balanced = true;
+		String worst = "";
+		for (int ssid = 30001; ssid <= 30300 && balanced; ssid++) {
+			for (int sn : new int[] { 4, 8, 16, 32 }) {
+				java.util.Set<Integer> mine = new java.util.TreeSet<>();
+				for (int i = 0; i < 1500 && mine.size() < sn; i++) mine.add(ShardHash.of(ssid, ssid + "_S_" + i, shards, sn));
+				for (int m : new int[] { 2, 4 }) {
+					int[] per = new int[m];
+					for (int g : mine) per[g % m]++;
+					for (int x : per) if (mine.size() != sn || x != sn / m) { balanced = false; worst = ssid + " S=" + sn + " masters=" + m + " " + mine; }
+				}
+			}
+		}
+		check(balanced, "SH-07 the shards of each of 300 ssids (S 4, 8, 16, 32) evenly over 2 and 4 masters" + (balanced ? "" : ": " + worst));
 		int[] global = new int[shards];
 		for (int ssid = 20001; ssid <= 22000; ssid++) {
 			for (int i = 0; i < 4; i++) global[ShardHash.of(ssid, ssid + "_K" + i + "_" + r.nextInt(1000000), shards, 4)]++;

@@ -2,6 +2,7 @@ package com.king.gmms.ha;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import redis.clients.jedis.Response;
@@ -43,6 +44,15 @@ public class SmppServerSessionRegistry {
 	private static final long NODE_ONLINE_CACHE_MS = 1000L;
 	/** module:status key -> {checkedAt, 1 online / 0 offline}: at most one GET per node and second */
 	private final ConcurrentHashMap<String, long[]> nodeOnline = new ConcurrentHashMap<String, long[]>();
+
+	// KEYS[1]=active:{ossid}:{module} ARGV[1]=detail key prefix of the ossid: {member, detail or '', ...}
+	private static final String ACTIVE_DETAILS_LUA =
+			"local m = redis.call('ZRANGE', KEYS[1], 0, -1) local out = {} "
+			+ "for i = 1, #m do out[#out + 1] = m[i] out[#out + 1] = redis.call('GET', ARGV[1] .. m[i]) or '' end "
+			+ "return out";
+
+	/** ossid|module -> hasActiveSessionInModule during one batch of vendor DRs on this thread ({@link #beginBatchMemo}) */
+	private static final ThreadLocal<Map<String, Boolean>> batchMemo = new ThreadLocal<Map<String, Boolean>>();
 
 	private volatile long lastReconcileFinishedMs = 0L;
 	private volatile int consecutiveFailedRounds = 0;
@@ -298,19 +308,80 @@ public class SmppServerSessionRegistry {
 		if (!isEnabled() || ossid < 0 || isBlank(module)) {
 			return false;
 		}
+		Map<String, Boolean> memo = batchMemo.get();
+		String memoKey = memo == null ? null : ossid + "|" + module;
+		if (memo != null) {
+			Boolean seen = memo.get(memoKey);
+			if (seen != null) {
+				return seen;
+			}
+		}
+		boolean r = activeSessionInModule(ossid, module);
+		if (memo != null) {
+			memo.put(memoKey, r);
+		}
+		return r;
+	}
+
+	/**
+	 * Within one batch of vendor DRs (SmppServerSessionRegistryBatchMemo, docs/DR消费减少Redis往返设计.md 3.3 b) a
+	 * customer's sessions on a Server are looked up once; ended by {@link #endBatchMemo}
+	 */
+	public void beginBatchMemo() {
+		if (booleanProperty("SmppServerSessionRegistryBatchMemo", true)) {
+			batchMemo.set(new HashMap<String, Boolean>());
+		}
+	}
+
+	public void endBatchMemo() {
+		batchMemo.remove();
+	}
+
+	/**
+	 * The sessions of the customer on the module with their details: one Lua (SmppServerSessionRegistryLuaCheck,
+	 * docs/DR消费减少Redis往返设计.md 3.3 a), else a ZRANGE and a GET each; null: none or a Redis error of the Lua
+	 * (then looked up the old way)
+	 */
+	private Map<String, String> activeDetails(RedisClient redis, int ossid, String key) {
+		if (booleanProperty("SmppServerSessionRegistryLuaCheck", true) && redis.getStateRedis() != null) {
+			try {
+				List<?> out = (List<?>) redis.getStateRedis().evalScript(ACTIVE_DETAILS_LUA, Collections.singletonList(key),
+						Collections.singletonList(DETAIL_PREFIX + ossid + ":"));
+				Map<String, String> details = new LinkedHashMap<String, String>();
+				for (int i = 0; i + 1 < out.size(); i += 2) {
+					details.put(String.valueOf(out.get(i)), String.valueOf(out.get(i + 1)));
+				}
+				return details;
+			} catch (Exception e) {
+				log.warn("SMPP server sessions not read in one Lua, read one by one. key={}", key, e);
+			}
+		}
+		Set<String> members = redis.zrange(key, 0, -1);
+		if (members == null) {
+			return null;
+		}
+		Map<String, String> details = new LinkedHashMap<String, String>();
+		for (String member : members) {
+			details.put(member, isBlank(member) ? null : redis.getString(detailKey(ossid, member)));
+		}
+		return details;
+	}
+
+	private boolean activeSessionInModule(int ossid, String module) {
 		RedisClient redis = redis();
 		if (redis == null) {
 			return false;
 		}
 		String key = activeModuleKey(ossid, module);
-		Set<String> members = redis.zrange(key, 0, -1);
+		Map<String, String> members = activeDetails(redis, ossid, key);
 		if (members == null || members.isEmpty()) {
 			return false;
 		}
 		boolean found = false;
 		boolean offline = false;
-		for (String member : members) {
-			Map<String, String> detail = activeDetail(ossid, member, module);
+		for (Map.Entry<String, String> e : members.entrySet()) {
+			String member = e.getKey();
+			Map<String, String> detail = detailOf(e.getValue(), module);
 			if (detail == null) {
 				redis.zrem(key, new String[] { member });
 				redis.zrem(activeKey(ossid), new String[] { member });
@@ -504,13 +575,8 @@ public class SmppServerSessionRegistry {
 		return result;
 	}
 
-	/** the entry's details, or null if it expired or belongs to another module */
-	private Map<String, String> activeDetail(int ossid, String sessionKey, String expectedModule) {
-		RedisClient redis = redis();
-		if (redis == null || isBlank(sessionKey)) {
-			return null;
-		}
-		String value = redis.getString(detailKey(ossid, sessionKey));
+	/** a detail value parsed, or null if it expired (missing) or belongs to another module */
+	private Map<String, String> detailOf(String value, String expectedModule) {
 		if (isBlank(value)) {
 			return null;
 		}

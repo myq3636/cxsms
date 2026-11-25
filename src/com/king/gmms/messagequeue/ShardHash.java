@@ -15,8 +15,11 @@ public final class ShardHash {
 	 * The shard of a key of one ssid, out of totalShards: the ssid uses only S of them (its StreamShards in cm, else
 	 * StreamShardsDefault, else all), so that a customer or channel with little traffic does not spread over every
 	 * shard (2000 customers x 64 shards were about 770 thousand streams with a message every two minutes each:
-	 * docs/多连接性能分析与优化设计.md 3.1). Its S shards are spread evenly from an offset of the ssid, so that the ssids
-	 * fall on every Core and Client. The same key still always gives the same shard.
+	 * docs/多连接性能分析与优化设计.md 3.1). Its S shards are spread from an offset of the ssid, so that the ssids
+	 * fall on every Core and Client, TotalShards / S + 1 apart: an odd step, so that they alternate between the MQ
+	 * masters (a sharded stream is on the master shard % masters; with TotalShards / S apart, 8 of 64, all the streams
+	 * of an ssid were on one of 2 masters: PF002, docs/5000TPS一小时测试瓶颈分析.md 6). Even over 2 or 4 masters (not 3:
+	 * 9 is a multiple of 3); distinct as TotalShards is a power of 2. The same key still always gives the same shard.
 	 */
 	public static int of(int ssid, String key, int totalShards) {
 		return totalShards <= 1 ? 0 : of(ssid, key, totalShards, shardsOf(ssid, totalShards));
@@ -32,7 +35,7 @@ public final class ShardHash {
 		}
 		int local = of(key, shards);
 		int base = of(String.valueOf(ssid), totalShards);
-		return (base + local * (totalShards / shards)) % totalShards;
+		return (base + local * (totalShards / shards + 1)) % totalShards;
 	}
 
 	/**

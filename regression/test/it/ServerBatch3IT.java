@@ -54,7 +54,10 @@ public class ServerBatch3IT extends ItSupport {
 		GmmsMessage[] drs = new GmmsMessage[n];
 		for (int i = 0; i < n; i++) drs[i] = dr(prefix + i, ossid);
 		jedis.configResetStat();
+		// the producer's (Core's) session lookup for the target Server would be one more Lua per DR here
+		props.setProperty("SmppServerSessionRegistryLuaCheck", "false");
 		for (GmmsMessage d : drs) q.produceDeliveryReportToQueue(d, q.getDrPendingQueue(d));
+		props.remove("SmppServerSessionRegistryLuaCheck");
 		waitFor(() -> c.delivers.get() >= n && pendingDr(ossid) == 0, 20000);
 		Thread.sleep(500);
 		Map<String, Long> m = calls();

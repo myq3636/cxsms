@@ -1187,6 +1187,7 @@ public class GmmsUtility {
 			"ServerStreamTaskMaxBatches", "ServerStreamTaskMaxMs",
 			"SmppPduLogEnable", "SmppServerSessionKeeperShared", "SmppServerSendQueueMax",
 			"SmppServerSendQueueHighWater", "ServerDrAckOnResp", "SmppServerDrLivenessCheck",
+			"CoreInboundDrBatchLookup", "SmppServerSessionRegistryLuaCheck", "SmppServerSessionRegistryBatchMemo",
 			"ConfigFileStableCheckMs", "ReloadCustomerMaxRemovePercent",
 			"ClientOutboundWindowFullRetryMs", "MessageIdAheadWarnSeconds", "ModuleStopMaxWaitSeconds", "ModuleIndexRetainHours", "ModuleDrainMaxSeconds", "ModuleDrainDrWaitSeconds", "ModuleDrainSessionIntervalMs",
 			"ModuleShardConfirmSeconds", "ModuleShardIntervalSeconds", "ModuleOpLockSeconds",
@@ -1363,6 +1364,9 @@ public class GmmsUtility {
 				|| "SmppServerSessionKeeperShared".equals(key)
 				|| "ServerDrAckOnResp".equals(key)
 				|| "SmppServerDrLivenessCheck".equals(key)
+				|| "CoreInboundDrBatchLookup".equals(key)
+				|| "SmppServerSessionRegistryLuaCheck".equals(key)
+				|| "SmppServerSessionRegistryBatchMemo".equals(key)
 				|| "SmppServerInboundSharedPoolEnable".equals(key)
 				|| "MultiSmppServer.LongConnectionCustomerSharedQueueEnable".equals(key)
 				|| (isModuleLongConnectionCustomerKey(key) && key.endsWith(".LongConnectionCustomerSharedQueueEnable"))

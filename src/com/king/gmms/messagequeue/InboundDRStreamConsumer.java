@@ -1,5 +1,6 @@
 package com.king.gmms.messagequeue;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -12,6 +13,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import com.king.framework.SystemLogger;
+import com.king.gmms.ha.SmppServerSessionRegistry;
 import com.king.gmms.metrics.MetricsCollector;
 import com.king.gmms.metrics.MetricsNames;
 import com.king.message.gmms.GmmsMessage;
@@ -165,12 +167,30 @@ public class InboundDRStreamConsumer {
                     if (batch == null && StreamAttempt.drResultEnabled() && StreamAttempt.batchEnabled()) {
                         break; // the batch claim failed: the entries stay pending for the auto-claim
                     }
-                    for (GmmsMessage msg : messages) {
-                        // older than the idle time: auto-claim may have taken this entry too
-                        processMessage(streamKey, msg, System.currentTimeMillis() - readAt >= claimIdleMs,
-                                batch != null && batch.covers(msg) ? batch : null);
+                    // the batch's DR lookups read and deleted together, a customer's sessions looked up once
+                    // (docs/DR消费减少Redis往返设计.md)
+                    boolean batchLookup = DrLookup.batchEnabled();
+                    if (batchLookup) {
+                        List<String> outMsgIds = new ArrayList<String>(messages.size());
+                        for (GmmsMessage msg : messages) {
+                            outMsgIds.add(msg.getOutMsgID());
+                        }
+                        DrLookup.beginBatch(outMsgIds);
                     }
-                    ackBatch(streamKey, batch);
+                    SmppServerSessionRegistry.getInstance().beginBatchMemo();
+                    try {
+                        for (GmmsMessage msg : messages) {
+                            // older than the idle time: auto-claim may have taken this entry too
+                            processMessage(streamKey, msg, System.currentTimeMillis() - readAt >= claimIdleMs,
+                                    batch != null && batch.covers(msg) ? batch : null);
+                        }
+                        ackBatch(streamKey, batch);
+                    } finally {
+                        SmppServerSessionRegistry.getInstance().endBatchMemo();
+                        if (batchLookup) {
+                            DrLookup.endBatch();   // after the ack, where the deletes of the batch ran before
+                        }
+                    }
                     if (budget.spent()) {
                         break; // give the stream back, the finally re-rings it
                     }

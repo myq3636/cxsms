@@ -2,6 +2,7 @@ package com.king.gmms.messagequeue;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -22,6 +23,9 @@ import com.king.redis.SerializableHandler;
  * the MQM job moves the ones older than Redis_RetrieveRedisInterval to WDQ through drl:due:processing ({@link #moveDue}).
  * The DR scheduling data of a Core shard (early DR queue with the lookup, delayed DRs, fake DR timeouts) is on the report
  * master of the shard ({@link #placeOf}).
+ * <p>A batch of vendor DRs (CoreInboundDrBatchLookup, docs/DR消费减少Redis往返设计.md 3.1, 3.2): {@link #beginBatch} reads
+ * their lookups with one MGET a master, {@link #get} uses them; {@link #delete} on the thread is only recorded and
+ * {@link #endBatch} deletes them with one Lua a master.
  */
 public final class DrLookup {
 	private static final SystemLogger log = SystemLogger.getSystemLogger(DrLookup.class);
@@ -39,6 +43,21 @@ public final class DrLookup {
 	// value it already read either way, and its RESOLVE removes the member
 	private static final String DELETE_LUA =
 			"redis.call('DEL', KEYS[1]) redis.call('ZREM', KEYS[2], KEYS[1]) return 1";
+
+	// KEYS[1]=due ARGV = entries: DELETE_LUA for each
+	private static final String DELETE_BATCH_LUA =
+			"for i = 1, #ARGV do redis.call('DEL', ARGV[i]) redis.call('ZREM', KEYS[1], ARGV[i]) end return #ARGV";
+
+	/** the batch of vendor DRs being processed on this thread */
+	private static final ThreadLocal<BatchScope> batch = new ThreadLocal<BatchScope>();
+
+	private static final class BatchScope {
+		/** outMsgId -> its lookup read at the start of the batch (only the ones found); taken by the first get */
+		final Map<String, String> found = new HashMap<String, String>();
+		/** deleted in this batch: get finds none, as after a delete */
+		final Set<String> deleted = new HashSet<String>();
+		final Map<RedisConnection, List<String>> deletes = new LinkedHashMap<RedisConnection, List<String>>();
+	}
 
 	// KEYS[1]=due KEYS[2]=processing ARGV: 1 cutoff, 2 claim end, 3 count. {entry, value, ...} of the claimed ones
 	private static final String CLAIM_LUA =
@@ -102,9 +121,25 @@ public final class DrLookup {
 		}
 	}
 
-	/** the original (serialized) of this outMsgId; null: none */
+	/**
+	 * the original (serialized) of this outMsgId; null: none. In a batch ({@link #beginBatch}) the one read at its start
+	 * is used once; one not found then is read again (an early DR's lookup may have been written meanwhile)
+	 */
 	public static String get(String outMsgId) {
-		return outMsgId == null ? null : master(outMsgId).getString(key(outMsgId));
+		if (outMsgId == null) {
+			return null;
+		}
+		BatchScope b = batch.get();
+		if (b != null) {
+			if (b.deleted.contains(outMsgId)) {
+				return null;
+			}
+			String v = b.found.remove(outMsgId);
+			if (v != null) {
+				return v;
+			}
+		}
+		return master(outMsgId).getString(key(outMsgId));
 	}
 
 	/** seconds the lookup of this outMsgId still lives; -2: none */
@@ -117,10 +152,72 @@ public final class DrLookup {
 		}
 	}
 
-	/** after the final DR */
+	/** after the final DR; in a batch ({@link #beginBatch}) deleted by {@link #endBatch} */
 	public static void delete(String outMsgId) {
-		if (outMsgId != null) {
-			master(outMsgId).evalScript(DELETE_LUA, Arrays.asList(key(outMsgId), DUE_ZSET), new ArrayList<String>());
+		if (outMsgId == null) {
+			return;
+		}
+		BatchScope b = batch.get();
+		if (b != null) {
+			if (b.deleted.add(outMsgId)) {
+				b.found.remove(outMsgId);
+				b.deletes.computeIfAbsent(master(outMsgId), k -> new ArrayList<String>()).add(key(outMsgId));
+			}
+			return;
+		}
+		master(outMsgId).evalScript(DELETE_LUA, Arrays.asList(key(outMsgId), DUE_ZSET), new ArrayList<String>());
+	}
+
+	/** CoreInboundDrBatchLookup: the lookups of a batch of vendor DRs read and deleted together */
+	public static boolean batchEnabled() {
+		return !"false".equalsIgnoreCase(property("CoreInboundDrBatchLookup", "true"));
+	}
+
+	/**
+	 * Start of a batch of vendor DRs on this thread: their lookups read with one MGET a report master. On a Redis error
+	 * nothing is read ahead, each {@link #get} reads its own as before. Ended by {@link #endBatch}, also on an error.
+	 */
+	public static void beginBatch(List<String> outMsgIds) {
+		BatchScope b = new BatchScope();
+		batch.set(b);
+		Map<RedisConnection, List<String>> byMaster = new LinkedHashMap<RedisConnection, List<String>>();
+		for (String id : outMsgIds) {
+			if (id != null && !id.isEmpty()) {
+				byMaster.computeIfAbsent(master(id), k -> new ArrayList<String>()).add(id);
+			}
+		}
+		for (Map.Entry<RedisConnection, List<String>> e : byMaster.entrySet()) {
+			List<String> keys = new ArrayList<String>();
+			for (String id : e.getValue()) {
+				keys.add(key(id));
+			}
+			try {
+				List<String> values = e.getKey().mgetStrict(keys);
+				for (int i = 0; i < e.getValue().size() && values != null && i < values.size(); i++) {
+					if (values.get(i) != null) {
+						b.found.put(e.getValue().get(i), values.get(i));
+					}
+				}
+			} catch (Exception ex) {
+				log.warn("DR lookups of a batch not read ahead, read one by one. keys={}", keys.size(), ex);
+			}
+		}
+	}
+
+	/** End of the batch: the lookups deleted in it, one Lua a report master (a failure: they expire by their TTL) */
+	public static void endBatch() {
+		BatchScope b = batch.get();
+		batch.remove();
+		if (b == null) {
+			return;
+		}
+		for (Map.Entry<RedisConnection, List<String>> e : b.deletes.entrySet()) {
+			try {
+				e.getKey().evalScript(DELETE_BATCH_LUA, Arrays.asList(DUE_ZSET), e.getValue());
+			} catch (Exception ex) {
+				log.warn("DR lookups of a batch not deleted from the report Redis, they expire by their TTL. keys={}",
+						e.getValue().size(), ex);
+			}
 		}
 	}
 
