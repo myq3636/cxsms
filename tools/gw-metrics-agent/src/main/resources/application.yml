@@ -1,0 +1,53 @@
+# Defaults (docs/网关指标采集工具设计.md, Decisions 11). The host's config/application.yml next to the jar overrides
+# them; it usually needs agent.portal.url only.
+agent:
+  portal:
+    url:
+    timeout: 10s
+    trust-store:
+    trust-store-password:
+  host: ${HOSTNAME:}
+  secret-file: agent.secret
+  state-dir: state
+  log-dir: /usr/local/a2p/log
+  metrics:
+    include: "*_metrics.log"
+  alert:
+    include: "*.log"
+    exclude: "*_metrics.log,*_gc.log*,*_smpp_pdu.log,*.out"
+    zone:
+  rolled:
+    dir: /usr/local/a2p/log/previous
+    pattern: "{name}.{date}-{i}.gz"
+    max-hold: 60s
+  start:
+    metrics: beginning
+    alert: end
+  send-interval: 10s
+  heartbeat-interval: 30s
+  batch:
+    max-windows: 500
+    max-size: 8MB
+  outbox:
+    max-windows: 20000
+    max-size: 50MB
+  assemble-idle: 5s
+  read:
+    backfill-mbps: 20
+  lag-warn: 5d
+
+spring:
+  main:
+    web-application-type: none
+    banner-mode: off
+  lifecycle:
+    timeout-per-shutdown-phase: 15s
+logging:
+  file:
+    name: log/agent.log
+  logback:
+    rollingpolicy:
+      max-file-size: 10MB
+      total-size-cap: 100MB
+  threshold:
+    console: WARN

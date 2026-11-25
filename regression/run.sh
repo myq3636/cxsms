@@ -31,6 +31,7 @@ run() {  # name class mode
   local MOD=CoreEngine1 EXTRA=
   case "$3" in
     unit) (cd "$ROOT" && timeout 300 "$J/java" -Dknown.defects="$REG/known-defects.txt" -cp "$CP" "$2" > "$OUT/$1.txt" 2>&1) ;;
+    mvn) mvn_suite "$1" "$2" ;;
     *)
       home_for "$REG/home"
       case "$3" in
@@ -54,6 +55,29 @@ run() {  # name class mode
   if [ "$f" -gt 0 ] || ! grep -q 'ALL CHECKS PASSED' "$OUT/$1.txt"; then verdict=FAILED; BAD=$((BAD+1)); fi
   printf '%-22s %-7s pass=%-4s fail=%-3s known=%-3s fixed=%s\n' "$1" "$verdict" "$p" "$f" "$k" "$x" | tee -a "$OUT/summary.txt"
   P=$((P+p)); F=$((F+f)); K=$((K+k)); X=$((X+x))
+}
+
+# mvn: a Maven project under tools/ (its own JUnit tests, e.g. tools/gw-metrics-agent): ./mvnw test, each test case of
+# the surefire reports a PASS / FAIL line. Without Maven Central (dependencies not downloaded): SKIP, not a failure;
+# no reports for any other reason (a compile error): FAIL. REG_MAVEN_OPTS: more mvnw options (-Dmaven.repo.local=...)
+mvn_suite() {  # name project-dir
+  local dir=$ROOT/$2 out=$OUT/$1.txt rc
+  rm -rf "$dir/target/surefire-reports"
+  (cd "$dir" && JAVA_HOME=$(dirname "$J") timeout ${SUITE_TIMEOUT:-900} ./mvnw -B -q ${REG_MAVEN_OPTS:-} test > "$OUT/$1.mvn.log" 2>&1); rc=$?
+  if ! ls "$dir"/target/surefire-reports/TEST-*.xml >/dev/null 2>&1; then
+    if grep -q 'Could not transfer\|Could not resolve\|UnknownHost\|Failed to fetch\|Connection refused' "$OUT/$1.mvn.log"; then
+      echo "SKIP $1: Maven dependencies not available (no access to Maven Central?), see $1.mvn.log" > "$out"; echo "ALL CHECKS PASSED" >> "$out"
+    else
+      echo "FAIL $1: no test reports (mvnw rc=$rc), see $1.mvn.log" > "$out"
+    fi
+    return
+  fi
+  awk '/<testcase /{ n=$0; sub(/^.*<testcase name="/, "", n); sub(/".*/, "", n); c=$0; sub(/^.*classname="/, "", c); sub(/".*/, "", c); sub(/.*\./, "", c)
+         bad=0; skip=0; open=1; if ($0 ~ /\/>[[:space:]]*$/) { print "PASS " c "." n; open=0 }; next }
+       open && /<(failure|error)[ >\/]/ { bad=1 }
+       open && /<skipped/ { skip=1 }
+       open && /<\/testcase>/ { print (bad ? "FAIL " : (skip ? "SKIP " : "PASS ")) c "." n; open=0 }' "$dir"/target/surefire-reports/TEST-*.xml > "$out"
+  [ $rc -eq 0 ] && echo "ALL CHECKS PASSED" >> "$out"
 }
 
 BAD=0; P=0; F=0; K=0; X=0

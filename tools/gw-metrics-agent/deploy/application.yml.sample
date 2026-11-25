@@ -1,0 +1,13 @@
+# /usr/local/a2p/metrics-agent/config/application.yml: only what differs from the defaults
+# (src/main/resources/application.yml, docs/网关指标采集工具设计.md Decisions 11)
+agent:
+  portal:
+    url: https://portal.example.com/api/v1/gw/metrics/ingest
+#   trust-store: /usr/local/a2p/metrics-agent/portal-ca.p12     # Portal with a self-signed certificate
+#   trust-store-password: changeit
+# host: a2p-gw-1              # default: the host name; Portal finds the secret by it (gw.metrics.agents)
+# log-dir: /usr/local/a2p/log
+# rolled:
+#   dir: /usr/local/a2p/log/previous
+# alert:
+#   include: ""               # no alerts collected

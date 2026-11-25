@@ -8,6 +8,7 @@ ShardHashCheck com.king.gmms.messagequeue.ShardHashCheck unit
 DataManagerCheck com.king.db.DataManagerCheck unit
 DrShardCheck com.king.gmms.messagequeue.DrShardCheck unit
 ServerConnectionRaceCheck com.king.gmms.connectionpool.connection.ServerConnectionRaceCheck unit
+GwMetricsAgent tools/gw-metrics-agent mvn
 CoreDrFlowIT it.CoreDrFlowIT it
 CsmCdrIT it.CsmCdrIT it
 Gsm7LengthIT it.Gsm7LengthIT it

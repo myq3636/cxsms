@@ -1,0 +1,18 @@
+[Unit]
+Description=Gateway metrics agent (reads metrics logs, posts to Portal)
+After=network-online.target
+
+[Service]
+WorkingDirectory=/usr/local/a2p/metrics-agent
+ExecStart=/usr/bin/java -Xms64m -Xmx128m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -jar gw-metrics-agent.jar
+SuccessExitStatus=143
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+Nice=10
+CPUQuota=20%
+MemoryLimit=384M
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target
