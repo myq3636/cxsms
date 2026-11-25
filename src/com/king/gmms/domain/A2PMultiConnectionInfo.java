@@ -195,6 +195,7 @@ public class A2PMultiConnectionInfo extends A2PCustomerInfo{
             this.smsOptionIncomingGSM7bit = sc.getSmsOptionIncomingGSM7bit();
             this.smsOptionOutgoingGSM7bit = sc.getSmsOptionOutgoingGSM7bit();
             this.parseValidityPeriod = sc.isParseValidityPeriod();
+            this.validityPeriodNoRange = sc.isValidityPeriodNoRange();
             this.transferValidityPeriod = sc.isTransferValidityPeriod();
             this.smsOptionIsSupportHttps = sc.isSMSOptionIsSupportHttps();
             this.MCCMNCLength = sc.getMCCMNCLength();

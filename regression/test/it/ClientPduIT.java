@@ -4,6 +4,7 @@ import java.lang.reflect.Method;
 import java.nio.file.*;
 import java.util.*;
 
+import com.king.gmms.GmmsUtility;
 import com.king.gmms.client.MultiSmppClient;
 import com.king.gmms.messagequeue.OutboundStreamConsumer;
 import com.king.gmms.messagequeue.StreamQueueManager;
@@ -40,6 +41,18 @@ public class ClientPduIT extends ItSupport {
 		waitFor(() -> !inStreams("stream:core:results*", id).isEmpty(), ms);
 		List<GmmsMessage> l = inStreams("stream:core:results*", id);
 		return l.isEmpty() ? null : l.get(0);
+	}
+	/** an MT whose expiry date (GMT wall clock, as the gateway keeps it) is ms from now */
+	static GmmsMessage expiring(int rssid, long ms) {
+		GmmsMessage m = msg(rssid);
+		m.setExpiryDate(new java.util.Date(GmmsUtility.getInstance().getGMTTime().getTime() + ms));
+		return m;
+	}
+	/** the instant of an absolute validity YYMMDDhhmmss000+ (as the Client writes it, GMT) */
+	static long absoluteGmt(String v) throws Exception {
+		java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("yyMMddHHmmss");
+		f.setTimeZone(java.util.TimeZone.getTimeZone("GMT"));
+		return f.parse(v.substring(0, 12)).getTime();
 	}
 	static String hex(byte[] b) { if (b == null) return "null"; StringBuilder s = new StringBuilder(); for (byte x : b) s.append(String.format("%02X", x)); return s.toString(); }
 
@@ -151,6 +164,24 @@ public class ClientPduIT extends ItSupport {
 			check(s != null && s.validity.matches("\\d{12}\\d{3}[+-]"), "PD-04a SMSOptionTransferValidityPeriod: absolute: " + (s == null ? "" : s.validity));
 			s = send(a7, msg(707));
 			check(s != null && s.validity.matches("000000\\d{6}000R"), "PD-04b SMSOptionIsRelateValidityPeriod: relative: " + (s == null ? "" : s.validity));
+			// the values: the expiry date is GMT wall clock (getGMTTime); the JVM runs in the server's zone (Asia/Shanghai)
+			long target = System.currentTimeMillis() + 2 * 3600000L;
+			s = send(a6, expiring(706, 2 * 3600000L));
+			long sent = s == null ? 0 : absoluteGmt(s.validity);
+			check(Math.abs(sent - target) < 10000, "PD-04c absolute, expiry in 2 h: the instant sent (labelled GMT) is 2 h from now: " + (s == null ? "" : s.validity)
+					+ " off by " + (sent - target) / 1000 + " s");
+			s = send(a7, expiring(707, 2 * 3600000L));
+			check(s != null && s.validity.matches("00000001595\\d000R|000000020000000R"), "PD-04d relative, expiry in 2 h: 02:00:00 (was 8 h short in +8): " + (s == null ? "" : s.validity));
+			s = send(a7, expiring(707, 36 * 3600000L));
+			check(s != null && s.validity.matches("000001(1159[0-5]\\d|120000)000R"), "PD-04e relative, 36 h: 1 day 12 h (days were dropped): " + (s == null ? "" : s.validity));
+			s = send(a7, expiring(707, -60000L));
+			check(s != null && "000000000100000R".equals(s.validity), "PD-04f relative, already expired: 1 minute, not a negative string: " + (s == null ? "" : s.validity));
+			GmmsMessage none = msg(707);
+			none.setExpiryDate(null);
+			s = send(a7, none);
+			int def = GmmsUtility.getInstance().getExpireTimeInMinute();
+			String d0 = com.king.gmms.protocol.smpp.util.TimeFormatter.toRelativeFormat(def * 60000L), d1 = com.king.gmms.protocol.smpp.util.TimeFormatter.toRelativeFormat(def * 60000L - 1000);
+			check(s != null && (s.validity.equals(d0) || s.validity.equals(d1)), "PD-04g no expiry date: the default MessageExpireTime (" + def + " min, " + d0 + "): " + (s == null ? "" : s.validity));
 
 			// ---- DR request ----
 			s = send(a1, msg(701));

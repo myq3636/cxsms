@@ -1,0 +1,2 @@
+# PF002: com.king at info instead of trace (trace at 5000 TPS writes more than the disk holds and slows the modules)
+s#<logger name="com.king" level="trace"#<logger name="com.king" level="info"#

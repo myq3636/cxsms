@@ -313,6 +313,9 @@ public class DRStreamConsumer {
                 logger.debug(msg, "Server DR-to-customer resolved session. streamKey={}, session={}, status={}",
                     streamKey, session.getSessionName(), session.getStatus());
             }
+            // the type as sent: the customer's deliver_sm_resp may come back and turn msg into its response before the
+            // counter below (about 1 % of the DRs were counted as dr_resp at 1000 TPS, PF009)
+            String sentType = msg.getMessageType();
             SmppDrSubmitResult submitResult = submitTo(session, msg);
             if (submitResult == SmppDrSubmitResult.WINDOW_FULL_PRECHECK) {
                 recordWindowFull(streamKey, msg, session.getSessionName(), "precheck");
@@ -343,7 +346,7 @@ public class DRStreamConsumer {
             if (submitResult == SmppDrSubmitResult.SENT) {
                 clearWindowFullState(streamKey);
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.business(
-                        MetricsNames.FLOW_SERVER, msg, MetricsNames.ACTION_SENT_TO_CUSTOMER));
+                        MetricsNames.FLOW_SERVER, sentType, MetricsNames.ACTION_SENT_TO_CUSTOMER));
                 MetricsCollector.getInstance().incrementCounter(MetricsNames.ssid(
                         MetricsNames.STAGE_OUT_DR, msg, false, MetricsNames.ACTION_SENT_TO_CUSTOMER));
                 if (session instanceof MultiSmppSession && ((MultiSmppSession) session).acksDrOnResult()) {

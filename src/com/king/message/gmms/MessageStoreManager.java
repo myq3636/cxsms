@@ -724,7 +724,8 @@ public class MessageStoreManager extends DataManager {
 							long expireThrottle = 10*60*1000L;
 							if(expireDate != null) {
 								long expireT = expireDate.getTime();
-								expireThrottle = expireT-System.currentTimeMillis();
+								// the expiry date is GMT wall clock: the time left is against getGMTTime
+								expireThrottle = expireT-gmmsUtility.getGMTTime().getTime();
 							}
 							
 							if (temp == null || expireThrottle<600000) {
@@ -1037,7 +1038,8 @@ public class MessageStoreManager extends DataManager {
 							long expireThrottle = 10*60*1000L;
 							if(expireDate != null) {
 								long expireT = expireDate.getTime();
-								expireThrottle = expireT-System.currentTimeMillis();
+								// the expiry date is GMT wall clock: the time left is against getGMTTime
+								expireThrottle = expireT-gmmsUtility.getGMTTime().getTime();
 							}
 							
 							if (temp == null || expireThrottle<600000) {
@@ -2983,10 +2985,9 @@ public class MessageStoreManager extends DataManager {
 	}
 	
 	private String getExpireSqlForWDQ() {
-		long now = new Date().getTime();
-		java.util.Date gmtNow = new java.util.Date(now); // transfer
-																// localtime to
-																// GMT
+		// ExpiryDate is GMT wall clock, as for the other queues (getExpireSql); the real now made the WDQ DRs of the
+		// default expiry (and of every expiry once kept as GMT wall clock) come the time zone offset early
+		java.util.Date gmtNow = gmmsUtility.getGMTTime();
 		// character String of expire
 		String expireStr = "(" + makeSqlStr(dateFormat.format(gmtNow))
 				+ " >= ExpiryDate)";

@@ -79,6 +79,26 @@ class AssemblerTest {
     }
 
     @Test
+    void modulesInterleavedInOneFileKeepTheirWindowsWhole() {
+        List<Outbox.Item> out = new ArrayList<>();
+        WindowAssembler asm = new WindowAssembler(sink(out), om, 5000);
+        Tailer t = new Tailer("metricsname.log", Tailer.Kind.METRICS, Path.of("metricsname.log"), null, 0, null);
+        String[] a = LogFixture.window("a", 30000), b = LogFixture.window("b", 30500);
+        // a's first lines, then b (a later ts) in between, then the rest of a's window
+        for (String l : new String[] { a[0], a[1], b[0], b[1], a[2], a[3], a[4], b[2], b[3], b[4] }) {
+            asm.add(t, parser.parseMetrics(l), t.ledger.hold(null), 1);
+        }
+        assertThat(out).as("nothing ended by the other module").isEmpty();
+        asm.add(t, parser.parseMetrics(LogFixture.window("a", 60000)[0]), t.ledger.hold(null), 2);
+        assertThat(out).hasSize(1);
+        assertThat(out.get(0).json().path("module").asText()).isEqualTo("a");
+        assertThat(out.get(0).units()).as("all five lines of a's window").hasSize(5);
+        asm.flushAll();
+        assertThat(out).extracting(i -> i.json().path("module").asText() + i.json().path("ts").asLong())
+                .containsExactly("a30000", "b30500", "a60000");
+    }
+
+    @Test
     void ledgerMovesOnlyPastWhatPortalTook() {
         Ledger l = new Ledger(null);
         Position p0 = new Position("f", 1, 0, 0, 0, 0);

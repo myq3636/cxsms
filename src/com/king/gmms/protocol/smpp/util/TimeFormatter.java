@@ -43,6 +43,21 @@ public class TimeFormatter {
     }
     
     /**
+     * SMPP relative time format YYMMDDhhmmss000R for a time left in milliseconds: days in DD (a year taken as 365 days
+     * and a month as 30, as the vendors count them), at least 1 minute (0 or less would be read as "now" or be no
+     * valid string), at most 99 years
+     */
+    public static String toRelativeFormat(long millisLeft) {
+        long s = Math.max(60, millisLeft / 1000);
+        long days = s / 86400;
+        long years = Math.min(99, days / 365);
+        days -= years * 365;
+        long months = days / 30;
+        days -= months * 30;
+        return String.format("%02d%02d%02d%02d%02d%02d000R", years, months, days, (s / 3600) % 24, (s / 60) % 60, s % 60);
+    }
+
+    /**
      * @param timeStr
      * @param a2pTz
      * @return
@@ -119,13 +134,13 @@ public class TimeFormatter {
                 	TimeZone custTz = TimeZone.getTimeZone(tzStr);
                 	
                 	Calendar custCalendar = Calendar.getInstance(custTz);
-                    custCalendar.set(year, month, day, hour, minute, second);                
+                    custCalendar.set(year, month - 1, day, hour, minute, second); // Calendar months from 0                
                     return custCalendar.getTime();
                 }
             }else{
             	TimeZone custTz = TimeZone.getTimeZone("GMT");            	
             	Calendar custCalendar = Calendar.getInstance(custTz);
-                custCalendar.set(year, month, day, hour, minute, second);                
+                custCalendar.set(year, month - 1, day, hour, minute, second); // Calendar months from 0                
                 return custCalendar.getTime();
 			}
             

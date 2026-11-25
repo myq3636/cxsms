@@ -80,12 +80,17 @@ public class SmppTestClient {
 
 	/** async submit_sm; blocks while the client's own window is full */
 	int submit(String src, String dst, String text) throws Exception {
+		return submit(src, dst, text, "");
+	}
+
+	/** with a validity_period (absolute YYMMDDhhmmsstnn+/-, relative YYMMDDhhmmss000R, or "" for none) */
+	int submit(String src, String dst, String text, String validity) throws Exception {
 		window.acquire();
 		int s = seq.getAndIncrement();
 		byte[] sm = text.getBytes(StandardCharsets.ISO_8859_1);
 		ByteBuffer b = ByteBuffer.allocate(120 + sm.length);
 		b.put(cstr("")).put((byte) 1).put((byte) 1).put(cstr(src)).put((byte) 1).put((byte) 1).put(cstr(dst))
-				.put((byte) 0).put((byte) 0).put((byte) 0).put(cstr("")).put(cstr("")).put((byte) 1).put((byte) 0)
+				.put((byte) 0).put((byte) 0).put((byte) 0).put(cstr("")).put(cstr(validity)).put((byte) 1).put((byte) 0)
 				.put((byte) 0).put((byte) 0).put((byte) sm.length).put(sm);
 		byte[] body = new byte[b.position()];
 		b.flip();

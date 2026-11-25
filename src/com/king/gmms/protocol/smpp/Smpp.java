@@ -160,15 +160,14 @@ public class Smpp {
 					// parse
 					validityPeriod = TimeFormatter.parse(msg.getValidityPeriod(), local);
 					if (validityPeriod != null) {
-						// check
-						if (gmmsUtility.checkExpiryDateFromCust(validityPeriod)) {
-							gmmsMsg.setExpiryDate(new Date(validityPeriod.getTime()));
-							
-						} else {
-							gmmsMsg.setExpiryDate(new Date(validityPeriod.getTime()));
-							if (log.isInfoEnabled()) {
-								log.info(gmmsMsg, "CheckExpiryDateFromCust failed: ({})", validityPeriod.toGMTString());
-							}
+						// check: within Min/MaxMessageExpireTimeFromCust (not for SMSOptionValidityPeriodNoRange), else the default below
+						if (cst.isValidityPeriodNoRange() || gmmsUtility.checkExpiryDateFromCust(validityPeriod)) {
+							// parsed as a real instant; expiry dates are kept as GMT wall clock (getGMTTime), as the
+							// default below, the expiry checks and the validity sent to the vendor
+							gmmsMsg.setExpiryDate(gmmsUtility.getGMTTime(validityPeriod));
+						} else if (log.isInfoEnabled()) {
+							log.info(gmmsMsg, "validity_period {} out of MinMessageExpireTimeFromCust..MaxMessageExpireTimeFromCust, the default used",
+									msg.getValidityPeriod());
 						}
 					}
 				} catch (Exception e) {
@@ -439,14 +438,8 @@ public class Smpp {
 				}
 				String validityPeriod = TimeFormatter.toAbsoluteFormat(expireDate);
 				if(cst.isRelateValidityPeriod()) {
-					long relateTime = expireDate.getTime()-System.currentTimeMillis();
-					long ss = (relateTime/1000)%60;
-					long min = (relateTime/1000/60)%60;
-					long hour = (relateTime/1000/60/60)%24;
-					String sss = (""+ss).length()==1?("0"+ss):""+ss;
-					String mins = (""+min).length()==1?("0"+min):""+min;
-					String hours = (""+hour).length()==1?("0"+hour):""+hour;
-					validityPeriod = "000000"+hours+mins+sss+"000R";
+					// the expiry date is GMT wall clock: the time left is against getGMTTime, not the real now
+					validityPeriod = TimeFormatter.toRelativeFormat(expireDate.getTime() - gmmsUtility.getGMTTime().getTime());
 				}
 				if (validityPeriod != null) {
 					if (log.isTraceEnabled()) {

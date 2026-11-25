@@ -158,7 +158,8 @@ public abstract class HttpHandler {
 		}
 		
 		if (date != null ) {
-			if (gmmsUtility.checkExpiryDateFromCust(date)) {
+			// within Min/MaxMessageExpireTimeFromCust unless SMSOptionValidityPeriodNoRange (the callers make it GMT wall clock)
+			if (csts.isValidityPeriodNoRange() || gmmsUtility.checkExpiryDateFromCust(date)) {
 				return date;
 			} else {
 				if (log.isInfoEnabled()) {

@@ -2108,6 +2108,9 @@ public class StreamQueueManager {
 					}
 				});
 			}
+			long[] xlenOf = new long[keys.size()];
+			long[] pendingOf = new long[keys.size()];
+			List<String> unrung = new ArrayList<String>();
 			for (int i = 0; i < keys.size(); i++) {
 				String streamKey = keys.get(i);
 				long xlen = responseLong(xlens.get(i));
@@ -2117,6 +2120,7 @@ public class StreamQueueManager {
 				}
 				known.add(streamKey);
 				totalXlen += xlen;
+				xlenOf[i] = xlen;
 				long pending = 0L;
 				try {
 					StreamPendingSummary sum = pendings.get(i).get();
@@ -2125,23 +2129,78 @@ public class StreamQueueManager {
 					// NOGROUP: no consumer read this stream yet
 				}
 				totalPending += pending;
+				pendingOf[i] = pending;
 				Double score = null;
 				try {
 					score = scores.get(i).get();
 				} catch (Exception e) {
-					// counted as missing
+					// counted as without a doorbell
 				}
-				boolean missingDoorbell = score == null;
+				if (score == null) {
+					unrung.add(streamKey);
+				}
+			}
+			// without a doorbell now is mostly a stream being processed (its consumer took the doorbell and rings it
+			// again after the ack): missing only when it was also without one at the last check with the same first
+			// entry, i.e. nobody read it in between
+			Map<String, String> firstNow = firstEntries(unrung, isSubmitMq);
+			Map<String, String> before = unrungBefore.put(flow, firstNow);
+			for (int i = 0; i < keys.size(); i++) {
+				if (xlenOf[i] <= 0) {
+					continue;
+				}
+				String streamKey = keys.get(i);
+				String first = firstNow.get(streamKey);
+				boolean missingDoorbell = first != null && before != null && first.equals(before.get(streamKey));
 				if (missingDoorbell) {
 					doorbellMissing++;
 				}
-				logBacklogIfNeeded(flow, streamKey, groupName, xlen, pending, missingDoorbell, isSubmitMq);
+				logBacklogIfNeeded(flow, streamKey, groupName, xlenOf[i], pendingOf[i], missingDoorbell, isSubmitMq);
 			}
+		} else {
+			unrungBefore.remove(flow);
 		}
 		MetricsCollector.getInstance().setGauge(MetricsNames.gauge("redis.stream." + flow, "xlen"), totalXlen);
 		MetricsCollector.getInstance().setGauge(MetricsNames.gauge("redis.stream." + flow, "pending"), totalPending);
 		MetricsCollector.getInstance().setGauge(MetricsNames.gauge("redis.stream." + flow, "doorbell_missing"), doorbellMissing);
 		MetricsCollector.getInstance().setGauge(MetricsNames.gauge("redis.stream." + flow, "streams"), known.size());
+	}
+
+	/** per flow, the streams without a doorbell at the last check and their first entry id */
+	private final Map<String, Map<String, String>> unrungBefore = new java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>();
+
+	/** the id of the first entry of each stream (one pipeline per MQ master); a stream emptied meanwhile is left out */
+	private Map<String, String> firstEntries(List<String> streams, boolean isSubmitMq) {
+		Map<String, String> out = new HashMap<String, String>();
+		if (streams.isEmpty()) {
+			return out;
+		}
+		Map<com.king.redis.RedisConnection, List<String>> byMaster = new java.util.LinkedHashMap<com.king.redis.RedisConnection, List<String>>();
+		for (String k : streams) {
+			byMaster.computeIfAbsent(redisClient.mq(k, isSubmitMq), x -> new ArrayList<String>()).add(k);
+		}
+		for (Map.Entry<com.king.redis.RedisConnection, List<String>> e : byMaster.entrySet()) {
+			final List<String> mine = e.getValue();
+			final List<redis.clients.jedis.Response<List<redis.clients.jedis.resps.StreamEntry>>> firsts =
+					new ArrayList<redis.clients.jedis.Response<List<redis.clients.jedis.resps.StreamEntry>>>();
+			try {
+				e.getKey().runPipeline(pl -> {
+					for (String k : mine) {
+						firsts.add(pl.xrange(k, "-", "+", 1));
+					}
+				});
+				for (int i = 0; i < mine.size(); i++) {
+					List<redis.clients.jedis.resps.StreamEntry> l = firsts.get(i).get();
+					if (l != null && !l.isEmpty()) {
+						out.put(mine.get(i), l.get(0).getID().toString());
+					}
+				}
+			} catch (Exception ex) {
+				// not known this time: not counted as missing
+				logger.debug("first entries not read: {}", ex.toString());
+			}
+		}
+		return out;
 	}
 
 	private static long responseLong(redis.clients.jedis.Response<Long> r) {

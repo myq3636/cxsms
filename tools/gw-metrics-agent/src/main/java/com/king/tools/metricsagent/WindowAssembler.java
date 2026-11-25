@@ -14,7 +14,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 /**
  * One window of a module = its TPS, SSID, GAUGE and TIMER lines of one report (and the parts of a line split at about
  * 4KB), all with the same (module, node, ts), written one after the other (Decisions 4). A window is complete when a
- * later ts comes from the same file, or after agent.assemble-idle without a line. The module prefix of the names is
+ * later ts of the same module comes, or after agent.assemble-idle without a line. The module prefix of the names is
  * dropped; nothing else is changed.
  */
 final class WindowAssembler {
@@ -52,7 +52,9 @@ final class WindowAssembler {
         LinkedHashMap<String, Pending> m = open.computeIfAbsent(t, k -> new LinkedHashMap<>());
         for (Iterator<Pending> it = m.values().iterator(); it.hasNext();) {
             Pending p = it.next();
-            if (p.ts < r.ts()) {
+            // a later report of the same module ends its earlier window; other modules (several in one file, as the
+            // shared metricsname.log of an older log4j2) keep theirs until their own next report or the idle time
+            if (p.ts < r.ts() && p.module.equals(r.module()) && p.node.equals(r.node())) {
                 complete(p);
                 it.remove();
             }

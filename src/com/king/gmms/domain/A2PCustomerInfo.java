@@ -309,6 +309,8 @@ public abstract class A2PCustomerInfo {
 	protected boolean SmsOptionIsVirtualDC = false;
 	
 	protected boolean parseValidityPeriod;
+	/** SMSOptionValidityPeriodNoRange: the customer's validity period is taken as it is, not checked against Min/MaxMessageExpireTimeFromCust */
+	protected boolean validityPeriodNoRange;
 	protected boolean transferValidityPeriod;
 	protected boolean isRelateValidityPeriod;
 
@@ -1425,7 +1427,9 @@ public abstract class A2PCustomerInfo {
 		// Virtual DC
 		this.SmsOptionIsVirtualDC = cfg.getBool("SMSOptionPiggyBackVirtualDC",false);
 		
-		this.parseValidityPeriod = cfg.getBool("SMSOptionParseValidityPeriod", false);
+		this.validityPeriodNoRange = cfg.getBool("SMSOptionValidityPeriodNoRange", false);
+		// taking the validity period as it is means reading it
+		this.parseValidityPeriod = cfg.getBool("SMSOptionParseValidityPeriod", false) || validityPeriodNoRange;
 		this.transferValidityPeriod = cfg.getBool("SMSOptionTransferValidityPeriod", false);
 		this.isRelateValidityPeriod = cfg.getBool("SMSOptionIsRelateValidityPeriod", false);
 		this.needSupportBlackList = cfg.getBool("SMSOptionSupportBlackList", false);
@@ -3006,6 +3010,7 @@ public abstract class A2PCustomerInfo {
 		.append(prefix).append("SMSOptionConvert2GSM7bit:").append(this.smsOptionConvert2GSM7bit)
 		.append(prefix).append("SMSOptionForceTrans2ASCII:").append(this.smsOptionForceTrans2ASCII)
 		.append(prefix).append("SMSOptionParseValidityPeriod:").append(this.parseValidityPeriod)
+		.append(prefix).append("SMSOptionValidityPeriodNoRange:").append(this.validityPeriodNoRange)
 		.append(prefix).append("SMSOptionTransferValidityPeriod:").append(this.transferValidityPeriod)
 		.append(prefix).append("SMSOptionIsMaxASCIILenTo7BitFlag:").append(this.smsOptionIsMaxASCIILenTo7BitFlag)
 		.append(prefix).append("SMSOptionIsSupportHttps:").append(this.smsOptionIsSupportHttps)
@@ -3138,6 +3143,10 @@ public abstract class A2PCustomerInfo {
 
 	public void setParseValidityPeriod(boolean parseValidityPeriod) {
 		this.parseValidityPeriod = parseValidityPeriod;
+	}
+
+	public boolean isValidityPeriodNoRange() {
+		return validityPeriodNoRange;
 	}
 
 	public boolean isTransferValidityPeriod() {

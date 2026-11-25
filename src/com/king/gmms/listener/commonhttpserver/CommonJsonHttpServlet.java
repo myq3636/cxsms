@@ -223,7 +223,7 @@ public class CommonJsonHttpServlet extends AbstractHttpServer {
 						if (dateString!=null) {
 							try {
 								Date date = TimeFormatter.parse(dateString);
-								gmmsMessage.setExpiryDate(date);
+								gmmsMessage.setExpiryDate(GmmsUtility.getInstance().getGMTTime(date)); // kept as GMT wall clock
 							} catch (Exception e) {
 								log.warn("the Validity {} format is error.", dateString);
 							}

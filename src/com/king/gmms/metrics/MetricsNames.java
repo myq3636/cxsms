@@ -252,6 +252,10 @@ public class MetricsNames {
         if (type == null) {
             return "other";
         }
+        // the short names themselves (the HTTP Client passes them): they all went to "other" before
+        if ("dr".equals(type) || "dr_resp".equals(type) || "submit_resp".equals(type) || "submit".equals(type)) {
+            return type;
+        }
         if (GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(type)
                 || GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(type)) {
             return "submit";

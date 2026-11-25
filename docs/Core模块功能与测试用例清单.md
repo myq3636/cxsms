@@ -171,7 +171,7 @@ SMPP/HTTP 协议、bind 鉴权、入向限流和计费扣费在 Server；真正�
 | CK-16 | P1 | `SMSOptionSupportIncomingAntiSpam`、`SMSOptionSupportOutgoingAntiSpam`、`antiSpam.cfg` | 命中入向、出向关键字 | 不外发，回失败 DR（10700）；干净内容正常 | 已覆盖 | CoreContentIT |
 | CK-17 | P2 | `MaxServiceTypeID=3` | service type id 为 5、3 | 5 校验失败，回失败 DR（10500）；3 正常 | 已覆盖 | CoreContentIT |
 | CK-18 | P1 | 消息没带有效期 | 提交 MT | 用客户 `ExpireTime`（**单位是小时**）；没配用全局默认 | 已覆盖 | CoreContentIT |
-| CK-19 | P1 | `SMSOptionParseValidityPeriod` | 有效期在允许范围内、超范围 | 范围内采用；超范围用默认值。解析在 Server 的协议层（`Smpp.java`），不在 Core，要放到 Server 用例里测 | 待补 |  |
+| CK-19 | P1 | `SMSOptionParseValidityPeriod` | 绝对时间（+8、+5:30、-5）、相对时间、超范围、不带、格式错误；没开选项 | 范围内采用（按 GMT 墙上时间保存）；其他用客户 `ExpireTime`。解析在 Server 的协议层（`Smpp.java`）。**2026-11-26 修复**：之前推后时区偏移（+8 时区 8 小时），超范围也采用 | 已覆盖 | ServerValidityIT |
 | CK-20 | P1 | 消息带定时时间（`ScheduleDeliveryTime`） | 未到、已过定时时间 | 未到：写 SMQ，不外发；已过：直接外发。SMQ 到时间后由 MQM 取出这一步要查 DB，没有测 | 部分 | CoreContentIT |
 
 ### 三、路由
@@ -195,6 +195,8 @@ SMPP/HTTP 协议、bind 鉴权、入向限流和计费扣费在 Server；真正�
 | RT-15 | P0 | 路由变更 | `RELOAD_ROUTING` | 只加载改动的文件；单文件错误不影响其他 | 已覆盖 | IncrementalRoutingIT |
 | RT-16 | P1 | `Role=blackhole` 通道；`BlackholePercent=100` | 提交 MT | 进黑洞，不外发，写 CDR 后走延迟 DR；按比例黑洞时，计时窗口内第一条仍外发 | 已覆盖 | CoreRouteIT |
 | RT-17 | P2 | `BlackholePercent=30` | 发 1000 条 | 比例接近配置；RMQ 重试的消息不再进黑洞 | 待补 |  |
+| RT-18 | P0 | 供应商 `Role: Vendor`，它的路由指向客户 | 供应商发来 MO（Client 以 Submit 写入 `stream:mt:pending`） | 以 Delivery 写到客户的 Server 流 `stream:dr:pending:{客户}`，打 `[MO-TO-SERVER]`，写 IN_SUBMIT CDR；路由到另一个供应商时仍是 MT；客户发给客户的不是 MO。**2026-11-26 修复**：之前 MO 写进了 `stream:mt:routed:{客户}`，发不出去 | 已覆盖 | CoreMoIT |
+| RT-19 | P0 | 客户已 bind | Server 流里的 MO | 发 deliver_sm（esm_class 0，源地址是手机号，目的地址是客户号码）；客户回 resp 后给 Core 成功的 submit_resp；客户不回或没有 bind 时给失败的 submit_resp | 已覆盖 | ServerMoIT |
 
 ### 四、外发与内容处理
 

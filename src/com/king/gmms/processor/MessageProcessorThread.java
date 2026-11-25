@@ -708,6 +708,11 @@ public class MessageProcessorThread extends RunnableMsgTask{
 			}
 
 			msg.setTransaction(null);
+			if (isMoToCustomer(msg, server)) {
+				// a vendor's MO (the Client writes it as a Submit) routed to a customer: to the customer's Server as a
+				// deliver_sm, not to stream:mt:routed (the Client's, nobody sends from there to a customer)
+				msg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY);
+			}
 			if (GmmsMessage.MSG_TYPE_DELIVERY.equalsIgnoreCase(msg.getMessageType())) {
 				String moduleName = moduleManager.selectChannel(queue);
 				msg.setDeliveryChannel(moduleName);
@@ -765,6 +770,19 @@ public class MessageProcessorThread extends RunnableMsgTask{
 		
 	}
 	
+	/**
+	 * an MO: from a vendor (cm Role: Vendor, as the CDR marks it with ServiceTypeID 3) to a customer (not a vendor).
+	 * A vendor's message routed on to another vendor stays an MT.
+	 */
+	private boolean isMoToCustomer(GmmsMessage msg, A2PCustomerInfo rCustomer) {
+		if (!GmmsMessage.MSG_TYPE_SUBMIT.equalsIgnoreCase(msg.getMessageType())
+				|| rCustomer == null || "Vendor".equalsIgnoreCase(rCustomer.getRole())) {
+			return false;
+		}
+		A2PCustomerInfo oCustomer = ctm.getCustomerBySSID(msg.getOSsID());
+		return oCustomer != null && "Vendor".equalsIgnoreCase(oCustomer.getRole());
+	}
+
 	private void transactTemplateFailedMessageAndReturnSuccessDR(GmmsMessage message) {
 		try {
 			message.setActionCode(-1);
