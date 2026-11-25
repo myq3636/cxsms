@@ -11,8 +11,9 @@ def case(**k):
     CASES.append(k)
 
 SSID["rtvm1"] = 9921
-# log4j2 of this machine: metrics.logger of every module -> one log/metricsname.log, rolled by every JVM on its own
-# (lines lost): the case gives each module its own log/{module}_metrics.log (conf.sed/log4j2.xml, put back afterwards)
+# log4j2 of this machine until 2026-11-25: metrics.logger of every module -> one log/metricsname.log, rolled by every JVM
+# on its own (lines lost): the case gives each module its own log/{module}_metrics.log (conf.sed/log4j2.xml, put back
+# afterwards); since then the machine's log4j2 has a file a module (docs/性能监控指标说明.md 8.3) and the sed changes nothing
 L4SED = r"""s#\${sys:a2p_home}log/metricsname\.log#${sys:a2p_home}log/$${sys:module}_metrics.log#
 s#/metrics\.log\.%d#/$${sys:module}_metrics.log.%d#
 """
