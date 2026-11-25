@@ -20,4 +20,4 @@
 # 保留 tools 目录（独立部署的工具，如 gw-metrics-agent），构建产物不提交
 !/tools/
 !/tools/**
-/tools/*/build/
+/tools/*/target/

@@ -10,13 +10,44 @@
 
 > 状态：设计稿，代码未写。
 
+## 技术栈
+
+- JDK 17。
+- Spring Boot 3.5.x，不启 Web 服务器。
+- Maven：用工程自带的 Maven Wrapper `mvnw`，不用另外装 Maven。
+
+## 构建
+
+```
+cd tools/gw-metrics-agent
+./mvnw -B package            # 产物 target/gw-metrics-agent-<版本>.jar；测试随 package 一起跑
+```
+
+构建机需要 JDK 17，并能访问 Maven 中央仓库或内部镜像。
+
+## 部署与启动
+
+```
+/usr/local/a2p/metrics-agent/
+  gw-metrics-agent.jar
+  config/application.yml       # 由 deploy/application.yml.sample 改名，至少填 agent.portal.url
+  agent.secret                 # 600
+```
+
+```
+cd /usr/local/a2p/metrics-agent
+java -jar gw-metrics-agent.jar --check     # 检查配置、文件和 Portal 连通性
+systemctl enable --now gw-metrics-agent    # 常驻运行（deploy/gw-metrics-agent.service）
+```
+
+其他命令（`--dry-run`、`--replay`、`--reset`）见设计文档 Decisions 8。
+
 ## 目录
 
 | 路径 | 内容 |
 | --- | --- |
-| `src/com/king/tools/metricsagent/` | 源码（JDK 17） |
-| `build.sh` | 构建：`javac --release 17`，把 `../../jar/fastjson-1.2.47.jar` 放进同一个 jar，产物为 `build/gw-metrics-agent.jar`（不提交） |
-| `agent.properties.sample` | 配置样例 |
-| `gw-metrics-agent.service` | systemd 服务文件 |
-
-测试是 `regression/test/com/king/tools/metricsagent/*Check.java`，登记在 `regression/suites.txt` 里，属于 `unit` 套件，随全量回归一起跑。
+| `pom.xml`、`mvnw`、`.mvn/wrapper/` | Maven 工程和 Maven Wrapper |
+| `src/main/java/com/king/tools/metricsagent/` | 源码 |
+| `src/main/resources/application.yml` | 默认配置 |
+| `src/test/java/com/king/tools/metricsagent/` | 测试（JUnit 5），也作为 `mvn` 类型的套件进全量回归 |
+| `deploy/` | `application.yml.sample`、`gw-metrics-agent.service` |
