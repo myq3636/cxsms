@@ -197,6 +197,7 @@ SMPP/HTTP 协议、bind 鉴权、入向限流和计费扣费在 Server；真正�
 | RT-17 | P2 | `BlackholePercent=30` | 发 1000 条 | 比例接近配置；RMQ 重试的消息不再进黑洞 | 待补 |  |
 | RT-18 | P0 | 供应商 `Role: Vendor`，它的路由指向客户 | 供应商发来 MO（Client 以 Submit 写入 `stream:mt:pending`） | 以 Delivery 写到客户的 Server 流 `stream:dr:pending:{客户}`，打 `[MO-TO-SERVER]`，写 IN_SUBMIT CDR；路由到另一个供应商时仍是 MT；客户发给客户的不是 MO。**2026-11-26 修复**：之前 MO 写进了 `stream:mt:routed:{客户}`，发不出去 | 已覆盖 | CoreMoIT |
 | RT-19 | P0 | 客户已 bind | Server 流里的 MO | 发 deliver_sm（esm_class 0，源地址是手机号，目的地址是客户号码）；客户回 resp 后给 Core 成功的 submit_resp；客户不回或没有 bind 时给失败的 submit_resp | 已覆盖 | ServerMoIT |
+| RT-20 | P0 | 通道接收后不回 DR；MySQL 的 WDQ | 到期、未到期、过了最终有效期；客户配或没配 `SmsOptionIsSupportExpiredDR`；之后通道的 DR 才到；剩余不到 10 分钟时通道接收 | 到期后回 EXPIRED（10200）或 DELIVERED，未到期、过了最终有效期的不回；客户有效期短于通道最终有效期时行标成 Retrieved（12000），通道 DR 晚到只写 CDR、删行，不再发给客户；剩余不到 10 分钟的直接进 WDQ，到期前不回。**2026-11-26 修复**：之前 WDQ 按真实时间判断，+8 时区提前 8 小时（5 分钟有效期在第一次扫描时就回 DR） | 已覆盖 | WdqExpiryIT（手动，需 `WDQ_DB_*`） |
 
 ### 四、外发与内容处理
 
@@ -403,7 +404,7 @@ P0 已经没有待补用例。接下来建议：
 
 ### 9.3 这批用例的限制
 
-- `getResendMessage`、`getExpiredMessage` 的 SELECT 没有在真实数据库上执行，RMQ 到期筛选和 MQM 过期任务没有验证（RE-06 记为部分）。
+- `getResendMessage` 的 SELECT、RMQ 的到期筛选没有在真实数据库上执行（RE-06 记为部分）。WDQ 的过期任务（`getExpiredMessage("WDQ")`）2026-11-26 起在测试服务器的 MySQL 上验证（WdqExpiryIT，手动套件，见 RT-20）。
 - 这批都用立即失败的结果驱动，没有验证真实等待到 `NextRetryTime`，也没有经过真实 Client 外发。
 - `A2PSec*RoutingRelay` 第二路由（RT-11）和 DR 改道（RE-11）还没有用例。
 

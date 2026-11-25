@@ -70,6 +70,10 @@ public class DrBatchLookupIT extends ItSupport {
 		jedis.del(DrLookup.key("OUT-DB1B"), DrLookup.key("OUT-DB1C"));
 
 		// ---- 3.2 the deletes of a batch: recorded, one Lua at the end ----
+		// its script once before (a first EVALSHA on this Redis is NOSCRIPT, then EVAL: two calls counted)
+		DrLookup.beginBatch(Arrays.asList("OUT-DBW"));
+		DrLookup.delete("OUT-DBW");
+		DrLookup.endBatch();
 		GmmsMessage o2 = AttemptBatchIT.original("DB2A"), o3 = AttemptBatchIT.original("DB2B");
 		DrLookup.put(o2, "OUT-DB2A", "A", 600);
 		DrLookup.put(o3, "OUT-DB2B", "B", 600);

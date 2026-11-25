@@ -1,2 +1,3 @@
 MemSoakIT it.MemSoakIT it-multiclient
 BindSpreadIT it.BindSpreadIT it-mod:MultiSmppClient1
+WdqExpiryIT it.WdqExpiryIT it

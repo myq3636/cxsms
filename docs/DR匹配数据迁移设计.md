@@ -70,6 +70,8 @@
 改为每个 report 主上一个 ZSET `drl:due`：
 - 写入时 `ZADD drl:due {写入时间} {key}`；最终 DR 后和匹配数据一起删（`DEL` + `ZREM`）。
 - MQM 对每个 report 主执行一个"认领"Lua：`ZRANGEBYSCORE drl:due -inf {now - 30 分钟} LIMIT 0 {批}`，同时取出这批 key 的值并移出 ZSET（和延时 DR 的批量认领同样的写法），然后写进 WDQ。
+
+**2026-11-26 改为按“该搬的时间”排：** 新写入的放在 `drl:due:at`，分数是 `min(dateIn + Redis_RetrieveRedisInterval, 过期时间)`（毫秒，真实时间），MQM 认领 `ZRANGEBYSCORE drl:due:at -inf {now}`；匹配数据的 TTL 至少比这个时间晚 10 分钟。原因：只按 dateIn 排时，过期时间早于 `Redis_RetrieveRedisInterval` 的 MT（测试服务器配 1000 分钟，短有效期的都是）在 Redis 里先过期被删，MQM 认领时读到空值就跳过，没进 WDQ，通道不回 DR 时客户永远收不到过期 DR。升级前写入的仍在 `drl:due`（分数 dateIn），照旧按 `now - Redis_RetrieveRedisInterval` 认领直到清空，删除时两个 ZSET 都 `ZREM`，所以升级时不会把 Redis 里已有的一次搬进 WDQ。性能：写入仍是一次 Lua，删除的 Lua 多一个 `ZREM`，MQM 每个主每轮多一次（空的）认领；只有短有效期的 MT 会比原来早进 WDQ（它们原来根本进不了）。DrLookupIT DL-07～10。
 - 只有 MQM 主节点做这件事（沿用 fence）。写 WDQ 失败的，按原分数放回 ZSET。
 
 ### 3.4 早到 DR

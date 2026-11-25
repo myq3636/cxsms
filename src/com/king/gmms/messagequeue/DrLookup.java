@@ -19,8 +19,11 @@ import com.king.redis.SerializableHandler;
 /**
  * The DR lookup: the original of an MT by its outMsgId (written when its submit result is processed, read when the
  * channel's DR comes, deleted after the final DR), on the report Redis (docs/DR匹配数据迁移设计.md): drl:{outMsgId} on the
- * report MQ master of the outMsgId (ShardHash), with its member in the ZSET drl:due of that master (score: dateIn ms);
- * the MQM job moves the ones older than Redis_RetrieveRedisInterval to WDQ through drl:due:processing ({@link #moveDue}).
+ * report MQ master of the outMsgId (ShardHash), with its member in the ZSET drl:due:at of that master (score: when it
+ * goes to WDQ, ms: dateIn + Redis_RetrieveRedisInterval, or the expiry when that is earlier, so that WDQ gives the
+ * expired DR of a short validity in time); the MQM job moves the due ones to WDQ through drl:due:processing
+ * ({@link #moveDue}). drl:due (score: dateIn) holds the lookups written before 2026-11-26, moved as before (older than
+ * Redis_RetrieveRedisInterval) until it is empty.
  * The DR scheduling data of a Core shard (early DR queue with the lookup, delayed DRs, fake DR timeouts) is on the report
  * master of the shard ({@link #placeOf}).
  * <p>A batch of vendor DRs (CoreInboundDrBatchLookup, docs/DR消费减少Redis往返设计.md 3.1, 3.2): {@link #beginBatch} reads
@@ -30,23 +33,28 @@ import com.king.redis.SerializableHandler;
 public final class DrLookup {
 	private static final SystemLogger log = SystemLogger.getSystemLogger(DrLookup.class);
 	public static final String PREFIX = "drl:";
-	public static final String DUE_ZSET = "drl:due";
+	/** score: when the lookup goes to WDQ (ms) */
+	public static final String DUE_ZSET = "drl:due:at";
+	/** score: dateIn (ms); the lookups written before 2026-11-26 */
+	public static final String LEGACY_DUE_ZSET = "drl:due";
 	public static final String PROCESSING_ZSET = "drl:due:processing";
+	/** a lookup lives this much longer than its time to go to WDQ, so the MQM job still reads it then */
+	static final int TTL_MARGIN_SECONDS = 600;
 
-	// KEYS[1]=entry KEYS[2]=due ARGV: 1 value, 2 ttl seconds, 3 score (dateIn ms)
+	// KEYS[1]=entry KEYS[2]=due ARGV: 1 value, 2 ttl seconds, 3 score (when it goes to WDQ, ms)
 	private static final String PUT_LUA =
 			"redis.call('SETEX', KEYS[1], tonumber(ARGV[2]), ARGV[1]) "
 			+ "redis.call('ZADD', KEYS[2], ARGV[3], KEYS[1]) "
 			+ "return 1";
 
-	// KEYS[1]=entry KEYS[2]=due. Not the member of processing: one claimed by the MQM job meanwhile is moved with the
-	// value it already read either way, and its RESOLVE removes the member
+	// KEYS[1]=entry KEYS[2]=due KEYS[3]=legacy due. Not the member of processing: one claimed by the MQM job meanwhile is
+	// moved with the value it already read either way, and its RESOLVE removes the member
 	private static final String DELETE_LUA =
-			"redis.call('DEL', KEYS[1]) redis.call('ZREM', KEYS[2], KEYS[1]) return 1";
+			"redis.call('DEL', KEYS[1]) redis.call('ZREM', KEYS[2], KEYS[1]) redis.call('ZREM', KEYS[3], KEYS[1]) return 1";
 
-	// KEYS[1]=due ARGV = entries: DELETE_LUA for each
+	// KEYS[1]=due KEYS[2]=legacy due ARGV = entries: DELETE_LUA for each
 	private static final String DELETE_BATCH_LUA =
-			"for i = 1, #ARGV do redis.call('DEL', ARGV[i]) redis.call('ZREM', KEYS[1], ARGV[i]) end return #ARGV";
+			"for i = 1, #ARGV do redis.call('DEL', ARGV[i]) redis.call('ZREM', KEYS[1], ARGV[i]) redis.call('ZREM', KEYS[2], ARGV[i]) end return #ARGV";
 
 	/** the batch of vendor DRs being processed on this thread */
 	private static final ThreadLocal<BatchScope> batch = new ThreadLocal<BatchScope>();
@@ -111,14 +119,31 @@ public final class DrLookup {
 	 */
 	public static boolean put(GmmsMessage msg, String outMsgId, String value, int ttlSeconds) {
 		try {
-			long score = msg.getDateIn() != null ? msg.getDateIn().getTime() : System.currentTimeMillis();
+			long now = System.currentTimeMillis();
+			long due = dueAt(msg, now);
+			int ttl = (int) Math.max(ttlSeconds, (due - now) / 1000 + TTL_MARGIN_SECONDS);
 			master(outMsgId).evalScript(PUT_LUA, Arrays.asList(key(outMsgId), DUE_ZSET),
-					Arrays.asList(value, String.valueOf(ttlSeconds), String.valueOf(score)));
+					Arrays.asList(value, String.valueOf(ttl), String.valueOf(due)));
 			return true;
 		} catch (Exception e) {
 			log.warn(msg, "DR lookup not written to the report Redis. out={}", outMsgId, e);
 			return false;
 		}
+	}
+
+	/**
+	 * when the lookup of an MT goes to WDQ (ms): Redis_RetrieveRedisInterval after its dateIn, or at its expiry when that is
+	 * earlier (the expiry date is GMT wall clock: the time zone offset added back), so that the WDQ job gives its
+	 * expired DR in time; without the move a lookup whose expiry came first expired in Redis and got no DR at all
+	 */
+	static long dueAt(GmmsMessage msg, long now) {
+		long dateIn = msg.getDateIn() != null ? msg.getDateIn().getTime() : now;
+		long due = dateIn + intProperty("Redis_RetrieveRedisInterval", 30) * 60000L;
+		if (msg.getExpiryDate() != null) {
+			long expiry = msg.getExpiryDate().getTime() + (now - GmmsUtility.getInstance().getGMTTime().getTime());
+			due = Math.min(due, expiry);
+		}
+		return due;
 	}
 
 	/**
@@ -165,7 +190,7 @@ public final class DrLookup {
 			}
 			return;
 		}
-		master(outMsgId).evalScript(DELETE_LUA, Arrays.asList(key(outMsgId), DUE_ZSET), new ArrayList<String>());
+		master(outMsgId).evalScript(DELETE_LUA, Arrays.asList(key(outMsgId), DUE_ZSET, LEGACY_DUE_ZSET), new ArrayList<String>());
 	}
 
 	/** CoreInboundDrBatchLookup: the lookups of a batch of vendor DRs read and deleted together */
@@ -213,7 +238,7 @@ public final class DrLookup {
 		}
 		for (Map.Entry<RedisConnection, List<String>> e : b.deletes.entrySet()) {
 			try {
-				e.getKey().evalScript(DELETE_BATCH_LUA, Arrays.asList(DUE_ZSET), e.getValue());
+				e.getKey().evalScript(DELETE_BATCH_LUA, Arrays.asList(DUE_ZSET, LEGACY_DUE_ZSET), e.getValue());
 			} catch (Exception ex) {
 				log.warn("DR lookups of a batch not deleted from the report Redis, they expire by their TTL. keys={}",
 						e.getValue().size(), ex);
@@ -252,9 +277,10 @@ public final class DrLookup {
 	}
 
 	/**
-	 * MQM job: on every report master the lookups whose dateIn is older
-	 * than olderThanMs, at most DrLookup.MoveBatchSize a master and round, go to WDQ and are deleted from Redis; one not
-	 * stored stays claimed and is due again after DrLookup.ClaimTimeoutMs. Returns how many were moved.
+	 * MQM job: on every report master the due lookups (drl:due:at: their time has come; drl:due, written before
+	 * 2026-11-26: dateIn older than olderThanMs), at most DrLookup.MoveBatchSize a master, set and round, go to WDQ and
+	 * are deleted from Redis; one not stored stays claimed and is due again after DrLookup.ClaimTimeoutMs. Returns how
+	 * many were moved.
 	 */
 	public static int moveDue(long olderThanMs, Mover mover) {
 		RedisConnection[] masters = RedisClient.getInstance().mqs(false);
@@ -265,8 +291,10 @@ public final class DrLookup {
 		for (RedisConnection r : masters) {
 			try {
 				r.evalScript(REQUEUE_LUA, Arrays.asList(PROCESSING_ZSET, DUE_ZSET), Arrays.asList(String.valueOf(now), String.valueOf(batch)));
-				List<?> claimed = (List<?>) r.evalScript(CLAIM_LUA, Arrays.asList(DUE_ZSET, PROCESSING_ZSET),
-						Arrays.asList(String.valueOf(now - olderThanMs), String.valueOf(claimEnd), String.valueOf(batch)));
+				List<Object> claimed = new ArrayList<Object>((List<?>) r.evalScript(CLAIM_LUA, Arrays.asList(DUE_ZSET, PROCESSING_ZSET),
+						Arrays.asList(String.valueOf(now), String.valueOf(claimEnd), String.valueOf(batch))));
+				claimed.addAll((List<?>) r.evalScript(CLAIM_LUA, Arrays.asList(LEGACY_DUE_ZSET, PROCESSING_ZSET),
+						Arrays.asList(String.valueOf(now - olderThanMs), String.valueOf(claimEnd), String.valueOf(batch))));
 				List<String> done = new ArrayList<String>();
 				for (int i = 0; i + 1 < claimed.size(); i += 2) {
 					String entry = String.valueOf(claimed.get(i));
