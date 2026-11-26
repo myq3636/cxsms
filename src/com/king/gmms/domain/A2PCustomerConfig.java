@@ -499,8 +499,7 @@ public class A2PCustomerConfig implements Comparable{
 								continue;
 							}
 							String attribute = line.substring(0, sepIndex).trim();
-							String value = line.substring(sepIndex + 1, line.length())
-									.trim();
+							String value = line.substring(sepIndex + 1, line.length());
 							if(value == null || value.equalsIgnoreCase("")){
 								continue;
 							}							

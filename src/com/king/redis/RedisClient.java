@@ -340,6 +340,7 @@ public class RedisClient {
 	// C-9 MQM fencing：单调递增任期纪元号。
 	public static final String MQM_FENCE_KEY = "mqm:active:fence";
 	public Long incrFence() { return stateRedis != null ? stateRedis.incrString(MQM_FENCE_KEY) : null; }
+	
 	public long getFence() {
 		try {
 			String s = (stateRedis != null) ? stateRedis.getString(MQM_FENCE_KEY) : null;

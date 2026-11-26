@@ -463,7 +463,11 @@ public class MessageProcessorThread extends RunnableMsgTask{
 									String key = entry.getKey();
 									String value = entry.getValue();
 									if (value != null) {
-										contentString = contentString.replaceAll(key, value.trim());
+										if(key.equalsIgnoreCase(value)) {
+											contentString = gmmsUtility.replacePhonePattern(contentString, key, recipitAddr);
+										}else {
+											contentString = contentString.replaceAll(key, value.trim());
+										}
 										if (!contentString.equals(message.getTextContent())) {
 											message.setTextContent(contentString);
 											message.setMessageSize(contentString.getBytes(message.getContentType()).length);	

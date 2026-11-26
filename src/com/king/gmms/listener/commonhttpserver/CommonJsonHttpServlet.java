@@ -45,6 +45,7 @@ import com.king.gmms.protocol.commonhttp.JxSubMessage;
 import com.king.gmms.protocol.commonhttp.JxToken;
 import com.king.gmms.protocol.smpp.pdu.Response;
 import com.king.gmms.protocol.smpp.util.TimeFormatter;
+import com.king.gmms.recipientlimit.RecipientSendCountLimitService;
 import com.king.gmms.threadpool.ExecutorServiceManager;
 import com.king.gmms.throttle.ThrottlingControl;
 import com.king.message.gmms.GmmsMessage;
@@ -232,18 +233,11 @@ public class CommonJsonHttpServlet extends AbstractHttpServer {
 						
 						
 						//charge recipient 重复次数
-						int count = sInfo.getSmsOptionRecipientMaxSendCountIn24H();
-						if(count>0){
-							String key = "Duplicate:"+gmmsMessage.getRecipientAddress();
-							long currentCount = redis.incrString(key);
-							if(currentCount == 1){
-								redis.setExpire(key, 24*60*60);
-							}
-							if(currentCount>count){
-								msg.setStatus(GmmsStatus.RECIPIENT_ERROR_BY_MAX_COUNT);
-								this.response(msg, request, response);
-								return;
-							}
+						if (RecipientSendCountLimitService.isRejected(sInfo,
+								gmmsMessage.getRecipientAddress(), redis)) {
+							msg.setStatus(GmmsStatus.RECIPIENT_ERROR_BY_MAX_COUNT);
+							this.response(msg, request, response);
+							return;
 						}
 						
 						//charge the msg

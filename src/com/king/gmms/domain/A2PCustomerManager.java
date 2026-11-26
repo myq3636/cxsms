@@ -1321,8 +1321,13 @@ public class A2PCustomerManager implements LifecycleListener {
 		if (prefixList == null || prefixList.isEmpty() ) {
 			//NonPA deny all for SG
 			if("NonPA".equalsIgnoreCase(cst.getCustomerTypeBySender()) 
-        			&& recipientAddress.startsWith("65")){
-				return false;
+        			&& (recipientAddress.startsWith("65")||cst.isNeedCheckCustomerTypeCountry(recipientAddress))){
+				if(cst.isNeedCheckCustomerTypeCountry(recipientAddress)&& recipientAddress.startsWith("353")) {
+					//TODO 爱尔兰replace Likely Scam
+					return doSenderRPCheck(-1, msg);
+				}else {
+					return false;
+				}				
 			}
 			//ssid = -1, default whitelist check
 			if(ssid!=-1){				
@@ -1387,7 +1392,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			//ssid = -1, default whitelist check
 			if(ssid!=-1){
 				if("NonPA".equalsIgnoreCase(cst.getCustomerTypeBySender()) 
-	        			&& recipientAddress.startsWith("65")){
+	        			&& (recipientAddress.startsWith("65")||cst.isNeedCheckCustomerTypeCountry(recipientAddress))){
 					return false;
 				}
 				return doSenderWhitelistCheck(-1, msg);
@@ -1395,6 +1400,71 @@ public class A2PCustomerManager implements LifecycleListener {
 		}				
 		return result;										
 	}
+	
+	//NonPA Ireland will RP sender
+		public boolean doSenderRPCheck(int ssid, GmmsMessage msg) {
+			boolean result = true;
+			String recipientAddress = msg.getRecipientAddress();
+			if (recipientAddress.startsWith("+")) {
+				recipientAddress = recipientAddress.substring(1);
+			}
+			if (recipientAddress.startsWith("00")) {
+				recipientAddress = recipientAddress.substring(2);
+			}
+			if (recipientAddress.startsWith("0")) {
+				recipientAddress = recipientAddress.substring(1);
+			}
+			A2PCustomerInfo cst = getCustomerBySSID(msg.getOSsID());
+			
+			List<Pattern> prefixList = ssidPrefixListPatternForSenderWLList.get(""+ssid);			
+			for (Pattern pattern : prefixList) {
+				if (pattern != null) {
+					Matcher matcher = null;
+					matcher = pattern.matcher(recipientAddress);
+					while (matcher != null && matcher.find()) {
+						String key = matcher.group();
+						if (recipientAddress.startsWith(key)) {
+							result = false;						
+							//replace check
+							if(doSenderWhitelistRegex(msg, ""+ssid, key, "rp", msg.getSenderAddress())){
+								return true;
+							}else{
+								result = false;
+							}
+						}else{
+							continue;
+						}
+						/*else {
+							if(doSenderWhitelistCheckSecondMatch(msg, pattern, key, recipientAddress, ""+ssid, "wl")){
+								return true;
+							}
+						}	*/											
+					}
+				}
+			}
+			//sender not in whitelist, do all country whitelist check.
+			List<Pattern> senderRegex = prefixWLListPatternForSenderWLList.get(ssid+"_rp_all");
+			if (senderRegex != null) {
+				result = false;
+				if(doSenderWhitelistRegex(msg, ""+ssid, "all", "rp", msg.getSenderAddress())){
+					return true;
+				}			
+			}
+			//ssid 级别的whitelist 存在，但是没有在whitelist 和替换策略里面，返回失败。
+			if(result == false){
+				return false;
+			}else{
+				//ssid = -1, default whitelist check
+				if(ssid!=-1){
+					if("NonPA".equalsIgnoreCase(cst.getCustomerTypeBySender()) 
+		        			&& (recipientAddress.startsWith("65")||cst.isNeedCheckCustomerTypeCountry(recipientAddress))){
+						return false;
+					}
+					return doSenderWhitelistCheck(-1, msg);
+				}
+			}				
+			return result;										
+		}
 	
 	public boolean doVendorSenderWhitelistCheck(int ssid, GmmsMessage msg) {
 		boolean result = true;
@@ -6186,7 +6256,7 @@ public class A2PCustomerManager implements LifecycleListener {
 			return null;
 		}
 		code = code.replace("-", "");
-		
+		code = code.replace(" ", "");
 		//add random value
 		text = getRandomValue(text);
 		//add replace short code logic

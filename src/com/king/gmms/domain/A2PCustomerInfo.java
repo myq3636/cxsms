@@ -21,11 +21,13 @@ import com.google.common.collect.Range;
 import com.google.common.collect.TreeRangeMap;
 import com.king.framework.SystemLogger;
 import com.king.gmms.GmmsUtility;
+import com.king.gmms.PhoneUtils;
 import com.king.gmms.RetryPolicyInfo;
 import com.king.gmms.RetryPolicyManager;
 import com.king.gmms.connectionpool.BindMode;
 import com.king.gmms.connectionpool.ssl.SslConfiguration;
 import com.king.gmms.protocol.smpp.version.SMPPVersion;
+import com.king.gmms.recipientlimit.RecipientDailyLimitPolicy;
 import com.king.gmms.util.SystemConstants;
 import com.king.gmms.util.prefix.AddPrefix;
 import com.king.gmms.util.prefix.Prefix;
@@ -381,6 +383,7 @@ public abstract class A2PCustomerInfo {
 	//disable system auto adjust the throttling number
 	protected boolean smsOptionDisableAutoAdjustThrottlingNumFlag = false; 	
 	protected List<Integer> smsOptionSubmitRetryCode= new ArrayList<Integer>();
+    //protected List<String> smsOptionDRNoCreditCode= new ArrayList<String>();
     protected List<Integer> smsOptionDRRerouteCode= new ArrayList<Integer>();
 	protected List<Integer> smsOptionSubmitErrorCodesForFakeDR= new ArrayList<Integer>();
 	protected List<String> smsOptionRejectRegions= new ArrayList<String>();
@@ -403,9 +406,13 @@ public abstract class A2PCustomerInfo {
 	
 	private int maxRerouteDRDelayTimeInSec=0;
 	private int smsOptionRecipientMaxSendCountIn24H=0;
+	private String smsOptionRecipientMaxSendCountIn24HByCountry;
+	private RecipientDailyLimitPolicy recipientDailyLimitPolicy =
+			RecipientDailyLimitPolicy.parse(0, null);
 	
 	//VIP,NonPA,PA for SG
 	private String customerTypeBySender;
+	protected ArrayList<String> customerTypeCountry = new ArrayList<String>();
 	
 	private SslConfiguration sslConfiguration = null;
 	
@@ -1710,6 +1717,22 @@ public abstract class A2PCustomerInfo {
 			enumIR21RoutingRecPrefix.clear();
 		}
 		
+		String tempSMSOptionCustomerTypeCountry = cfg.getString("SMSOptionCustomerTypeCountry");
+		if (tempSMSOptionCustomerTypeCountry != null
+				&& !"".equals(tempSMSOptionCustomerTypeCountry)) {
+			try {
+				String [] tempSmsOptionIR21SubmitRetryCodeList = tempSMSOptionCustomerTypeCountry.split(",");
+				for (int i = 0; i < tempSmsOptionIR21SubmitRetryCodeList.length; i++) {
+					customerTypeCountry.add(tempSmsOptionIR21SubmitRetryCodeList[i]);
+				}
+			} catch (Exception e) {
+				log.error("load SMSOptionCustomerTypeCountry parameter failed, SMSOptionCustomerTypeCountry={}", tempSMSOptionCustomerTypeCountry);
+			}
+		}else {
+			customerTypeCountry.clear();
+		}
+		
+		
 		this.enumIR21RoutingURL = cfg.getString("SMSOptionEnumIR21RoutingURL", "");
 		this.enumRoutingURL = cfg.getString("SMSOptionEnumRoutingURL", "");
 		this.templatecoderegex = cfg.getString("SMSOptionTemplateCodeRegex", "");
@@ -2445,6 +2468,18 @@ public abstract class A2PCustomerInfo {
         blackholeTimerInSec = cfg.getInt("BlackholeTimerInSec", 60);
         maxRerouteDRDelayTimeInSec = cfg.getInt("RerouteDRDelayTimeInSec", 1800);
         smsOptionRecipientMaxSendCountIn24H = cfg.getInt("SMSOptionRecipientMaxSendCountIn24H", 0);
+        String countryLimitConfig = cfg.getString("SMSOptionRecipientMaxSendCountIn24HByCountry");
+        try {
+			recipientDailyLimitPolicy = RecipientDailyLimitPolicy.parse(
+					smsOptionRecipientMaxSendCountIn24H, countryLimitConfig);
+			smsOptionRecipientMaxSendCountIn24HByCountry = countryLimitConfig;
+		} catch (IllegalArgumentException e) {
+			log.error("load SMSOptionRecipientMaxSendCountIn24HByCountry parameter failed, value={}",
+					countryLimitConfig, e);
+			recipientDailyLimitPolicy = RecipientDailyLimitPolicy.parse(
+					smsOptionRecipientMaxSendCountIn24H, null);
+			smsOptionRecipientMaxSendCountIn24HByCountry = null;
+		}
         customerTypeBySender = cfg.getString("CustomerTypeBySender", "NonPA");
         
 		A2PCustomerMultiValue duplicateMsgServiceTypeIDList = cfg.parseMultiValue("DuplicateMessageServiceTypeIDList");
@@ -3566,9 +3601,25 @@ public abstract class A2PCustomerInfo {
 		return smsOptionRecipientMaxSendCountIn24H;
 	}
 
+	public int getSmsOptionRecipientMaxSendCountIn24H(String recipientAddress) {
+		if (recipientDailyLimitPolicy.getCountryLimitCount() == 0) {
+			return smsOptionRecipientMaxSendCountIn24H;
+		}
+		String country = null;
+		try {
+			country = PhoneUtils.getRegionCodeByPhone(recipientAddress);
+		} catch (RuntimeException e) {
+			log.warn("resolve recipient country failed, use default daily limit", e);
+		}
+		return recipientDailyLimitPolicy.getLimit(country);
+	}
+
 	public void setSmsOptionRecipientMaxSendCountIn24H(
 			int smsOptionRecipientMaxSendCountIn24H) {
 		this.smsOptionRecipientMaxSendCountIn24H = smsOptionRecipientMaxSendCountIn24H;
+		this.recipientDailyLimitPolicy = RecipientDailyLimitPolicy.parse(
+				smsOptionRecipientMaxSendCountIn24H,
+				smsOptionRecipientMaxSendCountIn24HByCountry);
 	}
 
 	public Cache<Object, Object> getReicipientCache() {
@@ -3884,8 +3935,30 @@ public abstract class A2PCustomerInfo {
 	public void setSubmitNotPaidStatusMapping(Map<Integer, Integer> submitNotPaidStatusMapping) {
 		this.submitNotPaidStatusMapping = submitNotPaidStatusMapping;
 	}
+
+	public ArrayList<String> getCustomerTypeCountry() {
+		return customerTypeCountry;
+	}
+
+	public void setCustomerTypeCountry(ArrayList<String> customerTypeCountry) {
+		this.customerTypeCountry = customerTypeCountry;
+	}
 	
-	
+	public boolean isNeedCheckCustomerTypeCountry(String recipient) {
+		boolean result = true;
+		if (customerTypeCountry != null && !customerTypeCountry.isEmpty()) {
+			for (String prefix : customerTypeCountry) {
+				if("all".equalsIgnoreCase(prefix)) {
+					return result;
+				}
+				if(recipient.startsWith(prefix)){
+					return result;
+				}
+			}
+			return false;
+		}
+		return false;
+	}
 	
 	
 }

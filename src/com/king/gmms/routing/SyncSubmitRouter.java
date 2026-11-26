@@ -8,6 +8,7 @@ import com.king.gmms.processor.CsmStoreResult;
 import com.king.gmms.processor.DBBackupHandler;
 import com.king.gmms.processor.MessageProcessorThread;
 import com.king.gmms.processor.RedisCsmReassembler;
+import com.king.gmms.recipientlimit.RecipientSendCountLimitService;
 import com.king.gmms.routing.nmg.NMGUtility;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
@@ -182,18 +183,15 @@ public class SyncSubmitRouter {
      */
     private boolean applyDuplicateCheck(GmmsMessage assembled) {
         try {
-            A2PCustomerInfo oCustomer = gmmsUtility.getCustomerManager().getCustomerBySSID(assembled.getOSsID());
-            int count = oCustomer == null ? 0 : oCustomer.getSmsOptionRecipientMaxSendCountIn24H();
-            if (count > 0) {
-                String key = "Duplicate:" + assembled.getRecipientAddress();
-                long currentCount = com.king.gmms.messagequeue.StreamAttempt.countOnce(key, 24 * 60 * 60);
-                if (currentCount > count) {
-                    assembled.setStatus(GmmsStatus.RECIPIENT_ERROR_BY_MAX_COUNT);
-                    assembled.setRSsID(gmmsUtility.getBlackholeSsid());
-                    gmmsUtility.getMessageStoreManager().handleOutSubmitResForInnack(assembled);
-                    return false;
-                }
-            }
+            A2PCustomerInfo oCustomer = gmmsUtility.getCustomerManager().getCustomerBySSID(assembled.getOSsID());            
+            if (RecipientSendCountLimitService.isRejected(oCustomer,
+            		assembled.getRecipientAddress(),
+					GmmsUtility.getInstance().getRedisClient())) {
+            	assembled.setStatus(GmmsStatus.RECIPIENT_ERROR_BY_MAX_COUNT);
+            	assembled.setRSsID(GmmsUtility.getInstance().getBlackholeSsid());
+				gmmsUtility.getMessageStoreManager().handleOutSubmitResForInnack(assembled);
+                return false;
+			}
         } catch (Exception e) {
             log.warn(assembled, "applyDuplicateCheck failed (proceed): {}", e.getMessage());
         }

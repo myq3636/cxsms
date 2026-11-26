@@ -8,6 +8,7 @@ import com.king.gmms.domain.A2PCustomerManager;
 import com.king.gmms.domain.ModuleManager;
 import com.king.gmms.ha.TransactionURI;
 import com.king.gmms.milter.ContentScanMilter;
+import com.king.gmms.recipientlimit.RecipientSendCountLimitService;
 import com.king.gmms.routing.DeliveryRouterHandler;
 import com.king.message.gmms.GmmsMessage;
 import com.king.message.gmms.GmmsStatus;
@@ -154,7 +155,8 @@ public class CoreMessageProcessor {
         	if (recipientAddress.startsWith("00")) recipientAddress = recipientAddress.substring(2);
         	if (recipientAddress.startsWith("0")) recipientAddress = recipientAddress.substring(1);
 
-        	if ("NonPA".equalsIgnoreCase(cst.getCustomerTypeBySender()) && recipientAddress.startsWith("65")) {
+        	if ("NonPA".equalsIgnoreCase(cst.getCustomerTypeBySender()) 
+        			&& (recipientAddress.startsWith("65")||cst.isNeedCheckCustomerTypeCountry(recipientAddress))) {
         		if (ctm.doSenderBlacklistCheck(-1, msg)) {
         			gmmsUtility.getCdrManager().logInSubmit(msg);
         			if (msg.getDeliveryReport()) { msg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT); msg.setRSsID(msg.getOSsID()); msg.setStatus(GmmsStatus.REJECTED_SDBL); msgStoreManager.sendDRMessageForServerReject(msg); }
@@ -579,16 +581,12 @@ public class CoreMessageProcessor {
 									}
 								}
 								//charge recipient 重复次数
-								int count = oCustomer.getSmsOptionRecipientMaxSendCountIn24H();
-								if(count>0){
-									String key = "Duplicate:"+msg.getRecipientAddress();
-									long currentCount = com.king.gmms.messagequeue.StreamAttempt.countOnce(key, 24 * 60 * 60);
-									if(currentCount>count){
-										msg.setStatus(GmmsStatus.RECIPIENT_ERROR_BY_MAX_COUNT);
-										msg.setRSsID(gmmsUtility.getBlackholeSsid());
-										msgStoreManager.handleOutSubmitResForInnack(msg);
-										return true;
-									}
+								if (RecipientSendCountLimitService.isRejected(oCustomer,
+										msg.getRecipientAddress(), redis)) {
+									msg.setStatus(GmmsStatus.RECIPIENT_ERROR_BY_MAX_COUNT);
+									msg.setRSsID(gmmsUtility.getBlackholeSsid());
+									msgStoreManager.handleOutSubmitResForInnack(msg);
+									return true;
 								}
 								
 								

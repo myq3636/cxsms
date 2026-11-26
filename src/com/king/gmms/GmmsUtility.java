@@ -2677,6 +2677,59 @@ public class GmmsUtility {
 	public void setVendorRoutingFile(String vendorRoutingFile) {
 		this.vendorRoutingFile = vendorRoutingFile;
 	}
+	
+	
+	/**
+     * 主替换方法 - 使用正则表达式匹配和替换
+     * @param input 输入字符串，可能包含 {@phone#N} 模式
+     * @param phoneNumber 完整的手机号码
+     * @return 替换后的字符串
+     */
+    public static String replacePhonePattern(String content, String input, String phoneNumber) {
+        if (input == null || phoneNumber == null) {
+            return input;
+        }
+        
+        // 正则表达式匹配 {@phone#N} 模式，其中N是1-11的数字,"\\{@phone#(\\d{1,2})\\}"
+        Pattern pattern = Pattern.compile(input);
+        Matcher matcher = pattern.matcher(content);       
+        StringBuffer result = new StringBuffer();
+        
+        while (matcher.find()) {
+            // 提取N值（要截取的后几位）
+            int n = Integer.parseInt(matcher.group(1));
+            
+            // 确保N值在有效范围内（1-18）
+            if (n < 1 || n > 18) {
+                throw new IllegalArgumentException("N值必须在1-18之间: " + n);
+            }
+            
+            // 获取手机号码的后N位[6](@ref)[8](@ref)
+            String replacement = getLastNDigits(phoneNumber, n);
+            
+            // 进行替换
+            matcher.appendReplacement(result, replacement);
+        }
+        
+        matcher.appendTail(result);
+        return result.toString();
+    }
+    
+    /**
+     * 获取手机号码的后N位
+     * @param phoneNumber 清理后的手机号码（纯数字）
+     * @param n 要获取的后几位
+     * @return 手机号码的后N位
+     */
+    private static String getLastNDigits(String phoneNumber, int n) {
+        if (phoneNumber.length() < n) {
+            // 如果手机号码长度不足N位，返回整个号码
+            return phoneNumber;
+        }
+        
+        // 使用substring方法获取后N位[6](@ref)[8](@ref)
+        return phoneNumber.substring(phoneNumber.length() - n);
+    }
 
 	public static void main(String[] args) {
 		Random random = new Random();
