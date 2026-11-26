@@ -162,6 +162,12 @@ public class A2PCustomerManager implements LifecycleListener {
 	private Map<String, List<Pattern>> prefixWLListPatternForSenderWLList = new ConcurrentHashMap<String, List<Pattern>>();
 	//<wlsender:action(wl;rp):cc, sender>
 	private Map<String, String> prefixWLSenderMappingForSenderWL = new ConcurrentHashMap<String, String>();
+	// the same lists as sets for the per-message check (a sender is in a list when it is equal to an entry, special
+	// characters and spaces included): a lookup instead of scanning alternations of 50 entries
+	//<ssid_cc, senders>
+	private volatile Map<String, Set<String>> senderBlackSets = new HashMap<String, Set<String>>();
+	//<ssid_action(wl;rp)_cc, wlsender:action:cc -> rp sender (x for wl)>; ssid -1 for every customer
+	private volatile Map<String, Map<String, String>> senderWhiteSets = new HashMap<String, Map<String, String>>();
 	
 	//<ssid,cc>
 	private Map<String, List<Pattern>> ssidPrefixListPatternForContentBlackList = new ConcurrentHashMap<String, List<Pattern>>();
@@ -462,6 +468,7 @@ public class A2PCustomerManager implements LifecycleListener {
 				if(ssidSenderConfigMap!=null && !ssidSenderConfigMap.isEmpty()){
 					Map<String, List<Pattern>> tempssidPrefixListPatternForSenderBlackList = new ConcurrentHashMap<String, List<Pattern>>();
 					Map<String, List<Pattern>> tempprefixBlackListPatternForSenderBlackList = new ConcurrentHashMap<String, List<Pattern>>();
+					Map<String, Set<String>> tempSenderBlackSets = new HashMap<String, Set<String>>();
 					for(Map.Entry<String, Map<String, List<String>>> entry: ssidSenderConfigMap.entrySet()){
 						String ssid = entry.getKey();
 						Map<String, List<String>> ccSenders = entry.getValue();
@@ -484,6 +491,7 @@ public class A2PCustomerManager implements LifecycleListener {
 									List<Pattern>  regexs  = new ArrayList<Pattern>();
 									constructSenderListPattern(senders, regexs);
 									tempprefixBlackListPatternForSenderBlackList.put(ssid+"_"+cc, regexs);
+									tempSenderBlackSets.put(ssid+"_"+cc, new HashSet<String>(senders));
 								}
 								ccSet.add(cc);
 							}
@@ -509,6 +517,7 @@ public class A2PCustomerManager implements LifecycleListener {
 					temp.clear();
 					temp = this.prefixBlackListPatternForSenderBlackList;
 					this.prefixBlackListPatternForSenderBlackList = tempprefixBlackListPatternForSenderBlackList;
+					this.senderBlackSets = tempSenderBlackSets;
 					temp.clear();
 
 					if(!isInit){
@@ -1176,29 +1185,15 @@ public class A2PCustomerManager implements LifecycleListener {
 	
 	private boolean doSenderBlacklistRegex(GmmsMessage msg, String ssid, String cc, String sender) {
 		log.trace(msg, "do login doSenderBlacklistRegex methon {}, {}, {}", ssid, cc, sender);
-		List<Pattern> senderRegex = prefixBlackListPatternForSenderBlackList.get(ssid+"_"+cc);
-		if (senderRegex == null) {
+		Set<String> senders = senderBlackSets.get(ssid+"_"+cc);
+		if (senders == null) {
 			return false;			
 		}
-		//sender = sender.replaceAll(" ", "");
-		for (Pattern pattern : senderRegex) {
-			if (pattern != null) {
-				Matcher matcher = null;
-				matcher = pattern.matcher(sender);
-				while (matcher != null && matcher.find()) {
-					String key = matcher.group();
-					log.trace(msg, "match key:{}", key);
-					if (sender.equals(key)) {
-						log.info(msg,"msg is policy deny by sender blacklist is:{}", key);
-						return true;
-					}else{
-						continue;
-					}/*else {
-						return doSenderBlacklistRegexSecondMatch(msg, pattern, key, sender);
-					}	*/											
-				}
-			}
-		}	
+		// equal to an entry, as written (special characters and spaces included)
+		if (sender != null && senders.contains(sender)) {
+			log.info(msg,"msg is policy deny by sender blacklist is:{}", sender);
+			return true;
+		}
 		if(!"all".equalsIgnoreCase(sender)){
 			return doSenderBlacklistRegex(msg, ssid, cc, "all");
 		}
@@ -1226,33 +1221,21 @@ public class A2PCustomerManager implements LifecycleListener {
 	}
 	
 	private boolean doSenderWhitelistRegex(GmmsMessage msg, String ssid, String cc, String action, String sender) {
-		List<Pattern> senderRegex = prefixWLListPatternForSenderWLList.get(ssid+"_"+action+"_"+cc);
-		if (senderRegex == null) {
+		Map<String, String> senders = senderWhiteSets.get(ssid+"_"+action+"_"+cc);
+		if (senders == null) {
 			return false;			
 		}
-		for (Pattern pattern : senderRegex) {
-			if (pattern != null) {
-				Matcher matcher = null;
-				matcher = pattern.matcher(sender+":"+action+":"+cc);
-				while (matcher != null && matcher.find()) {
-					String key = matcher.group();
-					log.trace(msg, "do login doSenderWhitelistRegex methon {},", sender+":"+action+":"+cc);
-					
-					if (key.equals(sender+":"+action+":"+cc)) {
-						if(action.equalsIgnoreCase("rp")){
-							//msg.setOriginalSenderAddr(msg.getSenderAddress());
-							msg.setSenderAddress(prefixWLSenderMappingForSenderWL.get(key));
-						}
-						return true;
-					}else{
-						continue;
-					}
-					/*else {
-						return doSenderWhitelistRegexSecondMatch(msg, pattern, key, sender, cc, action);
-					}*/												
-				}
+		// equal to an entry, as written (special characters and spaces included); rp: the replacement of this list's
+		// customer (ssid; -1: every customer's)
+		String key = sender+":"+action+":"+cc;
+		String rpSender = senders.get(key);
+		if (rpSender != null) {
+			log.trace(msg, "do login doSenderWhitelistRegex methon {},", key);
+			if(action.equalsIgnoreCase("rp")){
+				msg.setSenderAddress(rpSender);
 			}
-		}				
+			return true;
+		}
 		if(!"all".equalsIgnoreCase(sender)){
 			return doSenderWhitelistRegex(msg, ssid, cc, action, "all");
 		}
@@ -1319,15 +1302,9 @@ public class A2PCustomerManager implements LifecycleListener {
 		
 		List<Pattern> prefixList = ssidPrefixListPatternForSenderWLList.get(""+ssid);
 		if (prefixList == null || prefixList.isEmpty() ) {
-			//NonPA deny all for SG
-			if("NonPA".equalsIgnoreCase(cst.getCustomerTypeBySender()) 
-        			&& (recipientAddress.startsWith("65")||cst.isNeedCheckCustomerTypeCountry(recipientAddress))){
-				if(cst.isNeedCheckCustomerTypeCountry(recipientAddress)&& recipientAddress.startsWith("353")) {
-					//TODO 爱尔兰replace Likely Scam
-					return doSenderRPCheck(-1, msg);
-				}else {
-					return false;
-				}				
+			//NonPA (SMSOptionCustomerTypeCountry, 65 by default): only the customer's own whitelist, none: rejected
+			if(cst.isNonPaSenderCheck(recipientAddress)){
+				return false;
 			}
 			//ssid = -1, default whitelist check
 			if(ssid!=-1){				
@@ -1391,8 +1368,7 @@ public class A2PCustomerManager implements LifecycleListener {
 		}else{
 			//ssid = -1, default whitelist check
 			if(ssid!=-1){
-				if("NonPA".equalsIgnoreCase(cst.getCustomerTypeBySender()) 
-	        			&& (recipientAddress.startsWith("65")||cst.isNeedCheckCustomerTypeCountry(recipientAddress))){
+				if(cst.isNonPaSenderCheck(recipientAddress)){
 					return false;
 				}
 				return doSenderWhitelistCheck(-1, msg);
@@ -1400,71 +1376,6 @@ public class A2PCustomerManager implements LifecycleListener {
 		}				
 		return result;										
 	}
-	
-	//NonPA Ireland will RP sender
-		public boolean doSenderRPCheck(int ssid, GmmsMessage msg) {
-			boolean result = true;
-			String recipientAddress = msg.getRecipientAddress();
-			if (recipientAddress.startsWith("+")) {
-				recipientAddress = recipientAddress.substring(1);
-			}
-			if (recipientAddress.startsWith("00")) {
-				recipientAddress = recipientAddress.substring(2);
-			}
-			if (recipientAddress.startsWith("0")) {
-				recipientAddress = recipientAddress.substring(1);
-			}
-			A2PCustomerInfo cst = getCustomerBySSID(msg.getOSsID());
-			
-			List<Pattern> prefixList = ssidPrefixListPatternForSenderWLList.get(""+ssid);			
-			for (Pattern pattern : prefixList) {
-				if (pattern != null) {
-					Matcher matcher = null;
-					matcher = pattern.matcher(recipientAddress);
-					while (matcher != null && matcher.find()) {
-						String key = matcher.group();
-						if (recipientAddress.startsWith(key)) {
-							result = false;						
-							//replace check
-							if(doSenderWhitelistRegex(msg, ""+ssid, key, "rp", msg.getSenderAddress())){
-								return true;
-							}else{
-								result = false;
-							}
-						}else{
-							continue;
-						}
-						/*else {
-							if(doSenderWhitelistCheckSecondMatch(msg, pattern, key, recipientAddress, ""+ssid, "wl")){
-								return true;
-							}
-						}	*/											
-					}
-				}
-			}
-			//sender not in whitelist, do all country whitelist check.
-			List<Pattern> senderRegex = prefixWLListPatternForSenderWLList.get(ssid+"_rp_all");
-			if (senderRegex != null) {
-				result = false;
-				if(doSenderWhitelistRegex(msg, ""+ssid, "all", "rp", msg.getSenderAddress())){
-					return true;
-				}			
-			}
-			//ssid 级别的whitelist 存在，但是没有在whitelist 和替换策略里面，返回失败。
-			if(result == false){
-				return false;
-			}else{
-				//ssid = -1, default whitelist check
-				if(ssid!=-1){
-					if("NonPA".equalsIgnoreCase(cst.getCustomerTypeBySender()) 
-		        			&& (recipientAddress.startsWith("65")||cst.isNeedCheckCustomerTypeCountry(recipientAddress))){
-						return false;
-					}
-					return doSenderWhitelistCheck(-1, msg);
-				}
-			}				
-			return result;										
-		}
 	
 	public boolean doVendorSenderWhitelistCheck(int ssid, GmmsMessage msg) {
 		boolean result = true;
@@ -1563,6 +1474,7 @@ public class A2PCustomerManager implements LifecycleListener {
 					Map<String, List<Pattern>> tempprefixWLListPatternForSenderWLList = new ConcurrentHashMap<String, List<Pattern>>();
 					//<wlsender:action(wl;rp):cc, sender>
 					Map<String, String> tempprefixWLSenderMappingForSenderWL = new ConcurrentHashMap<String, String>();
+					Map<String, Map<String, String>> tempSenderWhiteSets = new HashMap<String, Map<String, String>>();
 					for(Map.Entry<String, Map<String, List<String>>> entry: ssidSenderConfigMap.entrySet()){
 						String ssid = entry.getKey();
 						//<wl_cc,<sender:wl:cc:rpsender>>
@@ -1575,12 +1487,15 @@ public class A2PCustomerManager implements LifecycleListener {
 								List<String> senders = ccsenderEntry.getValue();
 								if(senders!=null && !senders.isEmpty()){
 									List<String> senderWLList = new ArrayList<String> ();
+									Map<String, String> whiteSet = new HashMap<String, String>();
 									for(String senderEntry: senders){
 										String senderKye = senderEntry.substring(0, senderEntry.lastIndexOf(":"));
 										String rpValue = senderEntry.substring(senderEntry.lastIndexOf(":")+1);
 										senderWLList.add(senderKye);
 										tempprefixWLSenderMappingForSenderWL.put(senderKye, rpValue);
+										whiteSet.put(senderKye, rpValue);   // this customer's (ssid) replacement, not another's
 									}
+									tempSenderWhiteSets.put(ssid+"_"+cc, whiteSet);
 									Collections.sort(senderWLList,  new Comparator (){
 										 @Override
 									     public int compare(Object o1, Object o2)
@@ -1623,6 +1538,7 @@ public class A2PCustomerManager implements LifecycleListener {
 					temp.clear();
 					Map<String, String> temp1 = this.prefixWLSenderMappingForSenderWL;
 					this.prefixWLSenderMappingForSenderWL = tempprefixWLSenderMappingForSenderWL;
+					this.senderWhiteSets = tempSenderWhiteSets;
 					temp1.clear();
 					if(!isInit){
 						String moduleName = System.getProperty("module");

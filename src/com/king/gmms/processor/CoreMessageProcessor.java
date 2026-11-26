@@ -155,8 +155,8 @@ public class CoreMessageProcessor {
         	if (recipientAddress.startsWith("00")) recipientAddress = recipientAddress.substring(2);
         	if (recipientAddress.startsWith("0")) recipientAddress = recipientAddress.substring(1);
 
-        	if ("NonPA".equalsIgnoreCase(cst.getCustomerTypeBySender()) 
-        			&& (recipientAddress.startsWith("65")||cst.isNeedCheckCustomerTypeCountry(recipientAddress))) {
+        	// NonPA for the recipient's country (SMSOptionCustomerTypeCountry, 65 by default): only the global blacklist
+        	if (cst.isNonPaSenderCheck(recipientAddress)) {
         		if (ctm.doSenderBlacklistCheck(-1, msg)) {
         			gmmsUtility.getCdrManager().logInSubmit(msg);
         			if (msg.getDeliveryReport()) { msg.setMessageType(GmmsMessage.MSG_TYPE_DELIVERY_REPORT); msg.setRSsID(msg.getOSsID()); msg.setStatus(GmmsStatus.REJECTED_SDBL); msgStoreManager.sendDRMessageForServerReject(msg); }

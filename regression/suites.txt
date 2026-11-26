@@ -74,6 +74,7 @@ MessageIdIT it.MessageIdIT it-multi
 CoreCheckIT it.CoreCheckIT it
 CoreRouteIT it.CoreRouteIT it
 CoreMoIT it.CoreMoIT it
+FunctionSyncIT it.FunctionSyncIT it
 CoreRetryIT it.CoreRetryIT it-multi
 CoreDrBizIT it.CoreDrBizIT it-multi
 FakeDrIT it.FakeDrIT it

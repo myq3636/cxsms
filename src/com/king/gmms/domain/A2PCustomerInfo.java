@@ -1717,20 +1717,17 @@ public abstract class A2PCustomerInfo {
 			enumIR21RoutingRecPrefix.clear();
 		}
 		
+		// the recipient prefixes CustomerTypeBySender applies to (all: every country); none: 65 as before
 		String tempSMSOptionCustomerTypeCountry = cfg.getString("SMSOptionCustomerTypeCountry");
-		if (tempSMSOptionCustomerTypeCountry != null
-				&& !"".equals(tempSMSOptionCustomerTypeCountry)) {
-			try {
-				String [] tempSmsOptionIR21SubmitRetryCodeList = tempSMSOptionCustomerTypeCountry.split(",");
-				for (int i = 0; i < tempSmsOptionIR21SubmitRetryCodeList.length; i++) {
-					customerTypeCountry.add(tempSmsOptionIR21SubmitRetryCodeList[i]);
+		ArrayList<String> typeCountries = new ArrayList<String>();
+		if (tempSMSOptionCustomerTypeCountry != null) {
+			for (String prefix : tempSMSOptionCustomerTypeCountry.split(",")) {
+				if (prefix.trim().length() > 0) {
+					typeCountries.add(prefix.trim());
 				}
-			} catch (Exception e) {
-				log.error("load SMSOptionCustomerTypeCountry parameter failed, SMSOptionCustomerTypeCountry={}", tempSMSOptionCustomerTypeCountry);
 			}
-		}else {
-			customerTypeCountry.clear();
 		}
+		customerTypeCountry = typeCountries;
 		
 		
 		this.enumIR21RoutingURL = cfg.getString("SMSOptionEnumIR21RoutingURL", "");
@@ -3944,20 +3941,39 @@ public abstract class A2PCustomerInfo {
 		this.customerTypeCountry = customerTypeCountry;
 	}
 	
-	public boolean isNeedCheckCustomerTypeCountry(String recipient) {
-		boolean result = true;
-		if (customerTypeCountry != null && !customerTypeCountry.isEmpty()) {
-			for (String prefix : customerTypeCountry) {
-				if("all".equalsIgnoreCase(prefix)) {
-					return result;
-				}
-				if(recipient.startsWith(prefix)){
-					return result;
-				}
-			}
+	/**
+	 * CustomerTypeBySender applies to this recipient (without +, 00, 0): its prefix is in SMSOptionCustomerTypeCountry
+	 * (all: every one); without the option only 65 (Singapore), as before
+	 */
+	public boolean isCustomerTypeCountry(String recipient) {
+		if (recipient == null) {
 			return false;
 		}
+		if (customerTypeCountry == null || customerTypeCountry.isEmpty()) {
+			return recipient.startsWith("65");
+		}
+		for (String prefix : customerTypeCountry) {
+			if ("all".equalsIgnoreCase(prefix) || recipient.startsWith(prefix)) {
+				return true;
+			}
+		}
 		return false;
+	}
+
+	/**
+	 * The strict NonPA sender check for this recipient (without +, 00, 0): only the global sender blacklist, only the
+	 * customer's own sender whitelist (wl, rp), rejected when not in it. For a country of SMSOptionCustomerTypeCountry
+	 * when the customer is NonPA; for Singapore (65) also when not listed there (a customer PA for Ireland only is
+	 * NonPA for Singapore). VIP is checked before (no sender check at all).
+	 */
+	public boolean isNonPaSenderCheck(String recipient) {
+		if (recipient == null) {
+			return false;
+		}
+		if (isCustomerTypeCountry(recipient)) {
+			return "NonPA".equalsIgnoreCase(getCustomerTypeBySender());
+		}
+		return recipient.startsWith("65");
 	}
 	
 	
