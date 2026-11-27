@@ -17,6 +17,8 @@ public final class RuleIndex implements RuleRouter.Tables {
 	private final Map<String, RuleSet> byName = new HashMap<String, RuleSet>();
 	/** ReplaceContentByTemplate: "ossid:rssid" or "ossid:rssid:sender" -> prefix -> template id (as before) */
 	private final Map<String, Map<String, String>> templates = new HashMap<String, Map<String, String>>();
+	/** ReplaceContentByTemplate of the rule that routed the MT: "ossid:rssid:{layer}:{level}:{group}:{priority}" -> rule */
+	private final Map<String, RoutingRule> templateRules = new HashMap<String, RoutingRule>();
 
 	public RuleIndex(Collection<RuleSet> sets) {
 		for (RuleSet s : sets) {
@@ -32,6 +34,9 @@ public final class RuleIndex implements RuleRouter.Tables {
 					continue;
 				}
 				for (int rssid : r.relay.ssids) {
+					for (String group : r.keys) {
+						templateRules.put(s.ssid + ":" + rssid + ":" + r.layer.label + ":" + r.level + ":" + group + ":" + r.priority, r);
+					}
 					List<String> keys = new java.util.ArrayList<String>();
 					if (r.templateSenders.isEmpty()) {
 						keys.add(s.ssid + ":" + rssid);
@@ -53,6 +58,26 @@ public final class RuleIndex implements RuleRouter.Tables {
 				}
 			}
 		}
+	}
+
+	/**
+	 * The template of the rule that routed the MT (its routingRule "{main layer}|{layer}:{level}:{group}:{priority}"), null
+	 * when that rule has none or (IsReplaceTemplateBySender) not for this sender.
+	 */
+	public String templateOfRule(int ossid, int rssid, String routingRule, String sender) {
+		RoutingRule r = templateRules.get(ruleKey(ossid, rssid, routingRule));
+		if (r == null) {
+			return null;
+		}
+		if (!r.templateSenders.isEmpty() && (sender == null || !r.templateSenders.contains(sender))) {
+			return null;
+		}
+		return r.templateId;
+	}
+
+	private static String ruleKey(int ossid, int rssid, String routingRule) {
+		int bar = routingRule.indexOf('|');
+		return ossid + ":" + rssid + ":" + (bar < 0 ? routingRule : routingRule.substring(bar + 1));
 	}
 
 	/** the content templates of the rules with ReplaceContentByTemplate */

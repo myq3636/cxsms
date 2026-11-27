@@ -421,6 +421,9 @@ public class SerializableHandler {
 						    	case 63:
 						    		msg.setRoutingRule(parameters[63]);
 									break;
+						    	case 64:
+						    		msg.setInSenderAddress(parameters[64].replaceAll(repl_sep, separator));
+									break;
 								default:
 									if(log.isInfoEnabled()){
 										log.info("Unknown parameter in Redis String, and Redis String is {}", message);
@@ -927,6 +930,8 @@ public class SerializableHandler {
 					// 62, 63: the routing level and the rule of the channel (docs/路由重构设计.md 2.4, 2.6)
 					sb.append(separator).append(msg.getRoutingLevel() > 0 ? String.valueOf(msg.getRoutingLevel()) : "");
 					sb.append(separator).append(msg.getRoutingRule() == null ? "" : msg.getRoutingRule().replaceAll(separator, repl_sep));
+					// 64: the sender before the channel's steps (docs/通道外发处理恢复与替换缺陷修复设计.md 3.3)
+					sb.append(separator).append(msg.getInSenderAddress() == null ? "" : msg.getInSenderAddress().replaceAll(separator, repl_sep));
 					
 				} catch (Exception e) {
 					if(log.isInfoEnabled()){

@@ -92,6 +92,7 @@ public class DirectInDRDispatchService {
 			}
 
 			restoreOriginalAddress(message);
+			ChannelOutboundPreparer.prefix4DrMo(message, server);
 			String moduleName = resolveModuleName(message, server);
 			String streamKey = null;
 			boolean produced;

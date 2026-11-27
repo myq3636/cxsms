@@ -2069,6 +2069,7 @@ public class MessageStoreManager extends DataManager {
 					.append("`VendorErrorCode` varchar(64) default NULL,")
 					.append("`DrErrorCode` varchar(3) default NULL,")
 					.append("`RoutingLevel` tinyint default NULL,")
+					.append("`InSenderAddr` varchar(100) default NULL,")
 					.append("`O_Operator` int(11) default '-1',")
 					.append("`R_Operator` int(11) default '-1',")
 					.append("`Split` int(11) default '0',")
@@ -3576,6 +3577,7 @@ public class MessageStoreManager extends DataManager {
 		sb.append(",").append("ScheduleDeliveryTime=").append(formatMySqlDate(msg.getScheduleDeliveryTime()));
 		sb.append(drErrorSql(msg));
 		sb.append(routingLevelSql(msg));
+		sb.append(inSenderAddrSql(msg));
 		return sb.toString();
 	}
 
@@ -3709,6 +3711,87 @@ public class MessageStoreManager extends DataManager {
 		msg.setScheduleDeliveryTime(rs.getTimestamp("ScheduleDeliveryTime"));
 		readDrError(rs, msg);
 		readRoutingLevel(rs, msg);
+		readInSenderAddr(rs, msg);
+	}
+
+	// ---- InSenderAddr column (docs/sql/2026-11-27_in_sender_addr.sql, docs/通道外发处理恢复与替换缺陷修复设计.md 3.3) ----
+
+	/** null: not checked yet */
+	private static volatile Boolean inSenderAddrColumnFound = null;
+
+	/** GmmsConfig DB.InSenderAddrColumn: true / false, or auto (default): whether the DB has the column */
+	public boolean inSenderAddrColumn() {
+		String mode = gmmsUtility.getCommonProperty("DB.InSenderAddrColumn", "auto").trim();
+		if ("true".equalsIgnoreCase(mode)) {
+			return true;
+		}
+		if ("false".equalsIgnoreCase(mode)) {
+			return false;
+		}
+		Boolean found = inSenderAddrColumnFound;
+		if (found == null) {
+			found = detectInSenderAddrColumn();
+			inSenderAddrColumnFound = found;
+		}
+		return found;
+	}
+
+	/** checked again on the next use (RELOAD_ROUTING, after the SQL has been run) */
+	public static void recheckInSenderAddrColumn() {
+		inSenderAddrColumnFound = null;
+	}
+
+	private boolean detectInSenderAddrColumn() {
+		List<String> missing = new ArrayList<String>();
+		int seen = 0;
+		for (String table : DR_ERROR_TABLES) {
+			ResultSet rs = null;
+			try {
+				rs = doSelect("SELECT InSenderAddr FROM " + table + " WHERE 1=0");
+				seen++;
+			} catch (Exception e) {
+				String m = e.getMessage() == null ? "" : e.getMessage();
+				if (m.contains("Unknown column")) {
+					missing.add(table);
+					seen++;
+				}
+			} finally {
+				if (rs != null) {
+					try { rs.close(); } catch (Exception e) { }
+				}
+				super.closeSession();
+			}
+		}
+		if (seen == 0) {
+			log.warn("[MT-CHANNEL] DB not reachable: InSenderAddr column not used (DB.InSenderAddrColumn=auto); checked again on RELOAD_ROUTING");
+			return false;
+		}
+		if (!missing.isEmpty()) {
+			log.error("[MT-CHANNEL] DB tables without InSenderAddr: {}. Not written: an MT retried from the DB takes the sender it was sent with "
+					+ "as the one before the channel's steps; run docs/sql/2026-11-27_in_sender_addr.sql, then RELOAD_ROUTING", missing);
+			return false;
+		}
+		log.info("[MT-CHANNEL] DB has the InSenderAddr column: written and read");
+		return true;
+	}
+
+	/** ", InSenderAddr='...'" when the DB has the column, else "" */
+	public String inSenderAddrSql(GmmsMessage msg) {
+		if (!inSenderAddrColumn()) {
+			return "";
+		}
+		return ", InSenderAddr=" + makeSqlStrReplace(msg.getInSenderAddress());
+	}
+
+	private void readInSenderAddr(ResultSet rs, GmmsMessage msg) {
+		if (!inSenderAddrColumn()) {
+			return;
+		}
+		try {
+			msg.setInSenderAddress(rs.getString("InSenderAddr"));   // NULL (written before the column): taken as the first send
+		} catch (SQLException e) {
+			log.debug(msg, "no InSenderAddr column in this result: {}", e.getMessage());
+		}
 	}
 
 	// ---- RoutingLevel column (docs/sql/2026-11-13_routing_level.sql, docs/路由重构设计.md 2.11) ----

@@ -1,6 +1,9 @@
 package com.king.gmms.processor;
 
+import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedList;
@@ -406,6 +409,11 @@ public class MessageProcessorThread extends RunnableMsgTask{
 	private void transactNewMessage(GmmsMessage message) {
 
 		A2PCustomerInfo server = ctm.getCustomerBySSID(message.getRSsID());
+		// a part cut from a message already done (retried from the DB): the steps below were done before it was split
+		boolean whole = message.getSplitStatus() <= 0;
+		if (whole) {
+			startFromCustomerText(message);
+		}
 
 		if (processor.antiBinary(message, server)) {
 			message.setStatus(GmmsStatus.BinaryFilter);
@@ -429,68 +437,15 @@ public class MessageProcessorThread extends RunnableMsgTask{
 			return;
 		}
 		
-		//do replace content
 		A2PCustomerInfo ocustomer = ctm.getCustomerBySSID(message.getOSsID());
-		Map<String, Map<String, String>> replaceContentMap = ocustomer.getSmsOptionReplaceContent();
-		if (replaceContentMap !=null && replaceContentMap.size()>0) {
-			try {
-				for (Map.Entry<String, Map<String, String>> entity: replaceContentMap.entrySet()) {
-					if (entity.getKey().equalsIgnoreCase("all")) {
-						String contentString = message.getTextContent();
-						Map<String, String> contentReplacementMap = entity.getValue();
-						if (contentReplacementMap != null && !contentReplacementMap.isEmpty()) {
-							for (Map.Entry<String, String> entry : contentReplacementMap.entrySet()) {
-								String key = entry.getKey();
-								String value = entry.getValue();
-								if (value != null) {
-									contentString = contentString.replaceAll(key, value.trim());
-									if (!contentString.equals(message.getTextContent())) {
-										message.setTextContent(contentString);
-										message.setMessageSize(contentString.getBytes(message.getContentType()).length);																		
-									}								
-								}
-							}
-						}
-					}else {
-						String recipitAddr = message.getRecipientAddress();
-						if (recipitAddr.startsWith("+")) {
-							recipitAddr = recipitAddr.substring(1);
-						}
-						if (recipitAddr.startsWith(entity.getKey())) {
-							String contentString = message.getTextContent();
-							Map<String, String> contentReplacementMap = entity.getValue();
-							if (contentReplacementMap != null && !contentReplacementMap.isEmpty()) {
-								for (Map.Entry<String, String> entry : contentReplacementMap.entrySet()) {
-									String key = entry.getKey();
-									String value = entry.getValue();
-									if (value != null) {
-										if(key.equalsIgnoreCase(value)) {
-											contentString = gmmsUtility.replacePhonePattern(contentString, key, recipitAddr);
-										}else {
-											contentString = contentString.replaceAll(key, value.trim());
-										}
-										if (!contentString.equals(message.getTextContent())) {
-											message.setTextContent(contentString);
-											message.setMessageSize(contentString.getBytes(message.getContentType()).length);	
-										}																		
-									}
-								}
-							}
-						}
-					}										
-				}
-			} catch (Exception e) {
-				log.error("do replace message content error", e);
-			}
-			
+		if (whole) {
+			//do replace content
+			replaceContent(message, ocustomer);
 		}
-		//copy textContent to inTextContent for backup routing
-		message.setInTextContent(message.getTextContent());
-		message.setInContentType(message.getContentType());
-		
+
 		//do replace Content by TemplateId in routing config	
 		try {
-			if(ctm.isContentReplace(message.getOSsID(), message.getRSsID(), message.getRecipientAddress(), message.getSenderAddress())){
+			if(whole && ctm.isContentReplace(message)){
 				String textContent = message.getTextContent();
 				String regex = ocustomer.getTemplatecoderegex();
 				String rex = "(?:[0-9-]){4,}";
@@ -507,8 +462,7 @@ public class MessageProcessorThread extends RunnableMsgTask{
 					  }else{
 						  textContentType = GmmsMessage.AIC_CS_UCS2;
 					  }				 
-					 List<String> replaceContent = ctm.getTemplateContent(m.group(), textContentType, message.getOSsID(),
-							 message.getRSsID(), message.getRecipientAddress(), message.getSenderAddress());
+					 List<String> replaceContent = ctm.getTemplateContent(m.group(), textContentType, message);
 					if (replaceContent!=null) {
 						String type = replaceContent.get(0);
 						String text = replaceContent.get(1);
@@ -553,7 +507,7 @@ public class MessageProcessorThread extends RunnableMsgTask{
 		
 		//do replace Content by TemplateId in vendor template config
 		try {
-			ctm.doVendorTemplateReplace(message.getRSsID(), message);
+			if (whole) ctm.doVendorTemplateReplace(message.getRSsID(), message);
 			if(GmmsStatus.TEMPLATE_FAIL.getCode() == message.getStatusCode()) {
 				if (ocustomer.isDrSuccForTemplateReplaceFailed()) {
 					transactTemplateFailedMessageAndReturnSuccessDR(message);
@@ -565,8 +519,10 @@ public class MessageProcessorThread extends RunnableMsgTask{
 		} catch (Exception e) {
 			log.error(message,"do vendor replace content template error", e);
 		}
-		
-		
+		// the channel's steps the old internal session did (docs/通道外发处理恢复与替换缺陷修复设计.md); not for an MO to a customer
+		if (whole && !isMoToCustomer(message, server) && !ChannelOutboundPreparer.prepare(message, server, msm)) {
+			return;
+		}
 		LinkedList<GmmsMessage> messageList = new LinkedList<GmmsMessage>();
 
 		try {
@@ -776,6 +732,116 @@ public class MessageProcessorThread extends RunnableMsgTask{
 	}
 	
 	/**
+	 * Every send to a channel starts from what the customer sent (after Core's own steps on it): the text before the
+	 * content replacement, the sender before the channel's steps, the recipient as it came in. A backup channel or a
+	 * retry from the DB does its replacements once, for its own channel (docs/通道外发处理恢复与替换缺陷修复设计.md 3.3, 4.2).
+	 */
+	private void startFromCustomerText(GmmsMessage message) {
+		String in = message.getInTextContent();
+		if (in == null || in.isEmpty()) {
+			message.setInTextContent(message.getTextContent());
+			message.setInContentType(message.getContentType());
+		} else if (!in.equals(message.getTextContent())) {
+			String type = message.getInContentType() == null ? message.getContentType() : message.getInContentType();
+			message.setTextContent(in);
+			message.setContentType(type);
+			if (GmmsMessage.AIC_CS_UCS2.equalsIgnoreCase(type)) {
+				message.setGsm7bit(false);
+			}
+			try {
+				message.setMessageSize(in.getBytes(type).length);
+			} catch (Exception e) {
+				message.setMessageSize(in.length());
+			}
+		}
+		String sender = message.getInSenderAddress();
+		if (sender == null || sender.isEmpty()) {
+			message.setInSenderAddress(message.getSenderAddress());
+		} else {
+			message.setSenderAddress(sender);
+		}
+		String recipient = message.getOriginalRecipientAddr();
+		if (recipient != null && !recipient.isEmpty()) {
+			message.setRecipientAddress(recipient);
+		}
+	}
+
+	/**
+	 * SMSOptionContentReplacementPolicy of the customer: prefix=all first, then the prefixes of the recipient from the
+	 * shortest to the longest, each group's rules in the order written. A rule that fails is skipped alone.
+	 */
+	private void replaceContent(GmmsMessage message, A2PCustomerInfo ocustomer) {
+		Map<String, Map<String, String>> groups = ocustomer == null ? null : ocustomer.getSmsOptionReplaceContent();
+		if (groups == null || groups.isEmpty()) {
+			return;
+		}
+		String recipient = message.getRecipientAddress();
+		if (recipient != null && recipient.startsWith("+")) {
+			recipient = recipient.substring(1);
+		}
+		List<String> prefixes = new ArrayList<String>();
+		for (String prefix : groups.keySet()) {
+			if (!"all".equalsIgnoreCase(prefix) && recipient != null && recipient.startsWith(prefix)) {
+				prefixes.add(prefix);
+			}
+		}
+		Collections.sort(prefixes, new Comparator<String>() {
+			public int compare(String a, String b) { return a.length() - b.length(); }
+		});
+		for (String prefix : groups.keySet()) {
+			if ("all".equalsIgnoreCase(prefix)) {
+				prefixes.add(0, prefix);
+			}
+		}
+		String text = message.getTextContent();
+		for (String prefix : prefixes) {
+			boolean all = "all".equalsIgnoreCase(prefix);
+			for (Map.Entry<String, String> rule : groups.get(prefix).entrySet()) {
+				String key = rule.getKey(), value = rule.getValue();
+				if (value == null) {
+					continue;
+				}
+				try {
+					if (!all && key.equals(value) && key.contains("@phone#")) {
+						text = gmmsUtility.replacePhonePattern(text, key, recipient);
+					} else {
+						Pattern pattern = Pattern.compile(key);
+						text = pattern.matcher(text).replaceAll(replacement(value.trim(), pattern.matcher("").groupCount()));
+					}
+				} catch (Exception e) {
+					log.warn(message, "[CONTENT-REPLACE] ossid={} prefix={} rule {}:{} skipped: {}", message.getOSsID(), prefix, key, value, e.toString());
+				}
+			}
+		}
+		if (!text.equals(message.getTextContent())) {
+			message.setTextContent(text);
+			try {
+				message.setMessageSize(text.getBytes(message.getContentType()).length);
+			} catch (Exception e) {
+				message.setMessageSize(text.length());
+			}
+		}
+	}
+
+	/**
+	 * a replacement for replaceAll: $n stays a reference to group n of the key when the key has that group, any other
+	 * $ and \ are literal ("price:$5" gives "$5")
+	 */
+	static String replacement(String value, int groups) {
+		StringBuilder b = new StringBuilder();
+		for (int i = 0; i < value.length(); i++) {
+			char c = value.charAt(i);
+			boolean reference = c == '$' && i + 1 < value.length() && Character.isDigit(value.charAt(i + 1))
+					&& value.charAt(i + 1) - '0' <= groups;
+			if (c == '\\' || (c == '$' && !reference)) {
+				b.append('\\');
+			}
+			b.append(c);
+		}
+		return b.toString();
+	}
+
+	/**
 	 * an MO: from a vendor (cm Role: Vendor, as the CDR marks it with ServiceTypeID 3) to a customer (not a vendor).
 	 * A vendor's message routed on to another vendor stays an MT.
 	 */
@@ -846,6 +912,7 @@ public class MessageProcessorThread extends RunnableMsgTask{
 				dbHandler.putMsg(message);
 				return;
 			}
+			ChannelOutboundPreparer.prefix4DrMo(message, server);
 //			if (message.inClientPull()) {
 //				queue = server.getReceiverQueue();
 //			} else {

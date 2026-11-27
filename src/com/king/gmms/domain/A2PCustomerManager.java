@@ -1655,6 +1655,7 @@ public class A2PCustomerManager implements LifecycleListener {
 				this.routingInfoMap = blocks;
 				this.ruleIndex = new com.king.gmms.routing.rule.RuleIndex(sets);
 				com.king.message.gmms.MessageStoreManager.recheckRoutingLevelColumn();
+				com.king.message.gmms.MessageStoreManager.recheckInSenderAddrColumn();
 				String moduleName = System.getProperty("module");
 				boolean routerModule = !startup && ModuleManager.getInstance().getRouterModules().contains(moduleName);
 				if (routerModule) {
@@ -6071,54 +6072,56 @@ public class A2PCustomerManager implements LifecycleListener {
 		}
 	}
 	
-	public boolean isContentReplace(int ossid, int rssid, String raddr, String sender) {
-		final Map<String, Map<String, String>> templates = ruleIndex.templates();
-		Map<String, String> contentTemplate = templates.get(ossid+":"+rssid+":"+sender);
-		if (contentTemplate == null || contentTemplate.isEmpty()) {
-			contentTemplate = templates.get(ossid+":"+rssid);
-			if (contentTemplate == null || contentTemplate.isEmpty()) {
-				return false;
-			}			
-		}		
-		for (String country : contentTemplate.keySet()) {
-			if (raddr.startsWith(country)) {
-				return true;
-			}
-		}
-		
-		return false;
-		
+	/** whether the MT gets a template of its routing rule (ReplaceContentByTemplate) on its way to its channel */
+	public boolean isContentReplace(GmmsMessage msg) {
+		return routingTemplateId(msg) != null;
 	}
-	
-	public List<String> getTemplateContent(String code, String contentType, int ossid, int rssid, String raddr, String sender) {
-		final Map<String, Map<String, String>> templates = ruleIndex.templates();
 
-		Map<String, String> contentTemplate = templates.get(ossid+":"+rssid+":"+sender);
-		if (contentTemplate == null || contentTemplate.isEmpty()) {
-			contentTemplate = templates.get(ossid+":"+rssid);
-			if (contentTemplate == null || contentTemplate.isEmpty()) {
-				log.error("contentTemplate not found by key {}", ossid+":"+rssid);
-				return null;
-			}						
+	/**
+	 * The template of the rule that routed the MT (docs/通道外发处理恢复与替换缺陷修复设计.md 4.4): with its routingRule, that
+	 * rule's template or none; without (written before), the longest prefix of the templates for its customer, channel
+	 * (and sender).
+	 */
+	String routingTemplateId(GmmsMessage msg) {
+		String rule = msg.getRoutingRule();
+		if (rule != null && !rule.isEmpty()) {
+			return ruleIndex.templateOfRule(msg.getOSsID(), msg.getRSsID(), rule, msg.getSenderAddress());
 		}
-		String templateId = null;
-		for (Entry<String, String> entry: contentTemplate.entrySet()) {
-			if (raddr.startsWith(entry.getKey())) {
-				templateId = entry.getValue();
-				break;
-			}
+		final Map<String, Map<String, String>> templates = ruleIndex.templates();
+		Map<String, String> byPrefix = templates.get(msg.getOSsID() + ":" + msg.getRSsID() + ":" + msg.getSenderAddress());
+		if (byPrefix == null || byPrefix.isEmpty()) {
+			byPrefix = templates.get(msg.getOSsID() + ":" + msg.getRSsID());
 		}
-		
-		if (templateId == null) {
-			log.error("templateId is null ", ossid+":"+rssid);
+		if (byPrefix == null || byPrefix.isEmpty() || msg.getRecipientAddress() == null) {
 			return null;
 		}
-		String type = contentType;
-		String text = null;
-		String templateSender = null;
+		String best = null;
+		for (String prefix : byPrefix.keySet()) {
+			if (msg.getRecipientAddress().startsWith(prefix) && (best == null || prefix.length() > best.length())) {
+				best = prefix;
+			}
+		}
+		return best == null ? null : byPrefix.get(best);
+	}
+
+	/** [content type, text] or [content type, text, sender] of the template of the MT's routing rule, null when none */
+	public List<String> getTemplateContent(String code, String contentType, GmmsMessage msg) {
+		String templateId = routingTemplateId(msg);
+		if (templateId == null) {
+			log.error(msg, "templateId is null for {}:{}", msg.getOSsID(), msg.getRSsID());
+			return null;
+		}
+		return getTemplateContent(code, templateId, contentType);
+	}
+
+	/**
+	 * [content type, text] or [content type, text, sender] of template templateId (or, when there is none of that id,
+	 * of one of the templates whose id starts with it, at random); the text of the content type asked for if the template
+	 * has it, else its other one; the Sender of the template either way (docs/通道外发处理恢复与替换缺陷修复设计.md 4.3).
+	 */
+	public List<String> getTemplateContent(String code, String templateId, String contentType) {
 		Map<String, String> content = contentTpl.getTemplateContentMaps().get(templateId);
 		if (content == null) {
-			//do check the template pool
 			List<String> templatePool = new ArrayList<String>();
 			for (String key : contentTpl.getTemplateContentMaps().keySet()) {
 				if (key.startsWith(templateId)) {
@@ -6129,48 +6132,20 @@ public class A2PCustomerManager implements LifecycleListener {
 				log.error("content is null by templateId {}", templateId);
 				return null;
 			}
-			int len = templatePool.size();
-			int random = (int)(Math.random()*len);
-			content = contentTpl.getTemplateContentMaps().get(templatePool.get(random));
-			if (content.get(contentType) == null) {
-				for (Map.Entry<String,String> entry: content.entrySet()) {
-					type = entry.getKey();
-					text = entry.getValue();
-					if ("sender".equalsIgnoreCase(type)) {
-						templateSender = text;
-						continue;
-					}					
-					if (type !=null && text != null) {
-						break;
-					}
-				}
-			}else {
-				text = content.get(contentType);
-				templateSender = content.get("sender");
-			}
-			
-			
-		}else {
-			if (content.get(contentType) == null) {
-				for (Map.Entry<String,String> entry: content.entrySet()) {
-					type = entry.getKey();
-					if ("sender".equalsIgnoreCase(type)) {
-						continue;
-					}
-					text = entry.getValue();
-					if (type !=null && text != null) {
-						break;
-					}
-				}
-			}else {
-				text = content.get(contentType);
-			}			
+			content = contentTpl.getTemplateContentMaps().get(templatePool.get((int) (Math.random() * templatePool.size())));
 		}
-		
+		String type = contentType;
+		String text = content.get(contentType);
+		if (text == null) {
+			String other = GmmsMessage.AIC_CS_UCS2.equalsIgnoreCase(contentType) ? GmmsMessage.AIC_CS_ASCII : GmmsMessage.AIC_CS_UCS2;
+			text = content.get(other);
+			type = other;
+		}
 		if (text == null) {
 			log.error("content is null by templateId {}", templateId);
 			return null;
 		}
+		String templateSender = content.get("sender");
 		code = code.replace("-", "");
 		code = code.replace(" ", "");
 		//add random value
@@ -6180,7 +6155,7 @@ public class A2PCustomerManager implements LifecycleListener {
 		if(!code.equalsIgnoreCase(replaceCode) && text.indexOf("$srdm$")>-1){
 			text = text.substring(0, text.indexOf("$srdm$"));
 		}
-		text = text.replaceFirst("\\$shortcode\\$", replaceCode);
+		text = text.replaceFirst("\\$shortcode\\$", java.util.regex.Matcher.quoteReplacement(replaceCode));
 		List<String> response = new ArrayList<String>();
 		response.add(type);
 		response.add(text);
@@ -6188,87 +6163,6 @@ public class A2PCustomerManager implements LifecycleListener {
 			response.add(templateSender);
 		}		
 		return response;
-		
-	}
-	
-	
-	public List<String> getTemplateContent(String code, String templateId, String contentType) {
-		String type = contentType;
-		String text = null;
-		String templateSender = null;
-		Map<String, String> content = contentTpl.getTemplateContentMaps().get(templateId);
-		if (content == null) {
-			//do check the template pool
-			List<String> templatePool = new ArrayList<String>();
-			for (String key : contentTpl.getTemplateContentMaps().keySet()) {
-				if (key.startsWith(templateId)) {
-					templatePool.add(key);
-				}
-			}
-			if (templatePool.isEmpty()) {
-				log.error("content is null by templateId {}", templateId);
-				return null;
-			}
-			int len = templatePool.size();
-			int random = (int)(Math.random()*len);
-			content = contentTpl.getTemplateContentMaps().get(templatePool.get(random));
-			if (content.get(contentType) == null) {
-				for (Map.Entry<String,String> entry: content.entrySet()) {
-					type = entry.getKey();
-					text = entry.getValue();
-					if ("sender".equalsIgnoreCase(type)) {
-						templateSender = text;
-						continue;
-					}					
-					if (type !=null && text != null) {
-						break;
-					}
-				}
-			}else {
-				text = content.get(contentType);
-				templateSender = content.get("sender");
-			}
-			
-			
-		}else {
-			if (content.get(contentType) == null) {
-				for (Map.Entry<String,String> entry: content.entrySet()) {
-					type = entry.getKey();
-					if ("sender".equalsIgnoreCase(type)) {
-						continue;
-					}
-					text = entry.getValue();
-					if (type !=null && text != null) {
-						break;
-					}
-				}
-			}else {
-				text = content.get(contentType);
-			}			
-		}
-		
-		if (text == null) {
-			log.error("content is null by templateId {}", templateId);
-			return null;
-		}
-		code = code.replace("-", "");
-		
-		//add random value
-		text = getRandomValue(text);
-		//add replace short code logic
-		String replaceCode = replaceShortCode(code, text);
-		if(!code.equalsIgnoreCase(replaceCode) && text.indexOf("$srdm$")>-1){
-			text = text.substring(0, text.indexOf("$srdm$"));
-		}
-		text = text.replaceFirst("\\$shortcode\\$", replaceCode);
-		List<String> response = new ArrayList<String>();
-		response.add(type);
-		response.add(text);
-		if (templateSender!=null) {
-			response.add(templateSender);
-		}		
-		return response;
-		
 	}
 	
 	public void doVendorTemplateRepaceByTemplateId(String templateId, GmmsMessage message) {

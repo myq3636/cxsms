@@ -201,6 +201,10 @@ public class CoreMessageProcessor {
         } catch (Exception e) {
         	log.error("do sender replace in ocustomer failed", e);
         }
+        // the recipient before the channel's steps: each send to a channel starts from it, the customer's DR gets it back
+        if (msg.getOriginalRecipientAddr() == null || msg.getOriginalRecipientAddr().isEmpty()) {
+        	msg.setOriginalRecipientAddr(msg.getRecipientAddress());
+        }
 
         // 3. 过期时间设定
         if (msg.getExpiryDate() == null) {

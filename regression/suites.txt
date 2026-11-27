@@ -79,6 +79,7 @@ CoreRetryIT it.CoreRetryIT it-multi
 CoreDrBizIT it.CoreDrBizIT it-multi
 FakeDrIT it.FakeDrIT it
 CoreContentIT it.CoreContentIT it-multi
+ReplacementIT it.ReplacementIT it
 CoreFailoverIT it.CoreFailoverIT it-multicore
 ShardZeroIT it.ShardZeroIT it-multicore
 GracefulStopIT it.GracefulStopIT it-multicore

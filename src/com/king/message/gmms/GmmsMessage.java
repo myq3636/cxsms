@@ -81,6 +81,8 @@ public class GmmsMessage extends MessageBase {
 	protected int routingLevel = 0;
 	/** the rule that picked the channel: "{layer of the main route}|{layer}:{level}:{group}:{priority}" */
 	protected String routingRule = null;
+	/** the sender before the channel's steps (after the customer's): each send to a channel starts from it (docs/通道外发处理恢复与替换缺陷修复设计.md 3.3) */
+	protected String inSenderAddress = null;
 	protected String routingSsIDs = null;
 	protected String redisStreamID = null; // V4.0 Redis Stream ID for ACK
 	protected long redisFence = -1L; // C-9: 该消息所属 MQM 任期纪元(来自 stream 字段, 非序列化); -1=缺失
@@ -329,6 +331,14 @@ public class GmmsMessage extends MessageBase {
 		this.routingRule = routingRule;
 	}
 
+	public String getInSenderAddress() {
+		return inSenderAddress;
+	}
+
+	public void setInSenderAddress(String inSenderAddress) {
+		this.inSenderAddress = inSenderAddress;
+	}
+
 //	public boolean inClientPull() {
 //		return this.inClientPull;
 //	}
@@ -441,6 +451,7 @@ public class GmmsMessage extends MessageBase {
 		this.outTimeMs = oneMsg.outTimeMs;
 		this.routingLevel = oneMsg.routingLevel;
 		this.routingRule = oneMsg.routingRule;
+		this.inSenderAddress = oneMsg.inSenderAddress;
 		this.oOperator = oneMsg.oOperator;
 		this.rOperator = oneMsg.rOperator;
 		// this.localTimeStamp = oneMsg.localTimeStamp;
