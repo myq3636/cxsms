@@ -112,7 +112,11 @@ public class IOSMSChannelRouter extends ChannelRouter {
 				mainLayer = b.rule.layer();
 				c = b;
 			}
+			int opId = msg.getRoperator();
 			msg.setRSsID(c.rssid);
+			if (c.rule != null && c.rule.layer().keepsOperator()) {
+				msg.setRoperator(opId);
+			}
 			addRoutingSsid(msg, c.rssid);
 			msg.setRoutingLevel(c.level);
 			msg.setRoutingRule(c.ruleText(mainLayer));

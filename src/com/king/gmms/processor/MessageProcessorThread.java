@@ -94,7 +94,8 @@ public class MessageProcessorThread extends RunnableMsgTask{
 					transactBlackholedMessage(message);
 					return;
 				} else {
-					A2PCustomerInfo ropCust = ctm.getCustomerBySSID(message.getRoperator());
+					// the delivery window of the channel (rssid), not of the operator the routing found
+					A2PCustomerInfo ropCust = ctm.getCustomerBySSID(message.getRSsID());
 					if (ropCust != null) {
 						// schedule delivery
 						TimeZone ropTimeZone = ropCust.getSmsOptionTimeZone();
@@ -206,7 +207,7 @@ public class MessageProcessorThread extends RunnableMsgTask{
 					&& message.getOriginalQueue() == null) { // don't blackhole msg from RMQ																
 				
 				// get blackhole percent via ossid_rop
-				String key = ossid + "_" + message.getRoperator();
+				String key = ossid + "_" + message.getRSsID();   // BlackholePercent R_SSID: the channel
 				Integer blackholePercent = blackholePercentMap.get(key);
 				
 				// get blackhole percent via ossid
@@ -285,7 +286,7 @@ public class MessageProcessorThread extends RunnableMsgTask{
 					}
 				}
 				// get blackhole percent via ossid_rop
-				String key = ossid + "_" + message.getRoperator();
+				String key = ossid + "_" + message.getRSsID();   // BlackholePercent R_SSID: the channel
 				Integer blackholePercent = blackholePercentMap.get(key);
 				
 				// get blackhole percent via ossid

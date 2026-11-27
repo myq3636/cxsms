@@ -3742,7 +3742,7 @@ public abstract class A2PCustomerInfo {
 		boolean result = true;
 		if (smsSecondRoutingRecPrefix != null && !smsSecondRoutingRecPrefix.isEmpty()) {
 			for (String prefix : smsSecondRoutingRecPrefix) {
-				if("all".equalsIgnoreCase(recipient)) {
+				if("all".equalsIgnoreCase(prefix)) {   // the configured prefix (it compared the recipient)
 					return result;
 				}
 				if(recipient.startsWith(prefix)){

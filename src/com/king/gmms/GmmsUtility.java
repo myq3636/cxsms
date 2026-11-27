@@ -1124,7 +1124,7 @@ public class GmmsUtility {
 			"InitPhoneLen", "MessageExpireTime", "ResendDRThrottle",
 			"Redis_MinIDExpireTime", "MessageFinalExpireTime", "DRInterval", "ConnectionSilentTime",
 			"MaxSilentTime", "CacheMessageTimeout", "CsmIntegrityCacheTimeout",
-			"WaitingEnquireLinkResponseTime", "StoreDRModeEnable", "BlackholeSsid", "DNSTimeOut",
+			"WaitingEnquireLinkResponseTime", "StoreDRModeEnable", "BlackholeSsid", "DNSTimeOut", "EnumQueryTimeoutMs",
 			"MaxServiceTypeID", "Smpp.ServiceTypeIDTag", "MinMessageExpireTimeFromCust",
 			"MaxMessageExpireTimeFromCust", "CDRFileSwitchInterval", "CDRFileMaxSize",
 			"MessageIdIncludeNodeId", "ScreenedIPs", "LoopbackAddresses", "Metrics.Enable", "Metrics.ReportIntervalSeconds",
@@ -2335,6 +2335,19 @@ public class GmmsUtility {
 
 	public int getDNSTimeout(){
 		return this.dnsTimeout;
+	}
+
+	/**
+	 * EnumQueryTimeoutMs (default 5000, hot reloaded): how long the Core waits for the operator lookup before routing,
+	 * the connect and the read of an ENUM / MNP query each, and the wait of the IR21 dig; at least 100 ms. It was 30 s
+	 * (HTTP) and 3 x 5 s (dig): a lookup service gone slow held a Core thread that long for every MT.
+	 */
+	public int getEnumQueryTimeoutMs() {
+		try {
+			return Math.max(100, Integer.parseInt(getCommonProperty("EnumQueryTimeoutMs", "5000")));
+		} catch (NumberFormatException e) {
+			return 5000;
+		}
 	}
 	
 	public String getCmTempFile() {

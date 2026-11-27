@@ -6340,12 +6340,13 @@ public class A2PCustomerManager implements LifecycleListener {
 				|| getCustomerBySSID(msg.getOSsID())
 						.isMatchFullWhenRouteReplaceOAddr();
 
+		// r_op: the channel (as roperator was for every channel), not the operator the routing found (ENUM)
 		List<String> replaceInfo = getSenderIdRelace(msg.getOoperator(), msg
-				.getSenderAddress(), msg.getRSsID(), msg.getRoperator(),
+				.getSenderAddress(), msg.getRSsID(), msg.getRSsID(),
 				isMatchFull);
 		if (replaceInfo == null || replaceInfo.size() < 1) {
 			replaceInfo = getSenderIdRelace(msg.getOSsID(), msg
-					.getSenderAddress(), msg.getRSsID(), msg.getRoperator(),
+					.getSenderAddress(), msg.getRSsID(), msg.getRSsID(),
 					isMatchFull);
 		}
 		return replaceInfo;
@@ -6521,7 +6522,7 @@ public class A2PCustomerManager implements LifecycleListener {
 		}
 
 		int o_ssid = msg.getOSsID();
-		int r_op = msg.getRoperator();
+		int r_op = msg.getRSsID();   // A2PContentSignature R_OP: the channel, not the operator the routing found (ENUM)
 		String r_charset = msg.getContentType();
 		String o_addr = msg.getSenderAddress();
 

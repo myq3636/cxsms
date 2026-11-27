@@ -345,6 +345,12 @@ public abstract class HttpSession extends Session {
 	
 	protected String doMNPquery(URL url, String post, Map<String, String> header,String contentType, boolean supportHttps)
 			throws Exception {
+		return doMNPquery(url, post, header, contentType, supportHttps, 30000);
+	}
+
+	/** the query with this connect and read timeout each (ms) */
+	protected String doMNPquery(URL url, String post, Map<String, String> header,String contentType, boolean supportHttps,
+			int timeoutMs) throws Exception {
 		try {
 			if(supportHttps){							
 				HostnameVerifier hv = new HostnameVerifier() {
@@ -367,8 +373,8 @@ public abstract class HttpSession extends Session {
 			connection.setDoOutput(true);
 			connection.setUseCaches(false);
 			connection.setRequestMethod("POST");
-			connection.setConnectTimeout(30000);
-			connection.setReadTimeout(30000);
+			connection.setConnectTimeout(timeoutMs);
+			connection.setReadTimeout(timeoutMs);
 			
 		
 			if (header != null) {

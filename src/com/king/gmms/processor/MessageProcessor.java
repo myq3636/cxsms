@@ -298,7 +298,7 @@ public class MessageProcessor {
 			} else {
 				ssid = message.getRSsID();
 			}
-			int rop = message.getRoperator();
+			int rop = message.getRSsID();   // the channel, not the operator the routing found (ENUM)
 			List<String> ropRequiredCharsets = ctm.getRequiredCharsets(ssid,
 					rop);
 			A2PCustomerInfo cm = ctm.getCustomerBySSID(ssid);

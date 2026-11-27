@@ -2511,16 +2511,18 @@ public class Smpp {
 				bb.appendString(oMncMcc.substring(0, 3));
 				request.setExtraOptional((short) 0x0202, bb);
 			}
-			if (!ctm.isVirtualOperator(msg.getRoperator())) { 
+			// the channel's settings by the channel (rssid): roperator is the operator the routing found (ENUM) for a
+			// channel of the operator, number or second layer
+			if (!ctm.isVirtualOperator(msg.getRSsID())) { 
 				String rMncMcc = msg.getRMncMcc();
 				if (rMncMcc == null || "".equals(rMncMcc)) {
 					if(log.isTraceEnabled()){
 						log.trace(msg,"The MNC/MCC of the recipient in the msg is null, get it by CCB");
 					}
-					mncMcc = ctm.getMncMccbySsid(msg.getRoperator());
+					mncMcc = ctm.getMncMccbySsid(msg.getRSsID());
 					
 					int rMncMccLength;
-					A2PCustomerInfo r_Customer = ctm.getCustomerBySSID(msg.getRoperator());
+					A2PCustomerInfo r_Customer = ctm.getCustomerBySSID(msg.getRSsID());
 					if(r_Customer != null){
 						rMncMccLength = r_Customer.getMCCMNCLength();
 					}else{
@@ -2542,7 +2544,7 @@ public class Smpp {
 					}
 				}
 				if (rMncMcc == null || rMncMcc.length() != 6) {
-					log.warn(msg,"The MNC/MCC of {} is error!", msg.getRoperator());
+					log.warn(msg,"The MNC/MCC of {} is error!", msg.getRSsID());
 				} else {
 					if(log.isTraceEnabled()){
 						log.trace(msg,"Append the MCC:{}, MNC:{} of the Recipient in the PDU.",

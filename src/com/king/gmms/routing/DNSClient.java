@@ -411,7 +411,9 @@ public class DNSClient extends HttpSession{
 
         String cmd;
         //dig @172.31.216.49 -t naptr  2.3.3.0.7.1.9.e164.arpa
-        cmd = "dig @" + nameServer + " -t " + recordType + " "+record;
+        // one try, as long as EnumQueryTimeoutMs (dig: 5 s and 3 tries by default)
+        int seconds = Math.max(1, (GmmsUtility.getInstance().getEnumQueryTimeoutMs() + 999) / 1000);
+        cmd = "dig @" + nameServer + " +time=" + seconds + " +tries=1 -t " + recordType + " "+record;
         log.debug("dig ir21 msg request: {}", cmd);
         StringBuilder builder = new StringBuilder();
         try {
@@ -444,7 +446,7 @@ public class DNSClient extends HttpSession{
     	jsonParam.put("number", msg.getRecipientAddress());
     	String post = jsonParam.toJSONString();
 		log.debug("http post mothed send url: {}", url.toString());
-		String resp = super.doMNPquery(url, post, null,"application/json",false);
+		String resp = super.doMNPquery(url, post, null,"application/json",false, GmmsUtility.getInstance().getEnumQueryTimeoutMs());
 		JSONObject json = JSON.parseObject(resp);      
 		log.debug(msg, " query enum response {}", resp);
         if (json.get("data")!=null &&"SUCCESS".equalsIgnoreCase(String.valueOf(json.get("errmsg")))) {

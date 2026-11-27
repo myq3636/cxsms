@@ -100,7 +100,11 @@ public class IOSMSRerouteDispatcher extends MessageDispatcher {
 					// backupRelay and primaryRelay should connect to the same A2P
 					if (r_a2p_backup > 0 && r_a2p_backup == message.getRA2P()) {
 						// set reroute properties
+						int opId = message.getRoperator();
 						message.setRSsID(r_ssid_backup);
+						if (c.rule != null && c.rule.layer().keepsOperator()) {
+							message.setRoperator(opId);   // an operator backup keeps the operator for the next level
+						}
 						A2PCustomerInfo customerInfo = ctm.getCustomerBySSID(message.getRSsID());
 						message.setOutClientPull("1".equals(customerInfo.getOutClientPull()));
 						// original value would be MultiSmppServer1:CoreEngine1:MultiSmppClient1

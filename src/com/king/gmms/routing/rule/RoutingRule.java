@@ -16,6 +16,16 @@ public final class RoutingRule {
 	public enum Layer {
 		SEC("second"), NUMBER("number"), OP("op"), MAIN("main");
 
+		/**
+		 * a channel chosen by this layer keeps the message's operator (the ENUM one: country code * 10000 + operator):
+		 * setRSsID also sets roperator to the channel's ssid, and the old operator, number and second routers
+		 * (SMSOPChannelRouter, SMSOPBackupChannelRouter, SMSNumberChannelRouter, A2PSecondChannelRouter) set it back,
+		 * for the CDR's operator column and the operator backup of a reroute; the prefix layer did not
+		 */
+		public boolean keepsOperator() {
+			return this != MAIN;
+		}
+
 		public final String label;
 
 		Layer(String label) {

@@ -183,7 +183,11 @@ public class SerializableHandler {
 				    				msg.setOSsID(Integer.parseInt(parameters[7]));
 				    				break;
 				    			case 8:
+				    				// setRSsID also sets roperator to the channel: keep the one of field 6 (the operator of an
+				    				// operator, number or second route; the old internal connections passed it as it was)
+				    				int rop = msg.getRoperator();
 				    				msg.setRSsID(Integer.parseInt(parameters[8]));
+				    				msg.setRoperator(rop);
 				    				break;
 				    			case 9:
 				    				msg.setGmmsMsgType(parameters[9]);
@@ -492,7 +496,11 @@ public class SerializableHandler {
 				    				msg.setOSsID(Integer.parseInt(parameters[7]));
 				    				break;
 				    			case 8:
+				    				// setRSsID also sets roperator to the channel: keep the one of field 6 (the operator of an
+				    				// operator, number or second route; the old internal connections passed it as it was)
+				    				int rop = msg.getRoperator();
 				    				msg.setRSsID(Integer.parseInt(parameters[8]));
+				    				msg.setRoperator(rop);
 				    				break;
 				    			case 9:
 				    				msg.setGmmsMsgType(parameters[9]);

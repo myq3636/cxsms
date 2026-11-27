@@ -272,7 +272,8 @@ public class CoreMessageProcessor {
 				log.warn("Null submit message when processing MQM stream.");
 				return true;
 			}
-			if (CsmUtility.isConcatenatedMsg(msg) && msg.getRoperator() < 0) {
+			// not routed yet (rssid; roperator keeps the operator of an operator route)
+			if (CsmUtility.isConcatenatedMsg(msg) && msg.getRSsID() < 0) {
 				// CSM：Redis Hash 同步合并(持久化后才 ACK)
 				if (!com.king.gmms.routing.SyncSubmitRouter.getInstance().routeCsmSegmentSync(msg)) {
 					msg.setStatus(GmmsStatus.COMMUNICATION_ERROR);
